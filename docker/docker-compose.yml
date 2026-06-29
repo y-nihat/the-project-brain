@@ -1,0 +1,49 @@
+# Brain + a whitelisted Docker socket-proxy.
+#
+# The brain NEVER mounts the raw docker socket. It reaches the daemon only
+# through `docker-socket-proxy`, which exposes just the API groups the brain
+# needs (containers/images/build/networks/volumes) and only because POST=1 is
+# set. Everything else (exec, secrets, swarm, host info, auth) stays denied.
+#
+# Honest caveat: controlling container creation is still powerful. The proxy
+# shrinks the blast radius; it does not make the brain harmless.
+
+services:
+  docker-socket-proxy:
+    image: tecnativa/docker-socket-proxy:latest
+    environment:
+      POST: 1          # master switch: allow write operations on enabled groups
+      CONTAINERS: 1    # create / start / stop / inspect / remove sandbox containers
+      IMAGES: 1        # inspect / pull base images
+      BUILD: 1         # build capability images from streamed contexts
+      NETWORKS: 1      # attach sandboxes to bridge / none
+      VOLUMES: 1       # named volumes for artifact exchange (later phases)
+      # Explicitly denied (default 0): EXEC, AUTH, SECRETS, SWARM, SYSTEM,
+      # INFO, CONFIGS, NODES, PLUGINS, SERVICES, TASKS, SESSION.
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    restart: unless-stopped
+    networks: [brainnet]
+
+  brain:
+    build:
+      context: ..
+      dockerfile: docker/brain.Dockerfile
+    depends_on: [docker-socket-proxy]
+    env_file:
+      - ../.env
+    environment:
+      DOCKER_HOST: tcp://docker-socket-proxy:2375
+      SANDBOX_BASE_IMAGE: ${SANDBOX_BASE_IMAGE:-python:3.12-slim}
+      BRAIN_MODEL: ${BRAIN_MODEL:-}
+    working_dir: /app
+    volumes:
+      - ..:/app                      # live source for iteration
+    networks: [brainnet]
+    stdin_open: true                 # interactive approval gate reads stdin
+    tty: true
+    command: ["sleep", "infinity"]   # run commands with `docker compose exec brain ...`
+
+networks:
+  brainnet:
+    driver: bridge
