@@ -12,5 +12,7 @@ __pycache__/
 data/
 *.db
 
-# Built capability artifacts (manifests are tracked; build contexts/images are not)
-capabilities_store/_artifacts/
+# Promoted capabilities are runtime state (reproducible from the registry);
+# keep the directory, ignore its generated contents.
+capabilities_store/*
+!capabilities_store/.gitkeep
