@@ -22,6 +22,7 @@ import docker
 from docker.errors import APIError, BuildError, ImageNotFound, NotFound
 
 from .. import config
+from ..observability import NullTracer
 from . import policy as policy_mod
 
 LABEL_PREFIX = "brain"
@@ -41,9 +42,10 @@ class RunResult:
 
 
 class SandboxManager:
-    def __init__(self, session: str, ledger, *, base_url: Optional[str] = None):
+    def __init__(self, session: str, ledger, *, base_url: Optional[str] = None, tracer=None):
         self.session = session
         self.ledger = ledger
+        self.tracer = tracer or NullTracer()
         base_url = base_url if base_url is not None else config.DOCKER_HOST
         self.client = docker.DockerClient(base_url=base_url) if base_url else docker.from_env()
 
@@ -83,22 +85,23 @@ class SandboxManager:
                 info.mtime = int(time.time())
                 tar.addfile(info, io.BytesIO(data))
         fileobj.seek(0)
-        try:
-            self.client.images.build(
-                fileobj=fileobj,
-                custom_context=True,
-                tag=tag,
-                rm=True,
-                forcerm=True,
-                pull=False,
-            )
-        except BuildError as e:  # surface the build log for debugging
-            log = "\n".join(
-                str(chunk.get("stream", "")).rstrip()
-                for chunk in getattr(e, "build_log", [])
-                if isinstance(chunk, dict) and chunk.get("stream")
-            )
-            raise BuildError(f"{e}\n--- build log ---\n{log}", getattr(e, "build_log", None))
+        with self.tracer.span("image.build", tag, tag=tag):
+            try:
+                self.client.images.build(
+                    fileobj=fileobj,
+                    custom_context=True,
+                    tag=tag,
+                    rm=True,
+                    forcerm=True,
+                    pull=False,
+                )
+            except BuildError as e:  # surface the build log for debugging
+                log = "\n".join(
+                    str(chunk.get("stream", "")).rstrip()
+                    for chunk in getattr(e, "build_log", [])
+                    if isinstance(chunk, dict) and chunk.get("stream")
+                )
+                raise BuildError(f"{e}\n--- build log ---\n{log}", getattr(e, "build_log", None))
         return tag
 
     # -- running ---------------------------------------------------------- #
@@ -115,57 +118,71 @@ class SandboxManager:
     ) -> RunResult:
         pol = policy or policy_mod.isolated()
         ttl = ttl if ttl is not None else pol.ttl_seconds
-        self.ensure_image(image)
 
-        env = {"HOME": "/tmp", "PYTHONDONTWRITEBYTECODE": "1", "PYTHONUNBUFFERED": "1"}
-        if environment:
-            env.update(environment)
-
-        container = self.client.containers.create(
-            image,
-            command,
-            detach=True,
-            environment=env,
-            labels=self._labels(capability, labels),
-            working_dir="/work",
-            **pol.docker_kwargs(),
-        )
-        self.ledger.record_start(
-            id=container.id,
-            session=self.session,
-            capability=capability,
+        with self.tracer.span(
+            "sandbox.run",
+            capability or image,
             image=image,
-            command=command,
-            policy=pol,
-        )
+            network=pol.network,
+            mem=pol.mem,
+            cpus=pol.cpus,
+            ttl=ttl,
+        ) as sp:
+            self.ensure_image(image)
 
-        timed_out = False
-        exit_code: Optional[int] = None
-        stdout = stderr = ""
-        try:
-            container.start()
+            env = {"HOME": "/tmp", "PYTHONDONTWRITEBYTECODE": "1", "PYTHONUNBUFFERED": "1"}
+            if environment:
+                env.update(environment)
+
+            container = self.client.containers.create(
+                image,
+                command,
+                detach=True,
+                environment=env,
+                labels=self._labels(capability, labels),
+                working_dir="/work",
+                **pol.docker_kwargs(),
+            )
+            sp.set(ledger_id=container.id)
+            self.ledger.record_start(
+                id=container.id,
+                session=self.session,
+                capability=capability,
+                image=image,
+                command=command,
+                policy=pol,
+            )
+
+            timed_out = False
+            exit_code: Optional[int] = None
+            stdout = stderr = ""
             try:
-                exit_code = container.wait(timeout=ttl).get("StatusCode")
-            except Exception:
-                # docker-py raises a requests timeout/connection error past `ttl`
-                timed_out = True
-                exit_code = -1
+                container.start()
                 try:
-                    container.kill()
+                    exit_code = container.wait(timeout=ttl).get("StatusCode")
+                except Exception:
+                    # docker-py raises a requests timeout/connection error past `ttl`
+                    timed_out = True
+                    exit_code = -1
+                    try:
+                        container.kill()
+                    except Exception:
+                        pass
+                try:
+                    stdout = container.logs(stdout=True, stderr=False).decode("utf-8", "replace")
+                    stderr = container.logs(stdout=False, stderr=True).decode("utf-8", "replace")
                 except Exception:
                     pass
-            try:
-                stdout = container.logs(stdout=True, stderr=False).decode("utf-8", "replace")
-                stderr = container.logs(stdout=False, stderr=True).decode("utf-8", "replace")
-            except Exception:
-                pass
-        finally:
-            self._remove(container)
-            self.ledger.record_finish(
-                container.id,
-                exit_code=exit_code,
-                status="reaped" if timed_out else "finished",
-            )
+            finally:
+                self._remove(container)
+                self.ledger.record_finish(
+                    container.id,
+                    exit_code=exit_code,
+                    status="reaped" if timed_out else "finished",
+                )
+            sp.set(exit_code=exit_code, timed_out=timed_out)
+            if timed_out or (exit_code not in (0, None)):
+                sp.status = "failed"
 
         return RunResult(
             container_id=container.id,

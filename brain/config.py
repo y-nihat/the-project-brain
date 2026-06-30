@@ -21,6 +21,10 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DATA_DIR = PROJECT_ROOT / "data"
 DB_PATH = DATA_DIR / "brain.db"
 CAPABILITIES_STORE = PROJECT_ROOT / "capabilities_store"
+RUNS_DIR = DATA_DIR / "runs"          # per-run trace exports (trace.md, trace.jsonl)
+
+# Engine version stamped onto every traced run (for reproducibility/regression).
+ENGINE_VERSION = "0.1.0"
 
 # Load .env from the project root if present (no-op when missing).
 load_dotenv(PROJECT_ROOT / ".env")

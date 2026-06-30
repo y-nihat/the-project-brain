@@ -54,13 +54,18 @@ def _coerce_task(raw: dict) -> Task:
 
 
 class Planner:
-    def __init__(self, *, model: Optional[str] = None, known_capabilities: Optional[Iterable[str]] = None):
+    def __init__(self, *, model: Optional[str] = None, known_capabilities: Optional[Iterable[str]] = None, tracer=None):
         self.model = model
         self.known = list(known_capabilities or ["web_search"])
+        from .observability import NullTracer
+
+        self.tracer = tracer or NullTracer()
 
     async def plan(self, objective: str) -> Plan:
-        from claude_agent_sdk import query, tool, create_sdk_mcp_server
+        from claude_agent_sdk import create_sdk_mcp_server, tool
+
         from .factory import locked_session
+        from .observability import trace_query
 
         captured: dict = {}
 
@@ -78,8 +83,7 @@ class Planner:
             max_turns=4,
         )
 
-        async for _ in query(prompt=objective, options=options):
-            pass
+        await trace_query(self.tracer, "planner", objective, options)
 
         tasks = [_coerce_task(t) for t in captured.get("tasks", []) if t]
         if not tasks:

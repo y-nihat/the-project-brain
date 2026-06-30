@@ -28,6 +28,7 @@ class Orchestrator:
         resolver,
         model: Optional[str] = None,
         use_builder: bool = True,
+        tracer=None,
     ):
         self.session = session
         self.manager = manager
@@ -39,40 +40,51 @@ class Orchestrator:
         self.resolver = resolver
         self.model = model
         self.use_builder = use_builder
+        from .observability import NullTracer
+
+        self.tracer = tracer or NullTracer()
 
     async def run(self, objective: str) -> str:
-        plan = await self.planner.plan(objective)
+        with self.tracer.span("plan", "planner"):
+            plan = await self.planner.plan(objective)
         self.blackboard.put("objective", objective)
-        self.blackboard.put(
-            "plan",
-            [
-                {"id": t.id, "description": t.description, "capability_need": t.capability_need}
-                for t in plan.tasks
-            ],
-        )
+        plan_tasks = [
+            {"id": t.id, "description": t.description, "capability_need": t.capability_need}
+            for t in plan.tasks
+        ]
+        self.blackboard.put("plan", plan_tasks)
+        self.tracer.event("plan.created", "plan", status="info", tasks=plan_tasks)
 
         # Resolve each task; acquire any missing capability (build+verify+promote).
         caps: dict[str, Capability] = {}
         for task in plan.tasks:
-            decision = self.resolver.resolve(task)
-            if decision.kind == REUSE and decision.capability is not None:
-                caps[decision.capability.name] = decision.capability
-                self.blackboard.put(
-                    f"decision:{task.id}", {"kind": "reuse", "capability": decision.capability.name}
-                )
-            elif decision.kind == CREATE and decision.capability_need:
-                builder = make_builder_agent(self.model) if self.use_builder else None
-                cap = await acquire(
-                    decision.capability_need,
-                    manager=self.manager,
-                    registry=self.registry,
-                    broker=self.broker,
-                    builder=builder,
-                )
-                caps[cap.name] = cap
-                self.blackboard.put(f"decision:{task.id}", {"kind": "create", "capability": cap.name})
-            else:
-                self.blackboard.put(f"decision:{task.id}", {"kind": NOOP})
+            with self.tracer.span("task.resolve", task.id, capability_need=task.capability_need):
+                decision = self.resolver.resolve(task)
+                if decision.kind == REUSE and decision.capability is not None:
+                    self.tracer.event(
+                        "decision", task.id, status="info",
+                        choice="reuse", capability=decision.capability.name,
+                        reason="already in registry, verified",
+                    )
+                    caps[decision.capability.name] = decision.capability
+                    self.blackboard.put(
+                        f"decision:{task.id}", {"kind": "reuse", "capability": decision.capability.name}
+                    )
+                elif decision.kind == CREATE and decision.capability_need:
+                    builder = make_builder_agent(self.model, self.tracer) if self.use_builder else None
+                    cap = await acquire(
+                        decision.capability_need,
+                        manager=self.manager,
+                        registry=self.registry,
+                        broker=self.broker,
+                        builder=builder,
+                        tracer=self.tracer,
+                    )
+                    caps[cap.name] = cap
+                    self.blackboard.put(f"decision:{task.id}", {"kind": "create", "capability": cap.name})
+                else:
+                    self.tracer.event("decision", task.id, status="info", choice="noop")
+                    self.blackboard.put(f"decision:{task.id}", {"kind": NOOP})
 
         if not caps:
             answer = "No external capability was required for this objective."
@@ -87,7 +99,7 @@ class Orchestrator:
         return answer
 
     async def _run_researcher(self, objective: str, caps_server, allowed: list[str]) -> str:
-        from claude_agent_sdk import ResultMessage, query
+        from .observability import trace_query
 
         options = factory.locked_session(
             system_prompt=factory.RESEARCHER_PROMPT,
@@ -96,10 +108,5 @@ class Orchestrator:
             model=self.model,
             max_turns=8,
         )
-        final = ""
-        async for message in query(prompt=objective, options=options):
-            if isinstance(message, ResultMessage):
-                result = getattr(message, "result", None)
-                if result:
-                    final = result
-        return final or "(no answer produced)"
+        answer = await trace_query(self.tracer, "researcher", objective, options)
+        return answer or "(no answer produced)"

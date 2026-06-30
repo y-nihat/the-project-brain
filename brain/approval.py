@@ -48,17 +48,30 @@ class ApprovalBroker:
         auto: Optional[str] = None,  # None | "approve" | "deny"
         input_fn: Callable[[str], str] = input,
         output_fn: Callable[[str], None] = print,
+        tracer=None,
     ):
         if auto not in (None, "approve", "deny"):
             raise ValueError("auto must be None, 'approve', or 'deny'")
         self.auto = auto
         self._input = input_fn
         self._output = output_fn
+        from .observability import NullTracer
+
+        self.tracer = tracer or NullTracer()
         self.log: list[tuple[ApprovalRequest, bool]] = []
 
     def request(self, action: str, reason: str, requirements: Iterable[str] = ()) -> bool:
         req = ApprovalRequest(action=action, reason=reason, requirements=list(requirements))
+        self.tracer.event(
+            "approval.requested", action[:60], status="info",
+            action=action, reason=reason, requirements=list(requirements),
+        )
         approved = self._decide(req)
+        self.tracer.event(
+            "approval.resolved", action[:60],
+            status="granted" if approved else "denied",
+            outcome="granted" if approved else "denied",
+        )
         self.log.append((req, approved))
         return approved
 

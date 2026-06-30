@@ -7,12 +7,12 @@ from __future__ import annotations
 
 import asyncio
 import sys
-import uuid
 
 from . import config
 from .approval import ApprovalBroker
 from .ledger import Ledger
 from .memory.blackboard import Blackboard
+from .observability import Tracer
 from .orchestrator import Orchestrator
 from .planner import Planner
 from .registry import Registry
@@ -23,14 +23,17 @@ from .sandbox.manager import SandboxManager
 async def _amain(objective: str) -> int:
     config.enforce_auth_invariant()
 
-    session = f"run-{uuid.uuid4().hex[:8]}"
+    tracer = Tracer(config.DB_PATH, config.RUNS_DIR, engine_version=config.ENGINE_VERSION)
+    run = tracer.start_run(objective, model=config.BRAIN_MODEL)
+    session = run.run_id  # ledger, blackboard, and the trace all share the run id
+
     ledger = Ledger(config.DB_PATH)
     registry = Registry(config.DB_PATH, config.CAPABILITIES_STORE)
     blackboard = Blackboard(config.DB_PATH, session)
-    manager = SandboxManager(session, ledger)
-    broker = ApprovalBroker()  # interactive, blocking
+    manager = SandboxManager(session, ledger, tracer=tracer)
+    broker = ApprovalBroker(tracer=tracer)  # interactive, blocking
     known = [c.name for c in registry.all()] + ["web_search"]
-    planner = Planner(model=config.BRAIN_MODEL, known_capabilities=sorted(set(known)))
+    planner = Planner(model=config.BRAIN_MODEL, known_capabilities=sorted(set(known)), tracer=tracer)
     resolver = Resolver(registry)
     orchestrator = Orchestrator(
         session=session,
@@ -43,23 +46,36 @@ async def _amain(objective: str) -> int:
         resolver=resolver,
         model=config.BRAIN_MODEL,
         use_builder=True,
+        tracer=tracer,
     )
 
     try:
-        answer = await orchestrator.run(objective)
-        print("\n==== ANSWER ====\n" + answer)
-        rows = ledger.all(session)
+        try:
+            answer = await orchestrator.run(objective)
+            status = "succeeded"
+        except Exception as e:  # noqa: BLE001
+            answer = f"ERROR: {type(e).__name__}: {e}"
+            status = "failed"
+
         leaks = ledger.find_leaks(session)
+        if leaks:
+            status = "failed"
+        run.finish(status, outcome=answer)
+
+        print("\n==== ANSWER ====\n" + answer)
         print(
-            f"\n[accounting] session={session} containers={len(rows)} "
-            f"leaks={len(leaks)} capabilities={[c.name for c in registry.all()]}"
+            f"\n[accounting] run={session} status={status} "
+            f"containers={len(ledger.all(session))} leaks={len(leaks)} "
+            f"capabilities={[c.name for c in registry.all()]}"
         )
-        return 0 if not leaks else 1
+        print(f"[trace]      python -m brain.observability show {session}")
+        return 0 if status == "succeeded" else 1
     finally:
         manager.close()
         ledger.close()
         registry.close()
         blackboard.close()
+        tracer.close()
 
 
 def main() -> None:

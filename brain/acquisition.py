@@ -18,6 +18,7 @@ from typing import Awaitable, Callable, Optional
 
 from . import factory
 from .models import Capability
+from .observability import NullTracer, trace_query
 from .verifier import VerificationResult, verify
 
 CAP_IMAGE_PREFIX = "brain/cap-"
@@ -126,8 +127,10 @@ async def acquire(
     broker,
     builder: Optional[Builder] = None,
     max_attempts: int = 2,
+    tracer=None,
 ) -> Capability:
     """Acquire (build + verify + promote) the capability for ``need_key``."""
+    tracer = tracer or NullTracer()
     recipe = _RECIPES.get(need_key)
     if recipe is None:
         # No known free, keyless path -> we must not proceed without the human.
@@ -145,34 +148,49 @@ async def acquire(
         )
 
     make_cap, make_context, free_hint = recipe
-    # Free-first decision: this need HAS a free, keyless path, so no approval is
-    # needed. (If we were forced onto a keyed provider — _PAID_ALTERNATIVES —
-    # we would call broker.request() here before going further.)
     cap: Capability = make_cap()
 
-    last_detail = ""
-    build_context: Optional[dict] = None
-    for attempt in range(1, max_attempts + 1):
-        if builder is not None and attempt == 1:
-            try:
-                build_context = await builder(need_key, free_hint)
-            except Exception as e:  # noqa: BLE001
-                last_detail = f"builder agent error: {e}"
-                build_context = None
-        if not build_context:
-            build_context = make_context()  # deterministic fallback
+    with tracer.span("capability.acquire", need_key, free_path=free_hint):
+        # Free-first decision: this need HAS a free, keyless path, so no approval
+        # is needed. (If forced onto a keyed provider — _PAID_ALTERNATIVES — we
+        # would call broker.request() here before going further.)
+        tracer.event(
+            "decision", f"acquire {need_key}", status="info",
+            choice="create", capability=need_key, free_path=free_hint,
+            paid_alternatives=_PAID_ALTERNATIVES.get(need_key, []),
+        )
 
-        await asyncio.to_thread(manager.build_image, cap.image_tag, build_context)
-        result: VerificationResult = await asyncio.to_thread(verify, cap, manager)
-        if result.passed:
-            cap.verified = True
-            registry.add(cap, build_context=build_context)  # promote
-            return cap
+        last_detail = ""
+        build_context: Optional[dict] = None
+        for attempt in range(1, max_attempts + 1):
+            if builder is not None and attempt == 1:
+                try:
+                    build_context = await builder(need_key, free_hint)
+                except Exception as e:  # noqa: BLE001
+                    last_detail = f"builder agent error: {e}"
+                    build_context = None
+            if not build_context:
+                build_context = make_context()  # deterministic fallback
 
-        last_detail = result.detail
-        build_context = None  # force fallback/regeneration on the next attempt
+            with tracer.span("capability.build", cap.name, image=cap.image_tag, attempt=attempt):
+                await asyncio.to_thread(manager.build_image, cap.image_tag, build_context)
 
-    raise AcquisitionError(f"could not build a working '{need_key}': {last_detail}")
+            with tracer.span("capability.verify", cap.name) as vsp:
+                result: VerificationResult = await asyncio.to_thread(verify, cap, manager)
+                vsp.set(passed=result.passed, detail=result.detail)
+                if not result.passed:
+                    vsp.status = "failed"
+
+            if result.passed:
+                cap.verified = True
+                with tracer.span("capability.promote", cap.name):
+                    registry.add(cap, build_context=build_context)
+                return cap
+
+            last_detail = result.detail
+            build_context = None  # force fallback/regeneration on the next attempt
+
+        raise AcquisitionError(f"could not build a working '{need_key}': {last_detail}")
 
 
 # --------------------------------------------------------------------------- #
@@ -195,9 +213,11 @@ _BUILDER_SYSTEM = (
 _BUILDER_TASK = "Build the web_search capability now and submit it."
 
 
-def make_builder_agent(model: Optional[str] = None) -> Builder:
+def make_builder_agent(model: Optional[str] = None, tracer=None) -> Builder:
+    tracer = tracer or NullTracer()
+
     async def builder(need_key: str, free_hint: str) -> Optional[dict]:
-        from claude_agent_sdk import create_sdk_mcp_server, query, tool
+        from claude_agent_sdk import create_sdk_mcp_server, tool
 
         captured: dict = {}
 
@@ -226,8 +246,7 @@ def make_builder_agent(model: Optional[str] = None) -> Builder:
             model=model,
             max_turns=4,
         )
-        async for _ in query(prompt=_BUILDER_TASK, options=options):
-            pass
+        await trace_query(tracer, "builder", _BUILDER_TASK, options)
 
         if "Dockerfile" in captured and "search.py" in captured:
             return {"Dockerfile": captured["Dockerfile"], "search.py": captured["search.py"]}
