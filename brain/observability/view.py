@@ -75,6 +75,10 @@ def _summary(kind: str, data: dict) -> str:
         return f"input_keys={g('input_keys')}"
     if kind == "capability.verify":
         return f"passed={g('passed')} {('— ' + str(g('detail'))) if g('detail') else ''}".strip()
+    if kind == "capability.build":
+        return f"source={g('source')} attempt={g('attempt')} → {g('artifact_path')}"
+    if kind == "capability.promote":
+        return f"source={g('source')} code={g('code_path')} snapshot={g('artifact_path')}"
     if kind == "plan.created":
         tasks = data.get("tasks") or []
         return f"{len(tasks)} task(s): " + "; ".join(

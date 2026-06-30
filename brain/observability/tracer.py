@@ -102,6 +102,11 @@ class _NullRun:
     def event(self, *_a, **_k):
         pass
 
+    def artifact_path(self, *_parts):
+        import tempfile
+
+        return Path(tempfile.mkdtemp())
+
     def finish(self, *_a, **_k):
         pass
 
@@ -117,6 +122,11 @@ class NullTracer:
 
     def event(self, *_a, **_k):
         pass
+
+    def artifact_path(self, *_parts):
+        import tempfile
+
+        return Path(tempfile.mkdtemp())
 
 
 # --------------------------------------------------------------------------- #
@@ -163,6 +173,14 @@ class Tracer:
     def event(self, kind: str, name: str, status: str = "info", **data: Any) -> None:
         if self._run is not None:
             self._run.event(kind, name, status=status, **data)
+
+    def artifact_path(self, *parts: str) -> Path:
+        """Directory for this run's output artifacts (created tool scripts, etc.)."""
+        if self._run is None:
+            import tempfile
+
+            return Path(tempfile.mkdtemp())
+        return self._run.artifact_path(*parts)
 
     # -- low-level writes ------------------------------------------------- #
     def _insert(self, run_id: str, *, kind: str, name: str, status: str, parent_id: Optional[str], data: dict) -> str:
@@ -245,6 +263,14 @@ class Run:
                             data=sp.data, error=None)
         finally:
             _current_span.reset(token)
+
+    def artifact_path(self, *parts: str) -> Path:
+        """`runs/<run_id>/artifacts/<parts...>` (created on demand)."""
+        p = self._dir / "artifacts"
+        for part in parts:
+            p = p / str(part)
+        p.mkdir(parents=True, exist_ok=True)
+        return p
 
     def finish(self, status: str = "succeeded", outcome: Optional[str] = None) -> None:
         conn = self._t._conn
