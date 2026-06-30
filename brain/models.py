@@ -23,17 +23,25 @@ class Capability:
 
 
 @dataclass
-class Task:
+class AgentSpec:
+    """One agent the brain decides to create for an objective.
+
+    The planner designs a *roster* of these; the agent factory turns each into a
+    concrete (dynamically-prompted) agent session, and the orchestrator runs them
+    in dependency order.
+    """
+
     id: str
-    description: str
-    capability_need: Optional[str]            # canonical capability key, or None
-    depends_on: list[str] = field(default_factory=list)
+    role: str
+    goal: str
+    capabilities: list[str] = field(default_factory=list)   # capability keys this agent needs
+    depends_on: list[str] = field(default_factory=list)      # ids of upstream agents
 
 
 @dataclass
 class Plan:
     objective: str
-    tasks: list[Task]
+    agents: list[AgentSpec]
 
 
 # Resolver decision kinds.

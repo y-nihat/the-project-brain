@@ -1,60 +1,69 @@
-"""Planner: objective -> task plan.
+"""Planner: objective -> an agent roster.
 
-Uses a locked-down LLM session that must emit its plan through the structured
-``emit_plan`` tool (so we get machine-readable output, not prose). For M1 the
-plan is typically a single task; full dependency-graph planning is Phase 2.
+A locked-down LLM session designs the *team* of agents needed for the objective,
+emitting it through the structured ``emit_plan`` tool (machine-readable, not prose).
+Each agent names its role, goal, the capability keys it needs, and which other
+agents it depends on. The orchestrator then synthesizes and runs them.
 
-A ``StubPlanner`` is provided for deterministic tests that should not call the
-model.
+``StubPlanner`` returns a fixed roster for deterministic tests.
 """
 from __future__ import annotations
 
 from typing import Iterable, Optional
 
-from .models import Plan, Task
+from .models import AgentSpec, Plan
 
 _SYSTEM = (
-    "You are the planner of a self-organizing agent system. Decompose the user's objective "
-    "into the SMALLEST sensible list of concrete tasks. For each task, set `capability_need` to "
-    "the canonical key of the capability the task requires, choosing from the known keys when one "
-    "fits. If a task needs live information from the internet, use the key \"web_search\". If a "
-    "task needs no external capability, set `capability_need` to null. "
-    "You MUST call the `emit_plan` tool exactly once with the full task list and must NOT answer "
-    "in prose. Known capability keys: {known}."
+    "You are the planner of a self-organizing multi-agent system. Design the SMALLEST team of "
+    "agents that accomplishes the user's objective. For each agent specify: `id` (short slug), "
+    "`role`, `goal` (one sentence), `capabilities` (the capability keys it needs), and `depends_on` "
+    "(ids of agents whose output it requires). "
+    "Choose capabilities from the known keys when one fits: {known}. If an agent needs a capability "
+    "that is NOT in that list, invent a concise snake_case key for it — the system will build it. "
+    "An agent that only reasons over upstream results needs no capabilities. "
+    "You MUST call the `emit_plan` tool exactly once with the full roster and must NOT answer in prose."
 )
 
 _PLAN_SCHEMA = {
     "type": "object",
     "properties": {
-        "tasks": {
+        "agents": {
             "type": "array",
             "items": {
                 "type": "object",
                 "properties": {
                     "id": {"type": "string"},
-                    "description": {"type": "string"},
-                    "capability_need": {"type": ["string", "null"]},
+                    "role": {"type": "string"},
+                    "goal": {"type": "string"},
+                    "capabilities": {"type": "array", "items": {"type": "string"}},
                     "depends_on": {"type": "array", "items": {"type": "string"}},
                 },
-                "required": ["id", "description"],
+                "required": ["id", "role", "goal"],
             },
         }
     },
-    "required": ["tasks"],
+    "required": ["agents"],
 }
 
 
-def _coerce_task(raw: dict) -> Task:
-    return Task(
-        id=str(raw.get("id") or "t1"),
-        description=str(raw.get("description") or ""),
-        capability_need=(raw.get("capability_need") or None),
-        depends_on=list(raw.get("depends_on") or []),
+def _coerce_agent(raw: dict) -> AgentSpec:
+    return AgentSpec(
+        id=str(raw.get("id") or "agent"),
+        role=str(raw.get("role") or "agent"),
+        goal=str(raw.get("goal") or ""),
+        capabilities=[str(c) for c in (raw.get("capabilities") or [])],
+        depends_on=[str(d) for d in (raw.get("depends_on") or [])],
     )
 
 
 class Planner:
-    def __init__(self, *, model: Optional[str] = None, known_capabilities: Optional[Iterable[str]] = None, tracer=None):
+    def __init__(
+        self,
+        *,
+        model: Optional[str] = None,
+        known_capabilities: Optional[Iterable[str]] = None,
+        tracer=None,
+    ):
         self.model = model
         self.known = list(known_capabilities or ["web_search"])
         from .observability import NullTracer
@@ -69,9 +78,9 @@ class Planner:
 
         captured: dict = {}
 
-        @tool("emit_plan", "Emit the decomposed task plan as structured data.", _PLAN_SCHEMA)
+        @tool("emit_plan", "Emit the team of agents as structured data.", _PLAN_SCHEMA)
         async def emit_plan(args):
-            captured["tasks"] = args.get("tasks", [])
+            captured["agents"] = args.get("agents", [])
             return {"content": [{"type": "text", "text": "plan recorded"}]}
 
         server = create_sdk_mcp_server(name="planner", version="1.0.0", tools=[emit_plan])
@@ -85,18 +94,18 @@ class Planner:
 
         await trace_query(self.tracer, "planner", objective, options)
 
-        tasks = [_coerce_task(t) for t in captured.get("tasks", []) if t]
-        if not tasks:
-            # Fallback: keep M1 robust if the model didn't emit a structured plan.
-            tasks = [Task(id="t1", description=objective, capability_need="web_search")]
-        return Plan(objective=objective, tasks=tasks)
+        agents = [_coerce_agent(a) for a in captured.get("agents", []) if a]
+        if not agents:
+            # Fallback: keep the system robust if the model didn't emit a roster.
+            agents = [AgentSpec(id="researcher", role="researcher", goal=objective, capabilities=["web_search"])]
+        return Plan(objective=objective, agents=agents)
 
 
 class StubPlanner:
-    """Deterministic planner for tests; returns the tasks it was given."""
+    """Deterministic planner for tests; returns the roster it was given."""
 
-    def __init__(self, tasks: list[Task]):
-        self._tasks = tasks
+    def __init__(self, agents: list[AgentSpec]):
+        self._agents = agents
 
     async def plan(self, objective: str) -> Plan:
-        return Plan(objective=objective, tasks=list(self._tasks))
+        return Plan(objective=objective, agents=list(self._agents))
