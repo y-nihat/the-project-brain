@@ -5,8 +5,10 @@ work, decides which agents/capabilities already exist vs. must be built, builds 
 **inside Docker sandboxes**, verifies they actually work, and promotes the reusable ones into a
 growing capability library — under strict free-first, approval-gate, and full-isolation constraints.
 
-> Status: **Phase 0 (safety substrate) + Milestone 1 (web-search slice)** under construction.
-> See `a local planning note` for the implementation plan.
+> Status: Phase 0 (safety substrate), Milestone 1 (web-search slice), and Observability
+> (execution-history tracer) are **built and verified**. Runs today via docker compose
+> (not yet a `pip` package — that's milestone M2).
+> See **[docs/OVERVIEW.md](docs/OVERVIEW.md)** for the stack, how to run it, and where logs live.
 
 ## Safety model (enforced structurally, not by trusting the model)
 

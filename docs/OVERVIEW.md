@@ -1,0 +1,86 @@
+# The Project Brain — overview, stack, and how to run it
+
+A practical map of **what exists today**, **what it runs on**, **how to execute
+it**, and **where the logs are**. Living document — updated as the system matures.
+
+## What it is
+
+An orchestrator ("brain") that takes an objective, plans the work, decides which
+capabilities exist vs. must be built, builds missing ones **inside Docker
+sandboxes**, verifies them, and promotes the reusable ones into a growing
+library. Free-first, with a human approval gate and full container isolation.
+
+## The stack (what it's built on)
+
+- **Claude Agent SDK (Python)** — the package `claude-agent-sdk`. There is **no
+  "Tende CLI"**: the SDK drives the **Claude Code CLI** (the `claude` binary) as a
+  subprocess, which in turn talks to the Claude models.
+- **Auth:** OAuth via `CLAUDE_CODE_OAUTH_TOKEN` (from `claude setup-token`).
+  `ANTHROPIC_API_KEY` must be unset (the brain refuses to start otherwise).
+- **Isolation:** Docker. Agent-built code/tools run *only* in sandbox containers
+  with strict CPU/memory/network limits; the brain reaches the Docker daemon
+  through a whitelisted `docker-socket-proxy`.
+- **Storage:** SQLite (`data/brain.db`) + a capability store + per-run trace files.
+
+```
+host (WSL2 + Docker Desktop)
+└─ docker compose
+   ├─ docker-socket-proxy        (whitelisted access to the Docker daemon)
+   └─ brain  (container)         our Python + Claude Agent SDK + claude CLI
+        │  plan → resolve → acquire → execute   (+ tracer records everything)
+        └─ creates short-lived SANDBOX containers (capability build/verify/run)
+```
+
+## Environment
+
+- WSL2 (Ubuntu) + Docker Engine/Desktop + Compose.
+- The brain runs **inside a container** (compose service `brain`) next to
+  `docker-socket-proxy`.
+- `.env` at the repo root holds `CLAUDE_CODE_OAUTH_TOKEN`.
+
+## How to run it **today**
+
+```sh
+DC="docker compose -f docker/docker-compose.yml"
+$DC up -d --build        # first time builds the image; afterwards just: $DC up -d
+$DC exec brain python -m brain.main "<your objective>"     # run an objective
+$DC exec brain python -m pytest                            # tests
+$DC exec brain python -m brain.observability list          # list runs
+$DC exec brain python -m brain.observability show --last    # full run timeline
+```
+
+> If Docker Desktop restarts, re-run `$DC up -d` (the brain container has no
+> restart policy, so it won't auto-resurrect).
+
+## Where the logs / results are saved
+
+All under `data/` in the repo (bind-mounted from the container, so you can open
+them directly in your editor). `data/` is git-ignored (runtime state).
+
+| What | Path |
+| --- | --- |
+| Human-readable run timeline | `data/runs/<run_id>/trace.md` |
+| Live/tailable event stream | `data/runs/<run_id>/trace.jsonl` |
+| Queryable store (runs, events, ledger, registry, blackboard) | `data/brain.db` |
+| Promoted capabilities (manifest + build context) | `capabilities_store/<name>/` |
+
+## How others will use it (planned — **not built yet**, milestone M2)
+
+- Installable Python package + a host-side **`brain` CLI** you point at any folder:
+  `brain init`, `brain build "<objective>"`, `brain show --last`.
+- Per-project state in a `.brain/` dir (like `.git`); shared capabilities and
+  agent/team profiles in a global `~/.brain/`.
+- Until M2 ships, the system is **run from this repo via docker compose** as above
+  (not yet `pip install`-able).
+
+## Status & roadmap
+
+- **Done:** Phase 0 (sandbox + safety substrate), Milestone 1 (`web_search`
+  capability, sandboxed/verified/reusable), Observability (tracer + viewer),
+  Git conventions.
+- **Capabilities available:** `web_search` (DuckDuckGo via `ddgs`, no API key).
+- **Next:** evaluation harness → M2 package + `brain` CLI → workspace-writing
+  implementer (build real projects in a folder) → multi-agent teams.
+
+See also: `README.md`, `CONTRIBUTING.md` (git workflow), and the plan file in
+`~/.claude/plans/`.
