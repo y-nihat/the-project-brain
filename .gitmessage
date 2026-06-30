@@ -1,0 +1,14 @@
+# <type>(<scope>): <summary>        (imperative mood, <= 72 chars)
+#
+# Why this change — the motivation/problem, not just what changed:
+#
+# -
+#
+# Types:  feat fix docs style refactor perf test build ci chore revert
+# Scopes: sandbox registry ledger approval planner resolver factory
+#         acquisition orchestrator capabilities memory observability
+#         config docker tests deps
+#
+# Footer (optional):
+# BREAKING CHANGE: <what breaks and the migration>
+# Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>

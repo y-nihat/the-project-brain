@@ -1,0 +1,35 @@
+#!/bin/sh
+# Validate that commit messages follow Conventional Commits.
+# https://www.conventionalcommits.org/   (see CONTRIBUTING.md)
+#
+# Enabled per-clone via:  git config core.hooksPath .githooks
+# (run ./scripts/setup-git.sh)
+
+msg_file="$1"
+
+# Subject = first non-comment, non-blank line.
+subject=$(grep -vE '^[[:space:]]*#' "$msg_file" | grep -vE '^[[:space:]]*$' | head -n1)
+
+# Allow machine-generated merge/revert/fixup subjects through untouched.
+case "$subject" in
+    "Merge "*|"Revert "*|"fixup! "*|"squash! "*) exit 0 ;;
+esac
+
+pattern='^(feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)(\([a-z0-9._/-]+\))?!?: .+'
+if ! printf '%s' "$subject" | grep -Eq "$pattern"; then
+    echo "✗ Commit message is not a Conventional Commit." >&2
+    echo "  got:      $subject" >&2
+    echo "  expected: <type>(<scope>): <summary>" >&2
+    echo "  example:  feat(observability): add trace viewer" >&2
+    echo "  types:    feat fix docs style refactor perf test build ci chore revert" >&2
+    exit 1
+fi
+
+len=$(printf '%s' "$subject" | wc -c | tr -d '[:space:]')
+if [ "$len" -gt 72 ]; then
+    echo "✗ Subject line is ${len} chars (keep it <= 72):" >&2
+    echo "  $subject" >&2
+    exit 1
+fi
+
+exit 0
