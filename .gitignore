@@ -12,7 +12,5 @@ __pycache__/
 data/
 *.db
 
-# Promoted capabilities are runtime state (reproducible from the registry);
-# keep the directory, ignore its generated contents.
-capabilities_store/*
-!capabilities_store/.gitkeep
+# Generated tools / capabilities and per-run artifacts now live under data/
+# (already ignored above) — they are run outputs, not part of the engine.

@@ -20,8 +20,8 @@ except Exception:  # python-dotenv is a convenience; env vars may already be set
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DATA_DIR = PROJECT_ROOT / "data"
 DB_PATH = DATA_DIR / "brain.db"
-CAPABILITIES_STORE = PROJECT_ROOT / "capabilities_store"
-RUNS_DIR = DATA_DIR / "runs"          # per-run trace exports (trace.md, trace.jsonl)
+CAPABILITIES_STORE = DATA_DIR / "capabilities"   # promoted reusable tools (an output, not engine)
+RUNS_DIR = DATA_DIR / "runs"          # per-run trace exports + created-tool artifacts
 
 # Engine version stamped onto every traced run (for reproducibility/regression).
 ENGINE_VERSION = "0.1.0"
