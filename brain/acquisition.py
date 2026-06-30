@@ -14,6 +14,7 @@ verification before it is promoted into the registry.
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 from typing import Awaitable, Callable, Optional
 
 from . import factory
@@ -119,6 +120,12 @@ _PAID_ALTERNATIVES = {
 Builder = Callable[[str, str], Awaitable[Optional[dict]]]
 
 
+def _write_context(directory: Path, build_context: dict) -> None:
+    """Save a {filename: content} build context to disk (a run artifact)."""
+    for filename, content in build_context.items():
+        (directory / filename).write_text(content)
+
+
 async def acquire(
     need_key: str,
     *,
@@ -161,34 +168,52 @@ async def acquire(
         )
 
         last_detail = ""
-        build_context: Optional[dict] = None
         for attempt in range(1, max_attempts + 1):
+            # Pick a build context and label where it came from.
+            source = "recipe"
+            build_context: Optional[dict] = None
             if builder is not None and attempt == 1:
                 try:
                     build_context = await builder(need_key, free_hint)
                 except Exception as e:  # noqa: BLE001
                     last_detail = f"builder agent error: {e}"
                     build_context = None
+                if build_context:
+                    source = "agent"
             if not build_context:
                 build_context = make_context()  # deterministic fallback
 
-            with tracer.span("capability.build", cap.name, image=cap.image_tag, attempt=attempt):
+            # Snapshot exactly what this attempt tried, as an output of this run
+            # (so the builder agent's actual code is inspectable even if it fails).
+            attempt_dir = tracer.artifact_path(cap.name, f"attempt-{attempt}-{source}")
+            _write_context(attempt_dir, build_context)
+
+            with tracer.span(
+                "capability.build", cap.name, image=cap.image_tag,
+                attempt=attempt, source=source, artifact_path=str(attempt_dir),
+            ):
                 await asyncio.to_thread(manager.build_image, cap.image_tag, build_context)
 
             with tracer.span("capability.verify", cap.name) as vsp:
                 result: VerificationResult = await asyncio.to_thread(verify, cap, manager)
-                vsp.set(passed=result.passed, detail=result.detail)
+                vsp.set(passed=result.passed, detail=result.detail, source=source)
                 if not result.passed:
                     vsp.status = "failed"
 
             if result.passed:
                 cap.verified = True
-                with tracer.span("capability.promote", cap.name):
+                promoted_dir = tracer.artifact_path(cap.name, "promoted")
+                _write_context(promoted_dir, build_context)
+                with tracer.span("capability.promote", cap.name) as psp:
                     registry.add(cap, build_context=build_context)
+                    psp.set(
+                        source=source,
+                        code_path=str(Path(registry.store_dir) / cap.name / "build"),
+                        artifact_path=str(promoted_dir),
+                    )
                 return cap
 
             last_detail = result.detail
-            build_context = None  # force fallback/regeneration on the next attempt
 
         raise AcquisitionError(f"could not build a working '{need_key}': {last_detail}")
 
