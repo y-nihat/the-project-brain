@@ -79,25 +79,49 @@ def test_approval_gate_blocks_when_no_free_path(tmp_path):
 # --- needs Docker: build + verify + promote (free path, no model) ---------- #
 @pytest.mark.skipif(not DOCKER, reason="Docker daemon not reachable")
 def test_acquire_verify_promote_web_search(tmp_path):
+    import json
+    import sqlite3
+
+    from brain.observability import Tracer
     from brain.sandbox.manager import SandboxManager
 
     reg = Registry(tmp_path / "r.db", tmp_path / "store")
     ledger = Ledger(tmp_path / "l.db")
-    mgr = SandboxManager("m1-acq", ledger)
+    tracer = Tracer(tmp_path / "t.db", tmp_path / "runs")
+    run = tracer.start_run("acquire web_search")
+    mgr = SandboxManager("m1-acq", ledger, tracer=tracer)
     broker = ApprovalBroker(auto="deny")  # must NOT be consulted for a free path
     try:
         cap = asyncio.run(
-            acquisition.acquire("web_search", manager=mgr, registry=reg, broker=broker, builder=None)
+            acquisition.acquire(
+                "web_search", manager=mgr, registry=reg, broker=broker, builder=None, tracer=tracer
+            )
         )
         assert cap.verified
         stored = reg.get("web_search")
         assert stored is not None and stored.verified
         assert broker.log == []  # free, keyless path => gate never fired
         assert ledger.find_leaks("m1-acq") == []  # build + verify containers reaped
+
+        # The created tool's scripts were captured as outputs of this run.
+        promoted = tmp_path / "runs" / run.run_id / "artifacts" / "web_search" / "promoted"
+        assert (promoted / "search.py").exists()
+        assert (promoted / "Dockerfile").exists()
+
+        # The promote event records where the code lives (canonical + run snapshot).
+        conn = sqlite3.connect(str(tmp_path / "t.db"))
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            "SELECT data_json FROM events WHERE kind='capability.promote'"
+        ).fetchall()
+        conn.close()
+        data = json.loads(rows[-1]["data_json"])
+        assert data.get("code_path") and data.get("artifact_path")
     finally:
         mgr.close()
         ledger.close()
         reg.close()
+        tracer.close()
 
 
 # --- needs Docker + OAuth token: full slice via orchestrator --------------- #

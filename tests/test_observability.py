@@ -84,3 +84,18 @@ def test_tracer_records_run_with_nesting_rollups_and_export(tmp_path):
     assert "capability.verify" in rendered and "sandbox.run" in rendered
 
     tracer.close()
+
+
+def test_artifact_path_creates_run_dirs(tmp_path):
+    from brain.observability import NullTracer, Tracer
+
+    tracer = Tracer(tmp_path / "t.db", tmp_path / "runs")
+    run = tracer.start_run("obj")
+    p = tracer.artifact_path("web_search", "promoted")
+    assert p.is_dir()
+    assert p == tmp_path / "runs" / run.run_id / "artifacts" / "web_search" / "promoted"
+    (p / "search.py").write_text("print('x')")
+    assert (p / "search.py").read_text() == "print('x')"
+    # NullTracer returns a usable throwaway dir (no-op safe for untraced callers)
+    assert NullTracer().artifact_path("x").is_dir()
+    tracer.close()
