@@ -1,8 +1,10 @@
-"""Executor / orchestrator: plan -> resolve -> acquire -> execute.
+"""Executor / orchestrator: objective -> agent roster -> run the team.
 
-Flat model: the orchestrator coordinates the whole hierarchy in code. Agents are
-driven as individual sessions and never spawn other agents. The orchestrator
-owns shared state (the blackboard) and the capability registry.
+Flat model: the orchestrator coordinates the whole hierarchy in code. The brain's
+planner designs the agents; the orchestrator resolves/acquires each agent's
+capabilities, synthesizes the agent (dynamic persona), runs it as its own session,
+and passes upstream agents' outputs downstream via the blackboard. Agents never
+spawn agents.
 """
 from __future__ import annotations
 
@@ -11,7 +13,35 @@ from typing import Optional
 from . import factory
 from .acquisition import acquire, make_builder_agent
 from .capabilities.runtime import build_caps_server
-from .models import CREATE, NOOP, REUSE, Capability
+from .models import CREATE, REUSE, AgentSpec, Capability
+
+
+def _topo_order(agents: list[AgentSpec]) -> list[AgentSpec]:
+    """Dependency order (Kahn-ish DFS); tolerant of missing deps and cycles."""
+    by_id = {a.id: a for a in agents}
+    order: list[AgentSpec] = []
+    visited: set[str] = set()
+    on_stack: set[str] = set()
+
+    def visit(a: AgentSpec) -> None:
+        if a.id in visited or a.id in on_stack:
+            return
+        on_stack.add(a.id)
+        for dep in a.depends_on:
+            if dep in by_id:
+                visit(by_id[dep])
+        on_stack.discard(a.id)
+        visited.add(a.id)
+        order.append(a)
+
+    for a in agents:
+        visit(a)
+    return order
+
+
+def _spec_dict(a: AgentSpec) -> dict:
+    return {"id": a.id, "role": a.role, "goal": a.goal,
+            "capabilities": a.capabilities, "depends_on": a.depends_on}
 
 
 class Orchestrator:
@@ -48,32 +78,58 @@ class Orchestrator:
         with self.tracer.span("plan", "planner"):
             plan = await self.planner.plan(objective)
         self.blackboard.put("objective", objective)
-        plan_tasks = [
-            {"id": t.id, "description": t.description, "capability_need": t.capability_need}
-            for t in plan.tasks
-        ]
-        self.blackboard.put("plan", plan_tasks)
-        self.tracer.event("plan.created", "plan", status="info", tasks=plan_tasks)
+        roster = [_spec_dict(a) for a in plan.agents]
+        self.blackboard.put("plan", roster)
+        self.tracer.event("plan.created", "plan", status="info", agents=roster)
 
-        # Resolve each task; acquire any missing capability (build+verify+promote).
+        order = _topo_order(plan.agents)
+        outputs: dict[str, str] = {}
+
+        for spec in order:
+            caps = await self._acquire_caps(spec)
+            caps_server = build_caps_server(list(caps.values()), manager=self.manager) if caps else None
+            allowed = [f"mcp__caps__{name}" for name in caps]
+
+            self.tracer.event(
+                "agent.created", spec.id, status="info",
+                role=spec.role, goal=spec.goal,
+                capabilities=list(caps), depends_on=spec.depends_on,
+            )
+
+            upstream = {dep: outputs[dep] for dep in spec.depends_on if dep in outputs}
+            options = factory.locked_session(
+                system_prompt=factory.agent_system_prompt(spec, allowed),
+                mcp_servers={"caps": caps_server} if caps_server else {},
+                allowed_tools=allowed,
+                model=self.model,
+                max_turns=10,
+            )
+
+            from .observability import trace_query
+
+            out = await trace_query(
+                self.tracer, spec.id, factory.agent_user_prompt(objective, spec, upstream), options
+            )
+            outputs[spec.id] = out
+            self.blackboard.put(f"output:{spec.id}", out)
+
+        answer = outputs.get(order[-1].id, "") if order else "No agents were produced."
+        self.blackboard.put("answer", answer)
+        return answer or "(no answer produced)"
+
+    async def _acquire_caps(self, spec: AgentSpec) -> dict[str, Capability]:
         caps: dict[str, Capability] = {}
-        for task in plan.tasks:
-            with self.tracer.span("task.resolve", task.id, capability_need=task.capability_need):
-                decision = self.resolver.resolve(task)
+        for need in spec.capabilities:
+            with self.tracer.span("resolve", need, agent=spec.id):
+                decision = self.resolver.resolve(need)
                 if decision.kind == REUSE and decision.capability is not None:
-                    self.tracer.event(
-                        "decision", task.id, status="info",
-                        choice="reuse", capability=decision.capability.name,
-                        reason="already in registry, verified",
-                    )
+                    self.tracer.event("decision", need, status="info",
+                                      choice="reuse", capability=decision.capability.name, agent=spec.id)
                     caps[decision.capability.name] = decision.capability
-                    self.blackboard.put(
-                        f"decision:{task.id}", {"kind": "reuse", "capability": decision.capability.name}
-                    )
                 elif decision.kind == CREATE and decision.capability_need:
                     builder = make_builder_agent(self.model, self.tracer) if self.use_builder else None
                     cap = await acquire(
-                        decision.capability_need,
+                        need,
                         manager=self.manager,
                         registry=self.registry,
                         broker=self.broker,
@@ -81,32 +137,4 @@ class Orchestrator:
                         tracer=self.tracer,
                     )
                     caps[cap.name] = cap
-                    self.blackboard.put(f"decision:{task.id}", {"kind": "create", "capability": cap.name})
-                else:
-                    self.tracer.event("decision", task.id, status="info", choice="noop")
-                    self.blackboard.put(f"decision:{task.id}", {"kind": NOOP})
-
-        if not caps:
-            answer = "No external capability was required for this objective."
-            self.blackboard.put("answer", answer)
-            return answer
-
-        # Execute: a researcher agent answers the objective using the capabilities.
-        caps_server = build_caps_server(list(caps.values()), manager=self.manager)
-        allowed = [f"mcp__caps__{name}" for name in caps]
-        answer = await self._run_researcher(objective, caps_server, allowed)
-        self.blackboard.put("answer", answer)
-        return answer
-
-    async def _run_researcher(self, objective: str, caps_server, allowed: list[str]) -> str:
-        from .observability import trace_query
-
-        options = factory.locked_session(
-            system_prompt=factory.RESEARCHER_PROMPT,
-            mcp_servers={"caps": caps_server},
-            allowed_tools=allowed,
-            model=self.model,
-            max_turns=8,
-        )
-        answer = await trace_query(self.tracer, "researcher", objective, options)
-        return answer or "(no answer produced)"
+        return caps

@@ -1,28 +1,20 @@
-"""Agent-session factory: locked-down ClaudeAgentOptions per role.
+"""Agent-session factory: dynamic agents, hard-confined.
 
-Every agent session is hard-confined:
-  * ``tools=[]``            — no built-in/host tools in context (no Bash, Write,
-                              Read, Edit, and no ``Agent`` tool => no recursion).
-  * ``permission_mode="dontAsk"`` — anything not pre-approved is denied outright,
-                              with no prompt that could misfire.
-  * ``allowed_tools=[...]`` — exactly the MCP capability/structured tools we hand it.
-  * ``setting_sources=[]``  — no host permission rules (~/.claude, project) leak in.
-
-The result: an agent's only reachable action is calling one of its provided MCP
-tools, which the orchestrator runs inside a sandbox container.
+Two parts:
+  * ``locked_session`` — builds a ClaudeAgentOptions that is hard-confined:
+    ``tools=[]`` (no host/built-in tools, no ``Agent`` => no recursion),
+    ``permission_mode="dontAsk"`` (anything not allow-listed is denied),
+    ``setting_sources=[]`` (no host permission rules leak in), and only the MCP
+    capability tools we hand it.
+  * ``agent_system_prompt`` / ``agent_user_prompt`` — synthesize the persona and
+    task prompt for an agent from its :class:`~brain.models.AgentSpec`, so agent
+    instructions are derived per task rather than hardcoded.
 """
 from __future__ import annotations
 
 from typing import Iterable, Optional
 
-RESEARCHER_PROMPT = (
-    "You are a research agent inside a fully isolated, sandboxed system. You can ONLY act "
-    "by calling the capability tools provided to you (their names start with `mcp__caps__`). "
-    "You have no shell, no filesystem, and no other tools. Use the web_search capability to "
-    "gather live information relevant to the user's objective, then write a concise answer and "
-    "cite the source URLs you relied on. If a capability returns an error, report it plainly — "
-    "never fabricate results."
-)
+from .models import AgentSpec
 
 
 def locked_session(
@@ -31,7 +23,7 @@ def locked_session(
     mcp_servers: dict,
     allowed_tools: Iterable[str],
     model: Optional[str] = None,
-    max_turns: int = 8,
+    max_turns: int = 10,
 ):
     """Build a hard-confined ClaudeAgentOptions for an agent session."""
     from claude_agent_sdk import ClaudeAgentOptions
@@ -46,3 +38,42 @@ def locked_session(
         model=model,
         max_turns=max_turns,
     )
+
+
+def agent_system_prompt(spec: AgentSpec, allowed_tools: list[str]) -> str:
+    """Synthesize an agent's persona/instructions from its spec."""
+    lines = [
+        f'You are the "{spec.role}" agent in a self-organizing, sandboxed multi-agent system.',
+        f"Your goal: {spec.goal}",
+    ]
+    if allowed_tools:
+        lines.append(
+            "You can act ONLY by calling these capability tools: "
+            + ", ".join(allowed_tools)
+            + ". You have no shell, no filesystem, and no other tools."
+        )
+    else:
+        lines.append(
+            "You have no tools. Produce your result using only the objective and the "
+            "context handed to you by upstream agents."
+        )
+    lines.append(
+        "Use only real data. If a tool returns an error, report it plainly and never "
+        "fabricate. When finished, output your result clearly and concisely; cite source "
+        "URLs if you used web search."
+    )
+    return "\n".join(lines)
+
+
+def agent_user_prompt(objective: str, spec: AgentSpec, upstream: dict[str, str]) -> str:
+    """Build the per-agent task prompt, injecting upstream agents' outputs."""
+    parts = [
+        f"Overall objective: {objective}",
+        f"Your task ({spec.role}): {spec.goal}",
+    ]
+    if upstream:
+        parts.append("\nContext from upstream agents:")
+        for dep, out in upstream.items():
+            parts.append(f"\n[{dep}]:\n{out}")
+    parts.append("\nProduce your result now.")
+    return "\n".join(parts)
