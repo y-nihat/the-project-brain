@@ -62,7 +62,11 @@ them directly in your editor). `data/` is git-ignored (runtime state).
 | Human-readable run timeline | `data/runs/<run_id>/trace.md` |
 | Live/tailable event stream | `data/runs/<run_id>/trace.jsonl` |
 | Queryable store (runs, events, ledger, registry, blackboard) | `data/brain.db` |
-| Promoted capabilities (manifest + build context) | `capabilities_store/<name>/` |
+| Promoted reusable tools (manifest + build context) | `data/capabilities/<name>/` |
+| Tools a run created (agent attempt + promoted scripts) | `data/runs/<run_id>/artifacts/<capability>/` |
+
+Everything generated lives under `data/` (an **output**, git-ignored) — kept separate from the
+engine source in `brain/`. A run never writes to tracked files.
 
 ## How others will use it (planned — **not built yet**, milestone M2)
 
