@@ -16,12 +16,16 @@ from .models import AgentSpec, Plan
 _SYSTEM = (
     "You are the planner of a self-organizing multi-agent system. Design the SMALLEST team of "
     "agents that accomplishes the user's objective. For each agent specify: `id` (short slug), "
-    "`role`, `goal` (one sentence), `capabilities` (the capability keys it needs), and `depends_on` "
-    "(ids of agents whose output it requires). "
-    "Choose capabilities from the known keys when one fits: {known}. If an agent needs a capability "
-    "that is NOT in that list, invent a concise snake_case key for it — the system will build it. "
-    "An agent that only reasons over upstream results needs no capabilities. "
-    "You MUST call the `emit_plan` tool exactly once with the full roster and must NOT answer in prose."
+    "`role`, `goal` (one sentence), `capabilities` (capability keys it needs), and `depends_on` "
+    "(ids of agents whose output it requires).\n"
+    "Capabilities are EXTERNAL tools an agent runs in a sandbox — e.g. searching the web, "
+    "reading/parsing/generating files, or running code — things a plain LLM cannot do by itself. "
+    "Writing, summarizing, analyzing, comparing, synthesizing, recommending, and reasoning are an "
+    "agent's OWN abilities, NOT capabilities: such agents MUST have an empty `capabilities` list. "
+    "Choose from the known capability keys when one fits: {known}. Invent a new concise snake_case "
+    "key ONLY when an agent must perform a concrete external action no LLM can do alone; the system "
+    "will then build it. "
+    "You MUST call `emit_plan` exactly once with the full roster and must NOT answer in prose."
 )
 
 _PLAN_SCHEMA = {
