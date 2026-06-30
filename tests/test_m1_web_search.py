@@ -15,7 +15,7 @@ import pytest
 from brain import acquisition, config
 from brain.approval import ApprovalBroker
 from brain.ledger import Ledger
-from brain.models import CREATE, NOOP, REUSE, Task
+from brain.models import CREATE, NOOP, REUSE, AgentSpec
 from brain.registry import Registry
 from brain.resolver import Resolver
 
@@ -47,15 +47,15 @@ def test_resolver_reuse_vs_create(tmp_path):
     resolver = Resolver(reg)
     try:
         # Unknown capability -> CREATE.
-        assert resolver.resolve(Task("t1", "x", "web_search")).kind == CREATE
+        assert resolver.resolve("web_search").kind == CREATE
         # A verified capability in the registry -> REUSE.
         cap = acquisition.web_search_capability()
         cap.verified = True
         reg.add(cap)
-        decision = resolver.resolve(Task("t1", "x", "web_search"))
+        decision = resolver.resolve("web_search")
         assert decision.kind == REUSE and decision.capability.name == "web_search"
         # No capability need -> NOOP.
-        assert resolver.resolve(Task("t2", "x", None)).kind == NOOP
+        assert resolver.resolve(None).kind == NOOP
     finally:
         reg.close()
 
@@ -137,7 +137,14 @@ def test_m1_end_to_end(tmp_path):
     bb = Blackboard(tmp_path / "b.db", "m1-e2e")
     mgr = SandboxManager("m1-e2e", ledger)
     broker = ApprovalBroker(auto="deny")
-    planner = StubPlanner([Task("t1", "find live info", "web_search")])
+    planner = StubPlanner([
+        AgentSpec(id="researcher", role="researcher",
+                  goal="find what site reliability engineering is, using web search",
+                  capabilities=["web_search"]),
+        AgentSpec(id="writer", role="writer",
+                  goal="write a two-sentence summary from the researcher's findings",
+                  capabilities=[], depends_on=["researcher"]),
+    ])
     resolver = Resolver(reg)
     orch = Orchestrator(
         session="m1-e2e",
@@ -152,12 +159,14 @@ def test_m1_end_to_end(tmp_path):
         use_builder=False,  # deterministic recipe path for the test
     )
     try:
-        answer = asyncio.run(orch.run("What is site reliability engineering? Use web search."))
+        answer = asyncio.run(orch.run("Explain site reliability engineering."))
         assert answer and "(no answer" not in answer
         assert reg.get("web_search").verified
         assert ledger.find_leaks("m1-e2e") == []
-        # Second time around, the capability is reused (no rebuild).
-        assert resolver.resolve(Task("t1", "x", "web_search")).kind == REUSE
+        # Both agents ran and the writer received the researcher's output (shared context).
+        assert bb.get("output:researcher") and bb.get("output:writer")
+        # Capability reused on a fresh resolve (no rebuild).
+        assert resolver.resolve("web_search").kind == REUSE
     finally:
         mgr.close()
         ledger.close()
