@@ -8,9 +8,10 @@ spawn agents.
 """
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Optional
 
-from . import factory
+from . import config, factory
 from .acquisition import acquire, make_builder_agent
 from .capabilities.runtime import build_caps_server
 from .models import CREATE, REUSE, AgentSpec, Capability
@@ -82,12 +83,20 @@ class Orchestrator:
         self.blackboard.put("plan", roster)
         self.tracer.event("plan.created", "plan", status="info", agents=roster)
 
+        # Shared per-run workspace so file-producing tools can hand files to
+        # file-consuming tools across agents.
+        workspace = Path(config.RUNS_DIR) / self.session / "workspace"
+        workspace.mkdir(parents=True, exist_ok=True)
+
         order = _topo_order(plan.agents)
         outputs: dict[str, str] = {}
 
         for spec in order:
             caps = await self._acquire_caps(spec)
-            caps_server = build_caps_server(list(caps.values()), manager=self.manager) if caps else None
+            caps_server = (
+                build_caps_server(list(caps.values()), manager=self.manager, workspace=workspace)
+                if caps else None
+            )
             allowed = [f"mcp__caps__{name}" for name in caps]
 
             self.tracer.event(
