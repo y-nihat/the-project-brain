@@ -134,6 +134,8 @@ class Orchestrator:
                         registry=self.registry,
                         broker=self.broker,
                         builder=builder,
+                        description=f"{spec.role}: {spec.goal}",
+                        model=self.model,
                         tracer=self.tracer,
                     )
                     caps[cap.name] = cap
