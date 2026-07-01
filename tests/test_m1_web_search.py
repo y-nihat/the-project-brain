@@ -60,20 +60,79 @@ def test_resolver_reuse_vs_create(tmp_path):
         reg.close()
 
 
-def test_approval_gate_blocks_when_no_free_path(tmp_path):
-    """A need with no known free, keyless recipe must STOP at the approval gate."""
+def test_approval_gate_fires_when_tool_needs_credential(tmp_path):
+    """The brain authors novel tools; it STOPS at the gate only when a tool
+    fundamentally needs a credential/account/paid service (no free path)."""
     reg = Registry(tmp_path / "r.db", tmp_path / "store")
     broker = ApprovalBroker(auto="deny")
+
+    async def stub_developer(need_key, description, previous=None, error=None):
+        return {
+            "program": "print('x')",
+            "dockerfile": "FROM python:3.12-slim",
+            "command": ["python", "-B", "/app/tool.py"],
+            "input_schema": {"type": "object"},
+            "env_map": {},
+            "network": "bridge",
+            "sample_input": {},
+            "requires_credential": "Acme API key",
+        }
+
     try:
         with pytest.raises(acquisition.AcquisitionError):
-            asyncio.run(
-                acquisition.acquire("proprietary_thing", manager=None, registry=reg, broker=broker)
-            )
-        # The gate was consulted exactly once and the request was denied.
-        assert len(broker.log) == 1
-        assert broker.log[0][1] is False
+            asyncio.run(acquisition.acquire(
+                "premium_thing", manager=None, registry=reg, broker=broker, developer=stub_developer,
+            ))
+        # The gate was consulted exactly once and denied.
+        assert len(broker.log) == 1 and broker.log[0][1] is False
     finally:
         reg.close()
+
+
+@pytest.mark.skipif(not DOCKER, reason="Docker daemon not reachable")
+def test_author_novel_tool_at_runtime(tmp_path):
+    """The brain authors a NOVEL tool at runtime (developer writes Python) -> build
+    -> generic verify -> promote, with the script captured under the run."""
+    from brain.observability import Tracer
+    from brain.sandbox.manager import SandboxManager
+
+    reg = Registry(tmp_path / "r.db", tmp_path / "store")
+    ledger = Ledger(tmp_path / "l.db")
+    tracer = Tracer(tmp_path / "t.db", tmp_path / "runs")
+    run = tracer.start_run("author echo_tool")
+    mgr = SandboxManager("author", ledger, tracer=tracer)
+    broker = ApprovalBroker(auto="deny")  # a free tool must NOT consult the gate
+
+    program = "import json, os\nn = os.environ.get('N', '')\nprint(json.dumps({'echo': n}))\n"
+    dockerfile = "FROM python:3.12-slim\nWORKDIR /app\nCOPY tool.py /app/tool.py\n"
+
+    async def stub_developer(need_key, description, previous=None, error=None):
+        return {
+            "program": program,
+            "dockerfile": dockerfile,
+            "command": ["python", "-B", "/app/tool.py"],
+            "input_schema": {"type": "object", "properties": {"n": {"type": "string"}}},
+            "env_map": {"n": "N"},
+            "network": "none",
+            "sample_input": {"n": "hello"},
+            "requires_credential": None,
+        }
+
+    try:
+        cap = asyncio.run(acquisition.acquire(
+            "echo_tool", manager=mgr, registry=reg, broker=broker,
+            developer=stub_developer, description="echo the input string", tracer=tracer,
+        ))
+        assert cap.verified and reg.get("echo_tool").verified
+        assert broker.log == []                       # free path => gate not consulted
+        assert ledger.find_leaks("author") == []      # build + verify containers reaped
+        promoted = tmp_path / "runs" / run.run_id / "artifacts" / "echo_tool" / "promoted" / "tool.py"
+        assert promoted.exists()                       # authored script captured under the run
+    finally:
+        mgr.close()
+        ledger.close()
+        reg.close()
+        tracer.close()
 
 
 # --- needs Docker: build + verify + promote (free path, no model) ---------- #
