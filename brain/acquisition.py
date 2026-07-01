@@ -230,11 +230,14 @@ def _capability_from_submission(need_key: str, description: str, sub: dict) -> C
     )
 
 
-def _generic_verify(cap: Capability, sample_input: dict, manager) -> tuple[bool, str]:
-    """Generic acceptance: run the tool on a sample input; success = exit 0 and a
-    parseable, non-error JSON object on the last stdout line."""
+def _generic_verify(cap: Capability, sample_input: dict, sample_files: dict, manager) -> tuple[bool, str]:
+    """Generic acceptance: run the tool on a sample input (plus optional sample
+    files placed under /work/in); success = exit 0 and a parseable, non-error JSON
+    object on the last stdout line."""
+    args = dict(sample_input or {})
+    args.pop("files", None)  # reserved runtime arg, not an env input
     env = {}
-    for key, val in (sample_input or {}).items():
+    for key, val in args.items():
         if key in cap.env_map:
             if isinstance(val, str):
                 env[cap.env_map[key]] = val
@@ -242,9 +245,14 @@ def _generic_verify(cap: Capability, sample_input: dict, manager) -> tuple[bool,
                 env[cap.env_map[key]] = str(val)
             else:
                 env[cap.env_map[key]] = json.dumps(val)
+    input_files = {
+        name: (content.encode("utf-8") if isinstance(content, str) else bytes(content))
+        for name, content in (sample_files or {}).items()
+    }
     pol = policy.egress() if cap.network == "bridge" else policy.isolated()
     res = manager.run_ephemeral(
-        cap.image_tag, cap.command, policy=pol, capability=cap.name, environment=env, ttl=90
+        cap.image_tag, cap.command, policy=pol, capability=cap.name, environment=env,
+        input_files=input_files or None, capture_output_files=True, ttl=120,
     )
     if not res.ok:
         return (False, f"exit={res.exit_code} timed_out={res.timed_out}: {(res.stderr or '')[:300]}")
@@ -311,7 +319,8 @@ async def _author_capability(
 
             with tracer.span("capability.verify", cap.name) as vsp:
                 ok, detail = await asyncio.to_thread(
-                    _generic_verify, cap, sub.get("sample_input") or {}, manager
+                    _generic_verify, cap, sub.get("sample_input") or {},
+                    sub.get("sample_files") or {}, manager,
                 )
                 vsp.set(passed=ok, detail=detail, source="author")
                 if not ok:
@@ -400,21 +409,26 @@ _DEVELOPER_SYSTEM = (
     "runs inside an isolated Docker sandbox. Use ONLY free, open-source libraries that need NO API "
     "key or account.\n\n"
     "The tool contract (follow it exactly):\n"
-    "  * Read inputs from environment variables (you define env_map: arg_name -> ENV_VAR_NAME). "
-    "Env values are strings; JSON-decode any non-scalar argument. Optional input files appear under "
-    "/work/in/.\n"
-    "  * Print EXACTLY ONE JSON object as the LAST line of stdout. On failure, print "
-    '{"error": "<reason>"} and exit non-zero.\n'
-    "  * Write any output files under /work/out/. Exit 0 on success.\n\n"
+    "  * Scalar inputs come from environment variables (you define env_map: arg_name -> ENV_VAR_NAME). "
+    "Env values are strings; JSON-decode any non-scalar argument.\n"
+    "  * If your tool needs input FILES, read ALL files under /work/in/. To let callers attach files, "
+    "declare an argument named `files` (array of strings) in input_schema; the system places the "
+    "referenced files under /work/in/ (do NOT read `files` from the environment).\n"
+    "  * Write any OUTPUT files under /work/out/ (create the directory if needed).\n"
+    "  * ALWAYS print EXACTLY ONE JSON object as the LAST line of stdout summarizing the result "
+    "(e.g. the answer, or the list of files you created). On failure, print "
+    '{"error": "<reason>"} and exit non-zero. Exit 0 on success.\n\n'
     "Submit via the `submit_tool` tool with:\n"
     "  * program: the full Python source (saved as /app/tool.py).\n"
     "  * dockerfile: base python:3.12-slim, `pip install` the libs you need, and "
     "`COPY tool.py /app/tool.py`. Do NOT set ENTRYPOINT/CMD.\n"
     "  * command: how to run it, e.g. [\"python\", \"-B\", \"/app/tool.py\"].\n"
-    "  * input_schema: JSON schema of the tool's arguments.\n"
-    "  * env_map: object mapping each argument name to its ENV_VAR_NAME.\n"
-    "  * network: \"none\" if it needs no internet, \"bridge\" if it must reach the internet.\n"
-    "  * sample_input: a concrete arguments object that should make the tool succeed (used to verify it).\n"
+    "  * input_schema: JSON schema of the tool's arguments (include `files` if it consumes files).\n"
+    "  * env_map: object mapping each scalar argument name to its ENV_VAR_NAME.\n"
+    "  * network: \"none\" if the tool needs no internet while running, \"bridge\" if it does.\n"
+    "  * sample_input: concrete arguments that should make the tool succeed (used to verify it).\n"
+    "  * sample_files: an optional map {filename: text_content} placed under /work/in/ so a "
+    "file-consuming tool can be verified.\n"
     "  * requires_credential: set to a short string ONLY IF the tool fundamentally needs an API "
     "key/account/paid service (no free path); otherwise null.\n\n"
     "Prefer well-known, currently-maintained libraries. You MUST call `submit_tool` exactly once and "
@@ -431,6 +445,7 @@ _SUBMIT_TOOL_SCHEMA = {
         "env_map": {"type": "object"},
         "network": {"type": "string", "enum": ["none", "bridge"]},
         "sample_input": {"type": "object"},
+        "sample_files": {"type": "object"},
         "requires_credential": {"type": ["string", "null"]},
     },
     "required": ["program", "dockerfile", "command", "input_schema", "env_map", "network", "sample_input"],
