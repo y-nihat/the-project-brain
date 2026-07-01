@@ -135,6 +135,55 @@ def test_author_novel_tool_at_runtime(tmp_path):
         tracer.close()
 
 
+@pytest.mark.skipif(not DOCKER, reason="Docker daemon not reachable")
+def test_author_file_consuming_tool(tmp_path):
+    """The brain authors a tool that reads files from /work/in and is verified with
+    sample_files (the file-handling authoring path)."""
+    from brain.observability import Tracer
+    from brain.sandbox.manager import SandboxManager
+
+    reg = Registry(tmp_path / "r.db", tmp_path / "store")
+    ledger = Ledger(tmp_path / "l.db")
+    tracer = Tracer(tmp_path / "t.db", tmp_path / "runs")
+    tracer.start_run("author combiner")
+    mgr = SandboxManager("author-file", ledger, tracer=tracer)
+    broker = ApprovalBroker(auto="deny")
+
+    program = (
+        "import json, glob\n"
+        "parts = [open(p).read() for p in sorted(glob.glob('/work/in/*'))]\n"
+        "print(json.dumps({'combined': '|'.join(parts)}))\n"
+    )
+    dockerfile = "FROM python:3.12-slim\nWORKDIR /app\nCOPY tool.py /app/tool.py\n"
+
+    async def stub_developer(need_key, description, previous=None, error=None):
+        return {
+            "program": program,
+            "dockerfile": dockerfile,
+            "command": ["python", "-B", "/app/tool.py"],
+            "input_schema": {"type": "object",
+                             "properties": {"files": {"type": "array", "items": {"type": "string"}}}},
+            "env_map": {},
+            "network": "none",
+            "sample_input": {"files": ["a.txt", "b.txt"]},
+            "sample_files": {"a.txt": "A", "b.txt": "B"},
+            "requires_credential": None,
+        }
+
+    try:
+        cap = asyncio.run(acquisition.acquire(
+            "combiner", manager=mgr, registry=reg, broker=broker,
+            developer=stub_developer, description="combine input files", tracer=tracer,
+        ))
+        assert cap.verified and reg.get("combiner").verified
+        assert ledger.find_leaks("author-file") == []
+    finally:
+        mgr.close()
+        ledger.close()
+        reg.close()
+        tracer.close()
+
+
 # --- needs Docker: build + verify + promote (free path, no model) ---------- #
 @pytest.mark.skipif(not DOCKER, reason="Docker daemon not reachable")
 def test_acquire_verify_promote_web_search(tmp_path):
