@@ -62,3 +62,29 @@ def test_locked_down_sandbox_roundtrip(tmp_path):
     finally:
         mgr.close()
         ledger.close()
+
+
+def test_file_io_roundtrip(tmp_path):
+    """A file slides in (/work/in), the tool transforms it, and the result comes
+    back out (/work/out) — the 'loading door' for file-based tools."""
+    ledger = Ledger(tmp_path / "fileio.db")
+    mgr = SandboxManager("phase0-fileio", ledger)
+    try:
+        code = (
+            "import os; os.makedirs('/work/out', exist_ok=True); "
+            "open('/work/out/greeting.txt','w').write('hello ' + open('/work/in/name.txt').read())"
+        )
+        result = mgr.run_ephemeral(
+            "python:3.12-slim",
+            ["python", "-c", code],
+            policy=policy.isolated(),  # network: none
+            capability="fileio",
+            input_files={"name.txt": b"world"},
+            capture_output_files=True,
+        )
+        assert result.exit_code == 0, result.stderr
+        assert result.output_files.get("greeting.txt") == b"hello world"
+        assert ledger.find_leaks("phase0-fileio") == []
+    finally:
+        mgr.close()
+        ledger.close()
