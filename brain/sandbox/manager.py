@@ -15,7 +15,7 @@ from __future__ import annotations
 import io
 import tarfile
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Optional
 
 import docker
@@ -28,6 +28,35 @@ from . import policy as policy_mod
 LABEL_PREFIX = "brain"
 
 
+def _make_tar(files: dict) -> bytes:
+    """Pack {member_path: bytes} into a tar for ``container.put_archive``."""
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w") as tar:
+        for name, data in files.items():
+            info = tarfile.TarInfo(name=name)
+            info.size = len(data)
+            info.mtime = int(time.time())
+            tar.addfile(info, io.BytesIO(data))
+    return buf.getvalue()
+
+
+def _extract_tar(raw: bytes, strip_prefix: str = "") -> dict:
+    """Unpack a tar (from ``container.get_archive``) into {name: bytes}."""
+    out: dict = {}
+    with tarfile.open(fileobj=io.BytesIO(raw), mode="r") as tar:
+        for member in tar.getmembers():
+            if not member.isfile():
+                continue
+            handle = tar.extractfile(member)
+            if handle is None:
+                continue
+            name = member.name
+            if strip_prefix and name.startswith(strip_prefix):
+                name = name[len(strip_prefix):]
+            out[name] = handle.read()
+    return out
+
+
 @dataclass
 class RunResult:
     container_id: str
@@ -35,6 +64,7 @@ class RunResult:
     stdout: str
     stderr: str
     timed_out: bool
+    output_files: dict = field(default_factory=dict)
 
     @property
     def ok(self) -> bool:
@@ -115,6 +145,8 @@ class SandboxManager:
         environment: Optional[dict] = None,
         labels: Optional[dict] = None,
         ttl: Optional[int] = None,
+        input_files: Optional[dict] = None,
+        capture_output_files: bool = False,
     ) -> RunResult:
         pol = policy or policy_mod.isolated()
         ttl = ttl if ttl is not None else pol.ttl_seconds
@@ -134,6 +166,14 @@ class SandboxManager:
             if environment:
                 env.update(environment)
 
+            files_mode = bool(input_files) or capture_output_files
+            kwargs = pol.docker_kwargs()
+            if files_mode:
+                # Files can't survive a tmpfs / read-only /work, so make /work a
+                # normal writable dir in the rootfs to inject and collect files.
+                kwargs["read_only"] = False
+                kwargs["tmpfs"] = {"/tmp": "size=64m,mode=1777"}
+
             container = self.client.containers.create(
                 image,
                 command,
@@ -141,7 +181,7 @@ class SandboxManager:
                 environment=env,
                 labels=self._labels(capability, labels),
                 working_dir="/work",
-                **pol.docker_kwargs(),
+                **kwargs,
             )
             sp.set(ledger_id=container.id)
             self.ledger.record_start(
@@ -156,7 +196,12 @@ class SandboxManager:
             timed_out = False
             exit_code: Optional[int] = None
             stdout = stderr = ""
+            output_files: dict = {}
             try:
+                if input_files:
+                    container.put_archive(
+                        "/", _make_tar({f"work/in/{n}": d for n, d in input_files.items()})
+                    )
                 container.start()
                 try:
                     exit_code = container.wait(timeout=ttl).get("StatusCode")
@@ -168,6 +213,12 @@ class SandboxManager:
                         container.kill()
                     except Exception:
                         pass
+                if capture_output_files:
+                    try:
+                        bits, _ = container.get_archive("/work/out")
+                        output_files = _extract_tar(b"".join(bits), strip_prefix="out/")
+                    except Exception:
+                        output_files = {}
                 try:
                     stdout = container.logs(stdout=True, stderr=False).decode("utf-8", "replace")
                     stderr = container.logs(stdout=False, stderr=True).decode("utf-8", "replace")
@@ -190,6 +241,7 @@ class SandboxManager:
             stdout=stdout,
             stderr=stderr,
             timed_out=timed_out,
+            output_files=output_files,
         )
 
     # -- teardown --------------------------------------------------------- #
