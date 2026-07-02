@@ -64,6 +64,15 @@ them directly in your editor). `data/` is git-ignored (runtime state).
 | Queryable store (runs, events, ledger, registry, blackboard) | `data/brain.db` |
 | Promoted reusable tools (manifest + build context) | `data/capabilities/<name>/` |
 | Tools a run created (agent attempt + promoted scripts) | `data/runs/<run_id>/artifacts/<capability>/` |
+| **Each agent's full output** | `data/runs/<run_id>/outputs/<agent>.md` (+ `ANSWER.md` = final answer) |
+| **Each agent's exact system prompt** | `data/runs/<run_id>/agents/<agent>.prompt.md` |
+| Files produced by tools (incl. nested project trees) | `data/runs/<run_id>/workspace/` |
+
+**Continuity:** runs are not amnesiac. Before planning, the brain assembles relevant prior-run
+context (objectives, outcomes, produced files, capabilities created) and hands it to the planner
+and agents; the most relevant prior run's workspace files are seeded under `workspace/prior/` so
+follow-up tasks can build on earlier deliverables. (Semantic retrieval and a 24/7 service mode are
+future milestones on this foundation.)
 
 Everything generated lives under `data/` (an **output**, git-ignored) — kept separate from the
 engine source in `brain/`. A run never writes to tracked files.
