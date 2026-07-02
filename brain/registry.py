@@ -28,9 +28,22 @@ CREATE TABLE IF NOT EXISTS capabilities (
     network      TEXT,
     tags         TEXT,   -- json list
     verified     INTEGER,
-    created_at   TEXT
+    created_at   TEXT,
+    memory_mb    INTEGER,
+    cpus         REAL,
+    timeout_seconds INTEGER
 );
 """
+
+# Columns added after the original schema; applied to pre-existing databases.
+_MIGRATIONS = {"memory_mb": "INTEGER", "cpus": "REAL", "timeout_seconds": "INTEGER"}
+
+
+def _migrate(conn: sqlite3.Connection, table: str, columns: dict[str, str]) -> None:
+    have = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+    for name, decl in columns.items():
+        if name not in have:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {decl}")
 
 
 class Registry:
@@ -44,6 +57,7 @@ class Registry:
         self._conn.row_factory = sqlite3.Row
         with self._conn:
             self._conn.executescript(_SCHEMA)
+            _migrate(self._conn, "capabilities", _MIGRATIONS)
 
     def _row_to_cap(self, r: sqlite3.Row) -> Capability:
         return Capability(
@@ -57,6 +71,9 @@ class Registry:
             version=r["version"],
             tags=json.loads(r["tags"]),
             verified=bool(r["verified"]),
+            memory_mb=r["memory_mb"],
+            cpus=r["cpus"],
+            timeout_seconds=r["timeout_seconds"],
         )
 
     def get(self, name: str) -> Optional[Capability]:
@@ -75,8 +92,9 @@ class Registry:
         with self._lock, self._conn:
             self._conn.execute(
                 "INSERT OR REPLACE INTO capabilities "
-                "(name, version, description, image_tag, command, input_schema, env_map, network, tags, verified, created_at) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                "(name, version, description, image_tag, command, input_schema, env_map, network, "
+                " tags, verified, created_at, memory_mb, cpus, timeout_seconds) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (
                     cap.name,
                     cap.version,
@@ -89,6 +107,9 @@ class Registry:
                     json.dumps(cap.tags),
                     int(cap.verified),
                     _dt.datetime.now(_dt.timezone.utc).isoformat(),
+                    cap.memory_mb,
+                    cap.cpus,
+                    cap.timeout_seconds,
                 ),
             )
         # Persist a manifest + build context for reproducibility/audit.

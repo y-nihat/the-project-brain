@@ -20,6 +20,10 @@ class Capability:
     version: str = "1.0.0"
     tags: list[str] = field(default_factory=list)
     verified: bool = False
+    # Declared resource needs (clamped to engine ceilings at run time; None => defaults).
+    memory_mb: Optional[int] = None
+    cpus: Optional[float] = None
+    timeout_seconds: Optional[int] = None
 
 
 @dataclass

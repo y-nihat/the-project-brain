@@ -223,6 +223,15 @@ async def _acquire_from_recipe(
 # Runtime authoring path (the self-acquire pillar)
 # --------------------------------------------------------------------------- #
 def _capability_from_submission(need_key: str, description: str, sub: dict) -> Capability:
+    resources = sub.get("resources") or {}
+
+    def _num(key, conv):
+        try:
+            v = resources.get(key)
+            return conv(v) if v else None
+        except (TypeError, ValueError):
+            return None
+
     return Capability(
         name=need_key,
         description=(description or need_key)[:500],
@@ -233,6 +242,9 @@ def _capability_from_submission(need_key: str, description: str, sub: dict) -> C
         network="bridge" if sub.get("network") == "bridge" else "none",
         tags=["authored"],
         verified=False,
+        memory_mb=_num("memory_mb", int),
+        cpus=_num("cpus", float),
+        timeout_seconds=_num("timeout_seconds", int),
     )
 
 
@@ -256,12 +268,20 @@ def _generic_verify(cap: Capability, sample_input: dict, sample_files: dict, man
         name: (content.encode("utf-8") if isinstance(content, str) else bytes(content))
         for name, content in (sample_files or {}).items()
     }
-    pol = policy.egress() if cap.network == "bridge" else policy.isolated()
+    pol = policy.for_capability(cap.memory_mb, cap.cpus, cap.timeout_seconds, cap.network)
     res = manager.run_ephemeral(
         cap.image_tag, cap.command, policy=pol, capability=cap.name, environment=env,
-        input_files=input_files or None, capture_output_files=True, ttl=120,
+        input_files=input_files or None, capture_output_files=True,
     )
     if not res.ok:
+        if res.oom:
+            detail = (
+                f"KILLED: the container exceeded its memory limit ({pol.mem}) and was OOM-killed "
+                "by the kernel — no traceback exists for this failure mode. Reduce memory use "
+                "(smaller model/library, streaming instead of loading everything) or declare "
+                "higher `resources.memory_mb` (the engine clamps to its ceiling)."
+            )
+            return (False, detail, res)
         detail = (
             f"exit={res.exit_code} timed_out={res.timed_out}; "
             f"stderr (tail): {_error_tail(res.stderr, 1200)}; "
@@ -449,6 +469,11 @@ _DEVELOPER_SYSTEM = (
     "  * sample_input: concrete arguments that should make the tool succeed (used to verify it).\n"
     "  * sample_files: an optional map {filename: text_content} placed under /work/in/ so a "
     "file-consuming tool can be verified.\n"
+    "  * resources: optional {memory_mb, cpus, timeout_seconds} — declare HONESTLY what the tool "
+    "needs. Defaults are 256 MB / 0.5 CPU / 120 s; the engine clamps declarations to hard ceilings "
+    "(2048 MB / 2 CPU / 300 s). Memory is a HARD cap with no swap: exceeding it means the kernel "
+    "KILLS the process with no traceback. Model-loading libraries (torch, transformers) need "
+    "1024+ MB — declare it.\n"
     "  * requires_credential: set to a short string ONLY IF the tool fundamentally needs an API "
     "key/account/paid service (no free path); otherwise null.\n\n"
     "Sandbox facts (respect these — they are why tools fail):\n"
@@ -481,6 +506,14 @@ _SUBMIT_TOOL_SCHEMA = {
         "network": {"type": "string", "enum": ["none", "bridge"]},
         "sample_input": {"type": "object"},
         "sample_files": {"type": "object"},
+        "resources": {
+            "type": "object",
+            "properties": {
+                "memory_mb": {"type": "integer"},
+                "cpus": {"type": "number"},
+                "timeout_seconds": {"type": "integer"},
+            },
+        },
         "requires_credential": {"type": ["string", "null"]},
     },
     "required": ["program", "dockerfile", "command", "input_schema", "env_map", "network", "sample_input"],

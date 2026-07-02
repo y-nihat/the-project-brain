@@ -59,7 +59,7 @@ def build_caps_server(
                     if p.exists() and p.is_file():
                         input_files[p.name] = p.read_bytes()
 
-            pol = policy.egress() if cap.network == "bridge" else policy.isolated()
+            pol = policy.for_capability(cap.memory_mb, cap.cpus, cap.timeout_seconds, cap.network)
             result = await asyncio.to_thread(
                 manager.run_ephemeral,
                 cap.image_tag,
@@ -72,12 +72,16 @@ def build_caps_server(
             )
 
             if not result.ok:
+                if result.oom:
+                    reason = (f"the tool exceeded its memory limit ({pol.mem}) and was killed; "
+                              "try a smaller input or report this limitation")
+                else:
+                    reason = (f"exit={result.exit_code}, timed_out={result.timed_out}: "
+                              f"{result.stderr[-800:]}")
                 return {
                     "content": [{
                         "type": "text",
-                        "text": (f"capability '{cap.name}' failed "
-                                 f"(exit={result.exit_code}, timed_out={result.timed_out}): "
-                                 f"{result.stderr[:800]}"),
+                        "text": f"capability '{cap.name}' failed — {reason}",
                     }],
                     "is_error": True,
                 }
@@ -94,6 +98,8 @@ def build_caps_server(
             if produced:
                 text += ("\n\nProduced files (pass these paths as `files` to a downstream tool): "
                          + json.dumps(produced))
+            if result.error_note:
+                text += f"\n\n[engine note] {result.error_note}"
             return {"content": [{"type": "text", "text": text}]}
 
         return handler
