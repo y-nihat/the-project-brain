@@ -14,6 +14,7 @@ Design:
 """
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import contextvars
 import datetime as _dt
@@ -215,6 +216,16 @@ class Tracer:
             return Path(tempfile.mkdtemp())
         return self._run.artifact_path(*parts)
 
+    def abort_stale_runs(self) -> int:
+        """Mark any 'running' runs as aborted — a previous process died mid-run
+        (only one session runs at a time, so a pre-existing 'running' row is a lie)."""
+        with self._lock, self._conn:
+            cur = self._conn.execute(
+                "UPDATE runs SET status='aborted', finished_at=? WHERE status='running'",
+                (_utcnow(),),
+            )
+            return cur.rowcount
+
     # -- low-level writes ------------------------------------------------- #
     def _insert(self, run_id: str, *, kind: str, name: str, status: str, parent_id: Optional[str], data: dict) -> str:
         eid = _new_id("ev")
@@ -351,18 +362,74 @@ class Run:
 # --------------------------------------------------------------------------- #
 # Instrumented agent session
 # --------------------------------------------------------------------------- #
-async def trace_query(tracer, name: str, prompt, options) -> str:
+class AgentStallError(RuntimeError):
+    """An agent session stopped making progress or blew its total budget."""
+
+
+async def _iter_with_watchdog(ait, stall_s: float, total_s: float, label: str):
+    """Yield from an async iterator under a watchdog.
+
+    Raises :class:`AgentStallError` when no item arrives within ``stall_s``
+    (a stall — e.g. a hung SDK call or a rate-limited backend) or when the whole
+    iteration exceeds ``total_s``. The underlying iterator is closed on exit.
+    """
+    start = time.monotonic()
+    it = ait.__aiter__()
+    try:
+        while True:
+            elapsed = time.monotonic() - start
+            remaining = total_s - elapsed
+            if remaining <= 0:
+                raise AgentStallError(
+                    f"{label} exceeded its total session budget ({int(total_s)}s)"
+                )
+            wait = min(stall_s, remaining)
+            try:
+                msg = await asyncio.wait_for(it.__anext__(), timeout=wait)
+            except asyncio.TimeoutError:
+                if wait < stall_s:  # the wait was budget-limited, not a stall
+                    raise AgentStallError(
+                        f"{label} exceeded its total session budget ({int(total_s)}s)"
+                    ) from None
+                raise AgentStallError(
+                    f"{label}: no activity for {int(wait)}s "
+                    f"(stall watchdog; {int(elapsed)}s elapsed in session)"
+                ) from None
+            except StopAsyncIteration:
+                return
+            yield msg
+    finally:
+        aclose = getattr(it, "aclose", None)
+        if aclose is not None:
+            try:
+                await aclose()
+            except Exception:
+                pass
+
+
+async def trace_query(tracer, name: str, prompt, options, *,
+                      stall_timeout: Optional[float] = None,
+                      total_timeout: Optional[float] = None) -> str:
     """Run an SDK ``query()`` inside an ``agent.session`` span, emitting a
-    ``agent.tool_call`` event per tool use and capturing the final text + usage.
+    ``agent.tool_call`` event per tool use and capturing the final text + usage —
+    under a watchdog so a stalled session fails loudly instead of hanging.
 
     Token/cost field names are read defensively (``getattr``/dict) so we tolerate
     SDK version differences.
     """
     from claude_agent_sdk import query  # lazy: keep module importable without the SDK
 
+    from .. import config
+
+    stall = stall_timeout if stall_timeout is not None else config.AGENT_STALL_TIMEOUT
+    total = total_timeout if total_timeout is not None else config.AGENT_TOTAL_TIMEOUT
+
     final = ""
     with tracer.span("agent.session", name) as sp:
-        async for message in query(prompt=prompt, options=options):
+        stream = _iter_with_watchdog(
+            query(prompt=prompt, options=options), stall, total, f"agent '{name}'"
+        )
+        async for message in stream:
             _maybe_emit_tool_calls(tracer, message)
             _maybe_capture_result(sp, message)
             text = getattr(message, "result", None)

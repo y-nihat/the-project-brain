@@ -84,3 +84,8 @@ SANDBOX_MAX_CPUS = float(os.environ.get("SANDBOX_MAX_CPUS", "2.0"))
 SANDBOX_MAX_TIMEOUT = int(os.environ.get("SANDBOX_MAX_TIMEOUT", "300"))
 # Cap on files captured back from /work/out (protects the orchestrator process).
 SANDBOX_MAX_OUTPUT_MB = int(os.environ.get("SANDBOX_MAX_OUTPUT_MB", "128"))
+
+# Watchdogs for agent (LLM) sessions: abort when no SDK message arrives for
+# AGENT_STALL_TIMEOUT seconds, or when a session exceeds AGENT_TOTAL_TIMEOUT.
+AGENT_STALL_TIMEOUT = float(os.environ.get("AGENT_STALL_TIMEOUT", "180"))
+AGENT_TOTAL_TIMEOUT = float(os.environ.get("AGENT_TOTAL_TIMEOUT", "900"))
