@@ -48,6 +48,24 @@ services:
     tty: true
     command: ["sleep", "infinity"]   # run commands with `docker compose exec brain ...`
 
+  # Optional interactive trace viewer (Arize Phoenix). Opt-in via profile:
+  #   docker compose -f docker/docker-compose.yml --profile observability up -d phoenix
+  # The brain's SQLite remains the source of truth; runs are pushed to Phoenix
+  # with `python -m brain.observability export ...`. Traces persist under
+  # data/phoenix (host bind-mount), so the viewer can be stopped anytime.
+  phoenix:
+    image: arizephoenix/phoenix:latest
+    profiles: ["observability"]
+    environment:
+      PHOENIX_WORKING_DIR: /mnt/data
+    ports:
+      - "6006:6006"     # UI + OTLP HTTP collector (/v1/traces)
+    volumes:
+      - ../data/phoenix:/mnt/data
+    mem_limit: 1g
+    cpus: 1.0
+    networks: [brainnet]
+
 networks:
   brainnet:
     driver: bridge

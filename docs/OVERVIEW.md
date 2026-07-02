@@ -68,6 +68,23 @@ them directly in your editor). `data/` is git-ignored (runtime state).
 Everything generated lives under `data/` (an **output**, git-ignored) — kept separate from the
 engine source in `brain/`. A run never writes to tracked files.
 
+## Interactive trace viewing (Arize Phoenix)
+
+The SQLite trace store under `data/` is the source of truth; any recorded run can be pushed to a
+local [Phoenix](https://github.com/Arize-ai/phoenix) viewer as OpenTelemetry traces (waterfall
+tree: who called whom, when, how long, tokens/cost, errors).
+
+```sh
+DC="docker compose -f docker/docker-compose.yml"
+$DC --profile observability up -d phoenix          # start the viewer (opt-in profile)
+$DC exec brain python -m brain.observability export --last   # or <run_id>, or --all
+# browse http://localhost:6006 — then stop everything:
+$DC --profile observability down
+```
+
+Phoenix's data persists under `data/phoenix/`, so the viewer can be stopped and restarted anytime
+without losing exported traces. It runs resource-capped (1 GB / 1 CPU) like everything else.
+
 ## Resource model (sandboxes are capped, measured, and cleaned up)
 
 - **Hard limits, no swap.** Every sandbox container gets `memory` (default 256 MB, swap disabled so

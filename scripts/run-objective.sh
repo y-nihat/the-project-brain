@@ -12,7 +12,8 @@ DC="docker compose -f docker/docker-compose.yml"
 
 cleanup() {
     echo "[run-objective] tearing the stack down..."
-    $DC down
+    # --profile observability so an opted-in Phoenix viewer is stopped too.
+    $DC --profile observability down
 }
 trap cleanup EXIT INT TERM
 
