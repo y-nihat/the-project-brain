@@ -13,6 +13,7 @@ from typing import Optional
 
 from . import config, factory
 from .acquisition import acquire, make_builder_agent
+from .acquisition import repair_capability as acquire_repair
 from .capabilities.runtime import build_caps_server
 from .models import CREATE, REUSE, AgentSpec, Capability
 
@@ -142,37 +143,15 @@ class Orchestrator:
 
         for spec in order:
             caps = await self._acquire_caps(spec)
-            caps_server = (
-                build_caps_server(list(caps.values()), manager=self.manager, workspace=workspace)
-                if caps else None
-            )
-            allowed = [f"mcp__caps__{name}" for name in caps]
-
             self.tracer.event(
                 "agent.created", spec.id, status="info",
                 role=spec.role, goal=spec.goal,
                 capabilities=list(caps), depends_on=spec.depends_on,
             )
-
             upstream = {dep: outputs[dep] for dep in spec.depends_on if dep in outputs}
-            system_prompt = factory.agent_system_prompt(spec, allowed)
-            options = factory.locked_session(
-                system_prompt=system_prompt,
-                mcp_servers={"caps": caps_server} if caps_server else {},
-                allowed_tools=allowed,
-                model=self.model,
-                max_turns=10,
-            )
-
-            from .observability import trace_query
-
-            out = await trace_query(
-                self.tracer, spec.id,
-                factory.agent_user_prompt(objective, spec, upstream, history=history), options,
-            )
+            out = await self._run_agent_with_reflection(spec, caps, objective, upstream, history, workspace)
             outputs[spec.id] = out
             self.blackboard.put(f"output:{spec.id}", out)
-            _persist_agent(config.RUNS_DIR, self.session, spec, system_prompt, out)
 
         answer = outputs.get(order[-1].id, "") if order else "No agents were produced."
         self.blackboard.put("answer", answer)
@@ -180,6 +159,59 @@ class Orchestrator:
         answer_dir.mkdir(parents=True, exist_ok=True)
         (answer_dir / "ANSWER.md").write_text(answer or "")
         return answer or "(no answer produced)"
+
+    async def _run_agent_with_reflection(self, spec, caps, objective, upstream, history, workspace) -> str:
+        """Run an agent; if a tool it relied on degrades at runtime, reflect —
+        repair that tool and re-run the agent — bounded, then best-effort."""
+        from .capabilities.health import HealthMonitor
+        from .observability import trace_query
+
+        allowed = [f"mcp__caps__{name}" for name in caps]
+        system_prompt = factory.agent_system_prompt(spec, allowed)
+        repairs = 0
+        out = ""
+        while True:
+            monitor = HealthMonitor()
+            caps_server = (
+                build_caps_server(list(caps.values()), manager=self.manager,
+                                  workspace=workspace, monitor=monitor, tracer=self.tracer)
+                if caps else None
+            )
+            options = factory.locked_session(
+                system_prompt=system_prompt,
+                mcp_servers={"caps": caps_server} if caps_server else {},
+                allowed_tools=allowed, model=self.model, max_turns=10,
+            )
+            out = await trace_query(
+                self.tracer, spec.id,
+                factory.agent_user_prompt(objective, spec, upstream, history=history), options,
+            )
+
+            # Reflect: did any tool this agent used degrade in practice?
+            sick = [(name, reason) for name in caps if (reason := monitor.unhealthy(name))]
+            if not sick or repairs >= config.CAPABILITY_MAX_REPAIRS_PER_RUN:
+                break
+            repaired_any = False
+            for name, reason in sick:
+                self.tracer.event("capability.unhealthy", name, status="failed",
+                                  reason=reason, stats=monitor.summary(name))
+                try:
+                    with self.tracer.span("capability.repair", name, reason=reason):
+                        new_cap = await acquire_repair(
+                            caps[name], reason, manager=self.manager, registry=self.registry,
+                            broker=self.broker, model=self.model, tracer=self.tracer,
+                        )
+                    caps[name] = new_cap
+                    repaired_any = True
+                except Exception as e:  # noqa: BLE001
+                    self.tracer.event("capability.repair", name, status="failed", error=str(e)[:300])
+            if not repaired_any:
+                break
+            repairs += 1
+            self.tracer.event("agent.rerun", spec.id, status="info", after_repair=repairs)
+
+        _persist_agent(config.RUNS_DIR, self.session, spec, system_prompt, out)
+        return out
 
     async def _acquire_caps(self, spec: AgentSpec) -> dict[str, Capability]:
         caps: dict[str, Capability] = {}
