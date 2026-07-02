@@ -75,3 +75,12 @@ class ResourceDefaults:
 
 
 RESOURCE_DEFAULTS = ResourceDefaults()
+
+# Engine ceilings for per-capability resource declarations. A tool may declare
+# what it needs; the engine clamps to these — never above, never unbounded.
+SANDBOX_MIN_MEM_MB = 64
+SANDBOX_MAX_MEM_MB = int(os.environ.get("SANDBOX_MAX_MEM_MB", "2048"))
+SANDBOX_MAX_CPUS = float(os.environ.get("SANDBOX_MAX_CPUS", "2.0"))
+SANDBOX_MAX_TIMEOUT = int(os.environ.get("SANDBOX_MAX_TIMEOUT", "300"))
+# Cap on files captured back from /work/out (protects the orchestrator process).
+SANDBOX_MAX_OUTPUT_MB = int(os.environ.get("SANDBOX_MAX_OUTPUT_MB", "128"))

@@ -31,6 +31,9 @@ class ResourcePolicy:
         """Translate the policy into keyword args for docker-py's containers API."""
         return {
             "mem_limit": self.mem,
+            # Hard cap: without this Docker grants an equal amount of swap, so a
+            # "256m" container can silently use ~512m at unpredictable speed.
+            "memswap_limit": self.mem,
             "nano_cpus": int(self.cpus * 1_000_000_000),
             "pids_limit": self.pids,
             "network_mode": self.network,
@@ -50,3 +53,26 @@ def isolated() -> ResourcePolicy:
 def egress() -> ResourcePolicy:
     """Policy for capabilities that declared a need for outbound internet."""
     return ResourcePolicy(network=NETWORK_EGRESS)
+
+
+def for_capability(
+    memory_mb=None,
+    cpus=None,
+    timeout_seconds=None,
+    network: str = NETWORK_NONE,
+) -> ResourcePolicy:
+    """Policy honoring a capability's declared needs, clamped to engine ceilings.
+
+    Undeclared values keep the strict defaults; declared values are bounded to
+    [SANDBOX_MIN_MEM_MB, SANDBOX_MAX_MEM_MB] / SANDBOX_MAX_CPUS / SANDBOX_MAX_TIMEOUT
+    so no tool can request unbounded resources.
+    """
+    pol = ResourcePolicy(network=NETWORK_EGRESS if network == "bridge" else NETWORK_NONE)
+    if memory_mb:
+        mem_mb = max(config.SANDBOX_MIN_MEM_MB, min(int(memory_mb), config.SANDBOX_MAX_MEM_MB))
+        pol.mem = f"{mem_mb}m"
+    if cpus:
+        pol.cpus = max(0.1, min(float(cpus), config.SANDBOX_MAX_CPUS))
+    if timeout_seconds:
+        pol.ttl_seconds = max(10, min(int(timeout_seconds), config.SANDBOX_MAX_TIMEOUT))
+    return pol

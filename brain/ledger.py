@@ -28,9 +28,21 @@ CREATE TABLE IF NOT EXISTS containers (
     status       TEXT NOT NULL,          -- running | finished | failed | reaped
     exit_code    INTEGER,
     started_at   TEXT NOT NULL,
-    finished_at  TEXT
+    finished_at  TEXT,
+    peak_mem_mb  REAL,                   -- best-effort observed peak memory
+    oom          INTEGER                 -- 1 if the kernel OOM-killed the container
 );
 """
+
+# Columns added after the original schema; applied to pre-existing databases.
+_MIGRATIONS = {"peak_mem_mb": "REAL", "oom": "INTEGER"}
+
+
+def _migrate(conn: sqlite3.Connection, table: str, columns: dict[str, str]) -> None:
+    have = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+    for name, decl in columns.items():
+        if name not in have:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {decl}")
 
 
 def _utcnow() -> str:
@@ -46,6 +58,7 @@ class Ledger:
         self._conn.row_factory = sqlite3.Row
         with self._conn:
             self._conn.executescript(_SCHEMA)
+            _migrate(self._conn, "containers", _MIGRATIONS)
 
     def record_start(
         self,
@@ -78,11 +91,20 @@ class Ledger:
                 ),
             )
 
-    def record_finish(self, id: str, *, exit_code: Optional[int], status: str = "finished") -> None:
+    def record_finish(
+        self,
+        id: str,
+        *,
+        exit_code: Optional[int],
+        status: str = "finished",
+        peak_mem_mb: Optional[float] = None,
+        oom: bool = False,
+    ) -> None:
         with self._lock, self._conn:
             self._conn.execute(
-                "UPDATE containers SET status=?, exit_code=?, finished_at=? WHERE id=?",
-                (status, exit_code, _utcnow(), id),
+                "UPDATE containers SET status=?, exit_code=?, finished_at=?, peak_mem_mb=?, oom=? "
+                "WHERE id=?",
+                (status, exit_code, _utcnow(), peak_mem_mb, int(oom), id),
             )
 
     def find_leaks(self, session: Optional[str] = None) -> list[dict]:

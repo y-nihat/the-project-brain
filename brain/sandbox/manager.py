@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import io
 import tarfile
+import threading
 import time
 from dataclasses import dataclass, field
 from typing import Any, Optional
@@ -71,6 +72,9 @@ class RunResult:
     stderr: str
     timed_out: bool
     output_files: dict = field(default_factory=dict)
+    oom: bool = False                       # kernel OOM-killed (memory limit exceeded)
+    peak_mem_mb: Optional[float] = None     # best-effort observed peak memory
+    error_note: Optional[str] = None        # engine-side note (e.g. output cap exceeded)
 
     @property
     def ok(self) -> bool:
@@ -130,6 +134,7 @@ class SandboxManager:
                     rm=True,
                     forcerm=True,
                     pull=False,
+                    labels={f"{LABEL_PREFIX}.managed": "1"},
                 )
             except BuildError as e:
                 # Surface the TAIL of the build log in the message (that's where
@@ -211,12 +216,31 @@ class SandboxManager:
             exit_code: Optional[int] = None
             stdout = stderr = ""
             output_files: dict = {}
+            oom = False
+            error_note: Optional[str] = None
+            peak = {"bytes": 0}
+            stop_sampling = threading.Event()
+
+            def _sample_memory() -> None:
+                # Best-effort peak-memory observation (~1s cadence). Short runs
+                # may record nothing; that's acceptable for accounting.
+                while not stop_sampling.is_set():
+                    try:
+                        stats = container.stats(stream=False)
+                        usage = (stats.get("memory_stats") or {}).get("usage") or 0
+                        peak["bytes"] = max(peak["bytes"], int(usage))
+                    except Exception:
+                        return
+                    stop_sampling.wait(1.0)
+
             try:
                 if input_files:
                     container.put_archive(
                         "/", _make_tar({f"work/in/{n}": d for n, d in input_files.items()})
                     )
                 container.start()
+                sampler = threading.Thread(target=_sample_memory, daemon=True)
+                sampler.start()
                 try:
                     exit_code = container.wait(timeout=ttl).get("StatusCode")
                 except Exception:
@@ -227,26 +251,34 @@ class SandboxManager:
                         container.kill()
                     except Exception:
                         pass
+                finally:
+                    stop_sampling.set()
+                    sampler.join(timeout=2.0)
+                try:
+                    container.reload()
+                    oom = bool((container.attrs.get("State") or {}).get("OOMKilled"))
+                except Exception:
+                    pass
                 if capture_output_files:
-                    try:
-                        bits, _ = container.get_archive("/work/out")
-                        output_files = _extract_tar(b"".join(bits), strip_prefix="out/")
-                    except Exception:
-                        output_files = {}
+                    output_files, error_note = self._capture_output(container)
                 try:
                     stdout = container.logs(stdout=True, stderr=False).decode("utf-8", "replace")
                     stderr = container.logs(stdout=False, stderr=True).decode("utf-8", "replace")
                 except Exception:
                     pass
             finally:
+                stop_sampling.set()
                 self._remove(container)
                 self.ledger.record_finish(
                     container.id,
                     exit_code=exit_code,
                     status="reaped" if timed_out else "finished",
+                    peak_mem_mb=round(peak["bytes"] / (1024 * 1024), 1) if peak["bytes"] else None,
+                    oom=oom,
                 )
-            sp.set(exit_code=exit_code, timed_out=timed_out)
-            if timed_out or (exit_code not in (0, None)):
+            peak_mem_mb = round(peak["bytes"] / (1024 * 1024), 1) if peak["bytes"] else None
+            sp.set(exit_code=exit_code, timed_out=timed_out, oom=oom, peak_mem_mb=peak_mem_mb)
+            if timed_out or oom or (exit_code not in (0, None)):
                 sp.status = "failed"
 
         return RunResult(
@@ -256,7 +288,28 @@ class SandboxManager:
             stderr=stderr,
             timed_out=timed_out,
             output_files=output_files,
+            oom=oom,
+            peak_mem_mb=peak_mem_mb,
+            error_note=error_note,
         )
+
+    def _capture_output(self, container) -> tuple[dict, Optional[str]]:
+        """Stream /work/out back, bounded so a runaway tool cannot exhaust the
+        orchestrator's memory."""
+        cap_bytes = config.SANDBOX_MAX_OUTPUT_MB * 1024 * 1024
+        try:
+            bits, _ = container.get_archive("/work/out")
+            buf = bytearray()
+            for chunk in bits:
+                buf.extend(chunk)
+                if len(buf) > cap_bytes:
+                    return {}, (
+                        f"output exceeded the {config.SANDBOX_MAX_OUTPUT_MB} MB capture cap; "
+                        "files were dropped"
+                    )
+            return _extract_tar(bytes(buf), strip_prefix="out/"), None
+        except Exception:
+            return {}, None
 
     # -- teardown --------------------------------------------------------- #
     def _remove(self, container) -> None:
@@ -280,8 +333,19 @@ class SandboxManager:
             removed.append(c.id)
         return removed
 
+    def prune_images(self) -> None:
+        """Remove *dangling* brain-built image layers (failed or superseded
+        builds). Promoted capability images are tagged and therefore kept."""
+        try:
+            self.client.images.prune(
+                filters={"dangling": True, "label": f"{LABEL_PREFIX}.managed=1"}
+            )
+        except APIError:
+            pass
+
     def close(self) -> None:
         self.reap()
+        self.prune_images()
         try:
             self.client.close()
         except Exception:
