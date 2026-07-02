@@ -22,6 +22,8 @@ RUN pip install --no-cache-dir \
         claude-agent-sdk \
         "docker>=7.0.0" \
         python-dotenv \
+        "opentelemetry-sdk>=1.20.0" \
+        "opentelemetry-exporter-otlp-proto-http>=1.20.0" \
         pytest \
         pytest-asyncio
 

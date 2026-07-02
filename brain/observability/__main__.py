@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 import time
 from pathlib import Path
@@ -43,6 +44,16 @@ def main(argv: list[str] | None = None) -> int:
     p_follow = sub.add_parser("follow", help="tail a run's live event stream")
     p_follow.add_argument("run_id")
 
+    p_export = sub.add_parser("export", help="export run(s) to an OTLP viewer (e.g. Phoenix)")
+    p_export.add_argument("run_id", nargs="?")
+    p_export.add_argument("--last", action="store_true", help="export the most recent run")
+    p_export.add_argument("--all", action="store_true", help="export every recorded run")
+    p_export.add_argument(
+        "--endpoint",
+        default=os.environ.get("PHOENIX_COLLECTOR_ENDPOINT", "http://phoenix:6006/v1/traces"),
+        help="OTLP HTTP traces endpoint (default: Phoenix on the compose network)",
+    )
+
     args = parser.parse_args(argv)
     db = config.DB_PATH
 
@@ -62,6 +73,23 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.cmd == "follow":
         return _follow(args.run_id)
+
+    if args.cmd == "export":
+        from . import otel_export
+
+        if args.all:
+            run_ids = otel_export.list_run_ids(db)
+        else:
+            rid = args.run_id or (view.last_run_id(db) if args.last or not args.run_id else None)
+            if not rid:
+                print("(no runs recorded yet)")
+                return 1
+            run_ids = [rid]
+        for rid in run_ids:
+            n = otel_export.export_run(db, rid, args.endpoint)
+            print(f"exported {rid}: {n} spans -> {args.endpoint}")
+        print("view at: http://localhost:6006")
+        return 0
 
     return 2
 
