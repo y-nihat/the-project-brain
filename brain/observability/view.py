@@ -154,4 +154,6 @@ def render_run(db_path: str | Path, run_id: str) -> str:
     out.append("## Outcome")
     out.append("")
     out.append((run["outcome"] or "(none recorded)"))
+    out.append("")
+    out.append(f"*(full per-agent outputs: `runs/{run['run_id']}/outputs/`)*")
     return "\n".join(out)

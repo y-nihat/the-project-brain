@@ -45,6 +45,46 @@ def _spec_dict(a: AgentSpec) -> dict:
             "capabilities": a.capabilities, "depends_on": a.depends_on}
 
 
+def _persist_agent(runs_dir, session: str, spec: AgentSpec, system_prompt: str, output: str) -> None:
+    """Agent outputs are first-class data-layer files, not just DB rows."""
+    base = Path(runs_dir) / session
+    outputs = base / "outputs"
+    agents = base / "agents"
+    outputs.mkdir(parents=True, exist_ok=True)
+    agents.mkdir(parents=True, exist_ok=True)
+    header = (
+        f"# {spec.id} — {spec.role}\n\n"
+        f"- **goal:** {spec.goal}\n"
+        f"- **capabilities:** {spec.capabilities}\n"
+        f"- **depends_on:** {spec.depends_on}\n\n---\n\n"
+    )
+    (outputs / f"{spec.id}.md").write_text(header + (output or ""))
+    (agents / f"{spec.id}.prompt.md").write_text(system_prompt)
+
+
+def _seed_prior_workspace(runs_dir, session: str, seed_run: str, *, max_bytes: int = 16 * 1024 * 1024) -> list[str]:
+    """Copy a prior run's workspace files under `prior/<run_id>/` (bounded)."""
+    src = Path(runs_dir) / seed_run / "workspace"
+    dst = Path(runs_dir) / session / "workspace" / "prior" / seed_run
+    copied: list[str] = []
+    total = 0
+    if not src.is_dir():
+        return copied
+    for p in sorted(src.rglob("*")):
+        if not p.is_file():
+            continue
+        size = p.stat().st_size
+        if total + size > max_bytes:
+            break
+        rel = p.relative_to(src)
+        target = dst / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(p.read_bytes())
+        total += size
+        copied.append(f"prior/{seed_run}/{rel}")
+    return copied
+
+
 class Orchestrator:
     def __init__(
         self,
@@ -75,9 +115,10 @@ class Orchestrator:
 
         self.tracer = tracer or NullTracer()
 
-    async def run(self, objective: str) -> str:
+    async def run(self, objective: str, history: Optional[str] = None,
+                  seed_run: Optional[str] = None) -> str:
         with self.tracer.span("plan", "planner"):
-            plan = await self.planner.plan(objective)
+            plan = await self.planner.plan(objective, history=history)
         self.blackboard.put("objective", objective)
         roster = [_spec_dict(a) for a in plan.agents]
         self.blackboard.put("plan", roster)
@@ -87,6 +128,14 @@ class Orchestrator:
         # file-consuming tools across agents.
         workspace = Path(config.RUNS_DIR) / self.session / "workspace"
         workspace.mkdir(parents=True, exist_ok=True)
+
+        # Cross-run continuity: make the most relevant prior run's files
+        # available to this run's file tools.
+        if seed_run:
+            seeded = _seed_prior_workspace(config.RUNS_DIR, self.session, seed_run)
+            if seeded:
+                self.tracer.event("history.seeded", seed_run, status="info",
+                                  files=seeded[:20], count=len(seeded))
 
         order = _topo_order(plan.agents)
         outputs: dict[str, str] = {}
@@ -106,8 +155,9 @@ class Orchestrator:
             )
 
             upstream = {dep: outputs[dep] for dep in spec.depends_on if dep in outputs}
+            system_prompt = factory.agent_system_prompt(spec, allowed)
             options = factory.locked_session(
-                system_prompt=factory.agent_system_prompt(spec, allowed),
+                system_prompt=system_prompt,
                 mcp_servers={"caps": caps_server} if caps_server else {},
                 allowed_tools=allowed,
                 model=self.model,
@@ -117,13 +167,18 @@ class Orchestrator:
             from .observability import trace_query
 
             out = await trace_query(
-                self.tracer, spec.id, factory.agent_user_prompt(objective, spec, upstream), options
+                self.tracer, spec.id,
+                factory.agent_user_prompt(objective, spec, upstream, history=history), options,
             )
             outputs[spec.id] = out
             self.blackboard.put(f"output:{spec.id}", out)
+            _persist_agent(config.RUNS_DIR, self.session, spec, system_prompt, out)
 
         answer = outputs.get(order[-1].id, "") if order else "No agents were produced."
         self.blackboard.put("answer", answer)
+        answer_dir = Path(config.RUNS_DIR) / self.session / "outputs"
+        answer_dir.mkdir(parents=True, exist_ok=True)
+        (answer_dir / "ANSWER.md").write_text(answer or "")
         return answer or "(no answer produced)"
 
     async def _acquire_caps(self, spec: AgentSpec) -> dict[str, Capability]:

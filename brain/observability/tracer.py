@@ -293,7 +293,7 @@ class Run:
                     status, _utcnow(), agg["n_events"], agg["n_containers"] or 0, agg["n_approvals"] or 0,
                     agg["tin"] or 0, agg["tout"] or 0, float(agg["cost"] or 0.0),
                     int((time.monotonic() - self._start) * 1000),
-                    (outcome or "")[:2000], self.run_id,
+                    (outcome or "")[:20000], self.run_id,
                 ),
             )
         # Export the human-readable timeline for review.
