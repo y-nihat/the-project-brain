@@ -301,16 +301,25 @@ def _generic_verify(cap: Capability, sample_input: dict, sample_files: dict, man
 
 
 async def _author_capability(
-    need_key, description, *, manager, registry, broker, model, developer, max_attempts, tracer
+    need_key, description, *, manager, registry, broker, model, developer, max_attempts, tracer,
+    seed: Optional[dict] = None, repair_reason: Optional[str] = None,
 ) -> Capability:
     dev = developer or make_developer_agent(model, tracer)
+    mode = "repair" if seed else "author"
 
-    with tracer.span("capability.acquire", need_key, mode="author", description=description):
-        tracer.event("decision", f"author {need_key}", status="info",
-                     choice="author", capability=need_key)
+    with tracer.span("capability.acquire", need_key, mode=mode, description=description):
+        tracer.event("decision", f"{mode} {need_key}", status="info",
+                     choice=mode, capability=need_key)
 
-        previous: Optional[dict] = None   # {"program":…, "dockerfile":…} from the failed attempt
-        error: Optional[str] = None
+        # Repair mode seeds the developer with the current tool + the live failure,
+        # so its first attempt is a fix (reusing the self-repair machinery).
+        previous: Optional[dict] = seed   # {"program":…, "dockerfile":…}
+        error: Optional[str] = (
+            f"The tool builds and runs but FAILS IN PRACTICE: {repair_reason}. Improve it — add "
+            "retries/backoff, pace requests to avoid rate limits, handle empty responses, or switch "
+            "to an ALTERNATIVE library/endpoint. Keep the SAME input/output contract (same env vars, "
+            "same JSON shape)." if seed else None
+        )
         last_detail = "no submission"
 
         for attempt in range(1, max_attempts + 1):
@@ -382,6 +391,41 @@ async def _author_capability(
             previous = {"program": sub["program"], "dockerfile": sub["dockerfile"]}
 
         raise AcquisitionError(f"could not author a working '{need_key}': {last_detail}")
+
+
+def _load_seed(registry, cap: Capability) -> Optional[dict]:
+    """The current promoted build context (program + Dockerfile), to seed a repair."""
+    build_dir = Path(registry.store_dir) / cap.name / "build"
+    dockerfile = build_dir / "Dockerfile"
+    pys = sorted(build_dir.glob("*.py"))
+    if not dockerfile.exists() or not pys:
+        return None
+    return {"dockerfile": dockerfile.read_text(), "program": pys[0].read_text()}
+
+
+async def repair_capability(
+    cap: Capability, reason: str, *, manager, registry, broker,
+    model: Optional[str] = None, developer: Optional[Developer] = None,
+    max_attempts: int = 2, tracer=None,
+) -> Capability:
+    """Repair a trusted-but-degraded tool in place: re-author it (seeded with its
+    current code + the live failure), re-verify, and re-promote under the same
+    image tag so the re-running agent transparently gets the improved tool."""
+    tracer = tracer or NullTracer()
+    seed = _load_seed(registry, cap)
+    repaired = await _author_capability(
+        cap.name, cap.description, manager=manager, registry=registry, broker=broker,
+        model=model, developer=developer, max_attempts=max_attempts, tracer=tracer,
+        seed=seed, repair_reason=reason,
+    )
+    # Record a bumped version for provenance (image tag stays constant on purpose).
+    try:
+        major, minor, patch = (cap.version or "1.0.0").split(".")
+        repaired.version = f"{major}.{minor}.{int(patch) + 1}"
+        registry.add(repaired)
+    except Exception:  # noqa: BLE001
+        pass
+    return repaired
 
 
 # --------------------------------------------------------------------------- #
