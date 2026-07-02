@@ -7,6 +7,7 @@ draw on the history of earlier ones (continuity).
 """
 from __future__ import annotations
 
+import asyncio
 import os
 import urllib.request
 from dataclasses import dataclass, field
@@ -57,6 +58,40 @@ class BrainSession:
         self.registry = Registry(config.DB_PATH, config.CAPABILITIES_STORE)
         # Interactive gate: real prompts reach the human running the session.
         self.broker = ApprovalBroker(input_fn=input_fn, output_fn=output_fn, tracer=self.tracer)
+        self._janitor()
+
+    def _janitor(self) -> None:
+        """On wake, observe the environment and heal what a killed session left:
+        leftover sandbox containers, runs stuck 'running', stale ledger rows."""
+        removed = 0
+        try:
+            import docker
+
+            client = (docker.DockerClient(base_url=config.DOCKER_HOST)
+                      if config.DOCKER_HOST else docker.from_env())
+            for c in client.containers.list(all=True, filters={"label": "brain.session"}):
+                try:
+                    c.remove(force=True)
+                    removed += 1
+                except Exception:  # noqa: BLE001
+                    pass
+            client.close()
+        except Exception:  # noqa: BLE001  (docker unreachable — best effort)
+            pass
+        aborted = self.tracer.abort_stale_runs()
+        reaped = self.ledger.mark_stale_reaped()
+        if aborted or reaped or removed:
+            self.output_fn(
+                f"[janitor]    healed leftovers from a previous session: "
+                f"{aborted} run(s) marked aborted, {reaped} stale ledger row(s), "
+                f"{removed} orphaned container(s)"
+            )
+            try:
+                from .observability.view import refresh_index
+
+                refresh_index(config.DB_PATH, config.RUNS_DIR)
+            except Exception:  # noqa: BLE001
+                pass
 
     def add_listener(self, fn) -> None:
         self.tracer.add_listener(fn)
@@ -80,6 +115,10 @@ class BrainSession:
             try:
                 answer = await orchestrator.run(objective, history=hist_text, seed_run=seed_run)
                 status = "succeeded"
+            except asyncio.CancelledError:
+                # User interrupt: record the truth, reap (via finally), re-raise.
+                run.finish("aborted", outcome="(cancelled by user)")
+                raise
             except Exception as e:  # noqa: BLE001
                 answer = f"ERROR: {type(e).__name__}: {e}"
                 status = "failed"

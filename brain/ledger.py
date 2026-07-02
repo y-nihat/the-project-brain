@@ -107,6 +107,15 @@ class Ledger:
                 (status, exit_code, _utcnow(), peak_mem_mb, int(oom), id),
             )
 
+    def mark_stale_reaped(self) -> int:
+        """Close out 'running' rows left behind by a killed process."""
+        with self._lock, self._conn:
+            cur = self._conn.execute(
+                "UPDATE containers SET status='reaped', finished_at=? WHERE status='running'",
+                (_utcnow(),),
+            )
+            return cur.rowcount
+
     def find_leaks(self, session: Optional[str] = None) -> list[dict]:
         """Rows still marked 'running' — i.e. containers we never confirmed gone."""
         query = "SELECT * FROM containers WHERE status='running'"
