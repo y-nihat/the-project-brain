@@ -86,3 +86,28 @@ def test_history_block_and_seeding(tmp_path):
 def test_history_block_empty_when_no_db(tmp_path):
     text, seed = history.history_block(tmp_path / "missing.db", tmp_path / "runs", "anything")
     assert text is None and seed is None
+
+
+def test_readable_run_ids_index_and_latest(tmp_path):
+    db, runs_dir = tmp_path / "b.db", tmp_path / "runs"
+    tracer = Tracer(db, runs_dir)
+    r1 = tracer.start_run("Build a chatbot that operates on Telegram")
+    r1.finish("succeeded", outcome="done")
+    r2 = tracer.start_run("Fetch the weather for three cities")
+    r2.finish("succeeded", outcome="done")
+    tracer.close()
+
+    # Run ids are readable: timestamp + objective slug.
+    assert "telegram" in r1.run_id and "chatbot" in r1.run_id
+    assert r1.run_id.startswith("run-20")
+
+    # INDEX.md lists both, newest first; LATEST points to the newest run.
+    index = (runs_dir / "INDEX.md").read_text()
+    assert r1.run_id in index and r2.run_id in index
+    assert index.index(r2.run_id) < index.index(r1.run_id)
+    latest = runs_dir / "LATEST"
+    pointed = latest.resolve().name if latest.is_symlink() else (runs_dir / "LATEST.txt").read_text().strip()
+    assert pointed == r2.run_id
+
+    # The newest run folder self-describes.
+    assert "Fetch the weather" in (runs_dir / r2.run_id / "README.md").read_text()

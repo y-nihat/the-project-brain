@@ -101,6 +101,52 @@ def _summary(kind: str, data: dict) -> str:
     return s[:160]
 
 
+def refresh_index(db_path: str | Path, runs_dir: str | Path) -> None:
+    """Keep data/runs/ navigable: INDEX.md (all runs, newest first), a LATEST
+    pointer, and a per-run README.md. Best-effort — never breaks a run."""
+    runs_dir = Path(runs_dir)
+    runs = list_runs(db_path, limit=1000)
+    if not runs:
+        return
+
+    lines = [
+        "# Run index (newest first)",
+        "",
+        f"**Latest:** `{runs[0]['run_id']}` — {(runs[0]['objective'] or '')[:80]}",
+        "",
+        "| started (UTC) | run | status | cost $ | objective |",
+        "|---|---|---|---|---|",
+    ]
+    for r in runs:
+        started = (r["started_at"] or "")[:19].replace("T", " ")
+        lines.append(
+            f"| {started} | [{r['run_id']}]({r['run_id']}/) | {r['status']} "
+            f"| {r['cost_usd'] or 0.0:.2f} | {(r['objective'] or '').replace('|', '/')[:80]} |"
+        )
+    (runs_dir / "INDEX.md").write_text("\n".join(lines) + "\n")
+
+    latest = runs_dir / "LATEST"
+    try:
+        if latest.is_symlink() or latest.exists():
+            latest.unlink()
+        latest.symlink_to(runs[0]["run_id"])
+    except OSError:
+        (runs_dir / "LATEST.txt").write_text(runs[0]["run_id"] + "\n")
+
+    r = runs[0]
+    run_dir = runs_dir / r["run_id"]
+    if run_dir.is_dir():
+        (run_dir / "README.md").write_text(
+            f"# {r['run_id']}\n\n"
+            f"- **objective:** {r['objective']}\n"
+            f"- **status:** {r['status']}   **cost:** ${r['cost_usd'] or 0.0:.2f}   "
+            f"**containers:** {r['n_containers'] or 0}\n"
+            f"- **started:** {r['started_at']}\n\n"
+            "Contents: `trace.md` (timeline) · `outputs/` (agent outputs + ANSWER.md) · "
+            "`workspace/` (files produced) · `artifacts/` (tool code authored)\n"
+        )
+
+
 def render_run(db_path: str | Path, run_id: str) -> str:
     conn = _connect(db_path)
     try:

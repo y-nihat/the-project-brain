@@ -18,6 +18,7 @@ import contextlib
 import contextvars
 import datetime as _dt
 import json
+import re
 import sqlite3
 import threading
 import time
@@ -70,6 +71,29 @@ def _utcnow() -> str:
 
 def _new_id(prefix: str) -> str:
     return f"{prefix}-{uuid.uuid4().hex[:12]}"
+
+
+_SLUG_STOP = {
+    "a", "an", "the", "that", "this", "it", "is", "are", "on", "in", "at", "of",
+    "to", "for", "with", "and", "or", "be", "do", "not", "no", "your", "you",
+    "my", "our", "me", "i", "we", "using", "use",
+}
+
+
+def _slug(text: str, max_len: int = 40) -> str:
+    words = [w for w in re.findall(r"[a-z0-9]+", (text or "").lower()) if w not in _SLUG_STOP]
+    out = ""
+    for w in words:
+        if len(out) + len(w) + 1 > max_len:
+            break
+        out = f"{out}-{w}" if out else w
+    return out or "task"
+
+
+def _run_id(objective: str) -> str:
+    """Readable, sortable run id: run-<timestamp>-<objective-slug>-<uniq>."""
+    stamp = _dt.datetime.now().strftime("%Y%m%d-%H%M%S")
+    return f"run-{stamp}-{_slug(objective)}-{uuid.uuid4().hex[:4]}"
 
 
 class Span:
@@ -148,7 +172,7 @@ class Tracer:
 
     # -- run lifecycle ---------------------------------------------------- #
     def start_run(self, objective: str, *, model: Optional[str] = None) -> "Run":
-        run_id = _new_id("run")
+        run_id = _run_id(objective)
         with self._lock, self._conn:
             self._conn.execute(
                 "INSERT INTO runs (run_id, objective, status, model, engine_version, started_at) "
@@ -296,11 +320,12 @@ class Run:
                     (outcome or "")[:20000], self.run_id,
                 ),
             )
-        # Export the human-readable timeline for review.
+        # Export the human-readable timeline + keep data/runs navigable.
         try:
-            from .view import render_run
+            from .view import refresh_index, render_run
 
             (self._dir / "trace.md").write_text(render_run(self._t.db_path, self.run_id))
+            refresh_index(self._t.db_path, self._t.runs_dir)
         except Exception:
             pass
 
