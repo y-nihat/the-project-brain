@@ -32,8 +32,8 @@ async def _amain(objective: str) -> int:
     blackboard = Blackboard(config.DB_PATH, session)
     manager = SandboxManager(session, ledger, tracer=tracer)
     broker = ApprovalBroker(tracer=tracer)  # interactive, blocking
-    known = [c.name for c in registry.all()] + ["web_search"]
-    planner = Planner(model=config.BRAIN_MODEL, known_capabilities=sorted(set(known)), tracer=tracer)
+    known = {c.name: c.description for c in registry.all()}
+    planner = Planner(model=config.BRAIN_MODEL, known_capabilities=known, tracer=tracer)
     resolver = Resolver(registry)
     orchestrator = Orchestrator(
         session=session,

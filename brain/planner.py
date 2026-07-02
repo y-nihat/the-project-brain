@@ -21,10 +21,13 @@ _SYSTEM = (
     "Capabilities are EXTERNAL tools an agent runs in a sandbox — e.g. searching the web, "
     "reading/parsing/generating files, or running code — things a plain LLM cannot do by itself. "
     "Writing, summarizing, analyzing, comparing, synthesizing, recommending, and reasoning are an "
-    "agent's OWN abilities, NOT capabilities: such agents MUST have an empty `capabilities` list. "
-    "Choose from the known capability keys when one fits: {known}. Invent a new concise snake_case "
-    "key ONLY when an agent must perform a concrete external action no LLM can do alone; the system "
-    "will then build it. "
+    "agent's OWN abilities, NOT capabilities: such agents MUST have an empty `capabilities` list.\n"
+    "Existing capabilities you may REUSE, but ONLY when the description genuinely matches the need:\n"
+    "{known}\n"
+    "For any other concrete external action, INVENT a new, SPECIFIC snake_case capability key that "
+    "names exactly what it does (e.g. generate_pdf, extract_pdf_text, embed_and_search). Do NOT reuse "
+    "an existing key whose description does not fit, and avoid vague umbrella names like "
+    "'code_execution'. The system will build any new capability you name.\n"
     "You MUST call `emit_plan` exactly once with the full roster and must NOT answer in prose."
 )
 
@@ -65,11 +68,13 @@ class Planner:
         self,
         *,
         model: Optional[str] = None,
-        known_capabilities: Optional[Iterable[str]] = None,
+        known_capabilities=None,
         tracer=None,
     ):
         self.model = model
-        self.known = list(known_capabilities or ["web_search"])
+        kc = known_capabilities or {}
+        # Accept {name: description} or a bare iterable of names.
+        self.known = dict(kc) if isinstance(kc, dict) else {str(k): "" for k in kc}
         from .observability import NullTracer
 
         self.tracer = tracer or NullTracer()
@@ -87,9 +92,13 @@ class Planner:
             captured["agents"] = args.get("agents", [])
             return {"content": [{"type": "text", "text": "plan recorded"}]}
 
+        known_str = (
+            "\n".join(f"  - {k}: {v}" for k, v in self.known.items())
+            if self.known else "  (none yet)"
+        )
         server = create_sdk_mcp_server(name="planner", version="1.0.0", tools=[emit_plan])
         options = locked_session(
-            system_prompt=_SYSTEM.format(known=", ".join(self.known) or "(none yet)"),
+            system_prompt=_SYSTEM.format(known=known_str),
             mcp_servers={"planner": server},
             allowed_tools=["mcp__planner__emit_plan"],
             model=self.model,
