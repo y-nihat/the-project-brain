@@ -37,6 +37,12 @@ def _write_context(directory: Path, build_context: dict) -> None:
         (directory / filename).write_text(content)
 
 
+def _error_tail(text: str, limit: int = 2000) -> str:
+    """Keep the END of an error text — tracebacks and pip/build errors live there."""
+    text = (text or "").strip()
+    return text if len(text) <= limit else "…" + text[-limit:]
+
+
 # --------------------------------------------------------------------------- #
 # Bootstrap recipe: web_search (deterministic, known-good scaffolding)
 # --------------------------------------------------------------------------- #
@@ -230,10 +236,11 @@ def _capability_from_submission(need_key: str, description: str, sub: dict) -> C
     )
 
 
-def _generic_verify(cap: Capability, sample_input: dict, sample_files: dict, manager) -> tuple[bool, str]:
+def _generic_verify(cap: Capability, sample_input: dict, sample_files: dict, manager):
     """Generic acceptance: run the tool on a sample input (plus optional sample
     files placed under /work/in); success = exit 0 and a parseable, non-error JSON
-    object on the last stdout line."""
+    object on the last stdout line. Returns (ok, detail, run_result) — detail
+    carries the TAIL of stderr (the end is where tracebacks live)."""
     args = dict(sample_input or {})
     args.pop("files", None)  # reserved runtime arg, not an env input
     env = {}
@@ -255,17 +262,22 @@ def _generic_verify(cap: Capability, sample_input: dict, sample_files: dict, man
         input_files=input_files or None, capture_output_files=True, ttl=120,
     )
     if not res.ok:
-        return (False, f"exit={res.exit_code} timed_out={res.timed_out}: {(res.stderr or '')[:300]}")
+        detail = (
+            f"exit={res.exit_code} timed_out={res.timed_out}; "
+            f"stderr (tail): {_error_tail(res.stderr, 1200)}; "
+            f"stdout (tail): {_error_tail(res.stdout, 400)}"
+        )
+        return (False, detail, res)
     out = (res.stdout or "").strip()
     if not out:
-        return (False, "no stdout output")
+        return (False, "no stdout output", res)
     try:
         data = json.loads(out.splitlines()[-1])
     except Exception as e:  # noqa: BLE001
-        return (False, f"last stdout line is not JSON ({e}): {out[:200]!r}")
+        return (False, f"last stdout line is not JSON ({e}): {_error_tail(out, 400)!r}", res)
     if isinstance(data, dict) and set(data.keys()) == {"error"}:
-        return (False, f"tool reported error: {data['error']}")
-    return (True, f"ok: {str(data)[:120]}")
+        return (False, f"tool reported error: {data['error']}", res)
+    return (True, f"ok: {str(data)[:120]}", res)
 
 
 async def _author_capability(
@@ -277,7 +289,7 @@ async def _author_capability(
         tracer.event("decision", f"author {need_key}", status="info",
                      choice="author", capability=need_key)
 
-        previous: Optional[str] = None
+        previous: Optional[dict] = None   # {"program":…, "dockerfile":…} from the failed attempt
         error: Optional[str] = None
         last_detail = "no submission"
 
@@ -312,19 +324,27 @@ async def _author_capability(
                                  attempt=attempt, source="author", artifact_path=str(attempt_dir)):
                     await asyncio.to_thread(manager.build_image, cap.image_tag, build_context)
             except Exception as e:  # noqa: BLE001  (build failure -> self-repair)
-                last_detail = f"build failed: {e}"
-                error = str(e)[:1500]
-                previous = sub["program"]
+                # Persist the full log for post-mortems; feed the developer the
+                # TAIL (the end is where the real error lives).
+                full_log = getattr(e, "full_log", "") or str(e)
+                (attempt_dir / "build.log").write_text(full_log)
+                tail = _error_tail(str(e))
+                last_detail = f"build failed: {tail}"
+                error = f"The docker image BUILD failed. Error (tail of build log):\n{tail}"
+                previous = {"program": sub["program"], "dockerfile": sub["dockerfile"]}
                 continue
 
             with tracer.span("capability.verify", cap.name) as vsp:
-                ok, detail = await asyncio.to_thread(
+                ok, detail, run_res = await asyncio.to_thread(
                     _generic_verify, cap, sub.get("sample_input") or {},
                     sub.get("sample_files") or {}, manager,
                 )
                 vsp.set(passed=ok, detail=detail, source="author")
                 if not ok:
                     vsp.status = "failed"
+                    if run_res is not None:
+                        (attempt_dir / "verify.stderr").write_text(run_res.stderr or "")
+                        (attempt_dir / "verify.stdout").write_text(run_res.stdout or "")
 
             if ok:
                 cap.verified = True
@@ -338,8 +358,8 @@ async def _author_capability(
                 return cap
 
             last_detail = detail
-            error = detail
-            previous = sub["program"]
+            error = f"The image built, but VERIFICATION of the running tool failed:\n{detail}"
+            previous = {"program": sub["program"], "dockerfile": sub["dockerfile"]}
 
         raise AcquisitionError(f"could not author a working '{need_key}': {last_detail}")
 
@@ -431,6 +451,21 @@ _DEVELOPER_SYSTEM = (
     "file-consuming tool can be verified.\n"
     "  * requires_credential: set to a short string ONLY IF the tool fundamentally needs an API "
     "key/account/paid service (no free path); otherwise null.\n\n"
+    "Sandbox facts (respect these — they are why tools fail):\n"
+    "  * The image BUILD always has internet access; at RUNTIME the container has internet ONLY if "
+    "you set network=\"bridge\".\n"
+    "  * At runtime HOME=/tmp. Anything cached under /root during the build (e.g. default model/data "
+    "caches) will NOT be found at runtime. If you bake models or data into the image, store them "
+    "under an explicit path such as /app/models and point the library there with ENV lines in the "
+    "Dockerfile (e.g. ENV SENTENCE_TRANSFORMERS_HOME=/app/models).\n"
+    "  * On crash, let the real exception reach stderr — never swallow tracebacks.\n\n"
+    "Dependency rules:\n"
+    "  * NEVER put --index-url on a pip install line that also installs normal PyPI packages — it "
+    "REPLACES PyPI and those packages will not be found. Use a separate RUN step for special-index "
+    "packages, or --extra-index-url.\n"
+    "  * Prefer small, CPU-friendly libraries over heavy frameworks when they can do the job "
+    "(faster builds, fewer failures).\n"
+    "  * Pin versions only when you have a concrete reason.\n\n"
     "Prefer well-known, currently-maintained libraries. You MUST call `submit_tool` exactly once and "
     "must not answer in prose."
 )
@@ -479,11 +514,14 @@ def make_developer_agent(model: Optional[str] = None, tracer=None) -> Developer:
             "Follow the contract and submit it now."
         )
         if error:
+            prev = previous if isinstance(previous, dict) else {"program": previous or ""}
             task += (
                 "\n\nYour PREVIOUS attempt FAILED.\n"
-                f"Previous program:\n{(previous or '')[:4000]}\n"
-                f"Error:\n{error[:2000]}\n"
-                "Diagnose the failure and submit a corrected tool."
+                f"--- Previous Dockerfile ---\n{(prev.get('dockerfile') or '(none)')[:1500]}\n"
+                f"--- Previous program ---\n{(prev.get('program') or '')[:4000]}\n"
+                f"--- Failure ---\n{error[:2500]}\n"
+                "Diagnose the failure from the error above and submit a corrected tool. "
+                "Change only what the error implicates — do not rewrite parts that worked."
             )
 
         await trace_query(tracer, f"developer:{need_key}", task, options)

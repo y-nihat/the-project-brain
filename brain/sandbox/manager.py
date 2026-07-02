@@ -28,6 +28,12 @@ from . import policy as policy_mod
 LABEL_PREFIX = "brain"
 
 
+def _tail(text: str, limit: int = 2000) -> str:
+    """Keep the END of a long text — build/runtime errors live at the tail."""
+    text = (text or "").strip()
+    return text if len(text) <= limit else "…" + text[-limit:]
+
+
 def _make_tar(files: dict) -> bytes:
     """Pack {member_path: bytes} into a tar for ``container.put_archive``."""
     buf = io.BytesIO()
@@ -125,13 +131,21 @@ class SandboxManager:
                     forcerm=True,
                     pull=False,
                 )
-            except BuildError as e:  # surface the build log for debugging
+            except BuildError as e:
+                # Surface the TAIL of the build log in the message (that's where
+                # the real error is); keep the full log on the exception for
+                # callers that persist it as a run artifact.
                 log = "\n".join(
                     str(chunk.get("stream", "")).rstrip()
                     for chunk in getattr(e, "build_log", [])
                     if isinstance(chunk, dict) and chunk.get("stream")
                 )
-                raise BuildError(f"{e}\n--- build log ---\n{log}", getattr(e, "build_log", None))
+                err = BuildError(
+                    f"{e}\n--- build log (tail) ---\n{_tail(log)}",
+                    getattr(e, "build_log", None),
+                )
+                err.full_log = log
+                raise err
         return tag
 
     # -- running ---------------------------------------------------------- #
