@@ -47,10 +47,17 @@ def agent_system_prompt(spec: AgentSpec, allowed_tools: list[str]) -> str:
         f"Your goal: {spec.goal}",
     ]
     if allowed_tools:
+        from . import config
+
         lines.append(
             "You can act ONLY by calling these capability tools: "
             + ", ".join(allowed_tools)
             + ". You have no shell, no filesystem, and no other tools."
+        )
+        lines.append(
+            f"Work efficiently: you have a budget of ~{config.CAPABILITY_CALL_BUDGET} calls PER tool. "
+            "Do not hammer a tool with near-duplicate calls — vary your inputs, gather enough, then "
+            "synthesize and conclude. If a tool keeps returning no results, stop calling it and say so."
         )
     else:
         lines.append(
