@@ -19,11 +19,15 @@ cleanup() {
     echo "[brain-chat] tearing the stack down..."
     $DC --profile observability down
 }
-trap cleanup EXIT INT TERM
+trap cleanup EXIT TERM
 
 $DC $PROFILE up -d
 [ -n "$PROFILE" ] && echo "[brain-chat] Phoenix viewer at http://localhost:6006"
 echo "[brain-chat] starting interactive session (Ctrl-D or /quit to exit)"
 echo
-# No -T: attach a TTY so input()/prompts work interactively.
-$DC exec brain python -m brain.repl
+# Ignore SIGINT in the script while the REPL runs: the TTY forwards Ctrl-C to
+# the REPL, which cancels the CURRENT OBJECTIVE only (teardown still happens on
+# exit via the EXIT trap). No -T: attach a TTY so input()/prompts work.
+trap '' INT
+$DC exec brain python -m brain.repl || true
+trap - INT

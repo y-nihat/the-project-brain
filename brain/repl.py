@@ -7,6 +7,8 @@ Commands: /help /runs /show /caps /last /quit
 from __future__ import annotations
 
 import asyncio
+import signal
+import time
 from typing import Optional
 
 # Compact glyphs for the live stream.
@@ -76,6 +78,20 @@ _HELP = """commands:
   /quit, /exit  leave (Ctrl-D also works)"""
 
 
+async def _heartbeat(state: dict, stall_limit: float) -> None:
+    """Print a liveness line during silent stretches so 'thinking' is visibly
+    different from 'stuck' (true stalls are killed by the session watchdog)."""
+    last_print = 0.0
+    while True:
+        await asyncio.sleep(5)
+        now = time.monotonic()
+        quiet = now - state["ts"]
+        if quiet >= 25 and now - last_print >= 25:
+            print(f"  … still working — {int(quiet)}s since last activity "
+                  f"(last: {state['label']}; stall watchdog at {int(stall_limit)}s)", flush=True)
+            last_print = now
+
+
 async def _repl() -> int:
     from . import config
     from .observability import view
@@ -83,7 +99,16 @@ async def _repl() -> int:
 
     print("The Project Brain — interactive session. Type an objective, or /help.\n")
     session = BrainSession(auto_export=True)
-    session.add_listener(lambda rec: (line := format_event(rec)) and print(line, flush=True))
+    state = {"ts": time.monotonic(), "label": "idle"}
+
+    def _on_event(rec: dict) -> None:
+        state["ts"] = time.monotonic()
+        state["label"] = f"{rec.get('kind')}/{rec.get('name')}"
+        line = format_event(rec)
+        if line:
+            print(line, flush=True)
+
+    session.add_listener(_on_event)
     last_answer = ""
     try:
         while True:
@@ -121,9 +146,30 @@ async def _repl() -> int:
                 print(f"unknown command: {raw} — try /help")
                 continue
 
-            # An objective.
-            print(f"\n⟳ working on: {raw}")
-            summary = await session.run_objective(raw)
+            # An objective. Ctrl-C cancels THIS objective, not the session.
+            print(f"\n⟳ working on: {raw}   (Ctrl-C cancels this objective)")
+            state["ts"] = time.monotonic()
+            state["label"] = "planning"
+            loop = asyncio.get_running_loop()
+            task = asyncio.create_task(session.run_objective(raw))
+            hb = asyncio.create_task(_heartbeat(state, config.AGENT_STALL_TIMEOUT))
+            sig_installed = True
+            try:
+                loop.add_signal_handler(signal.SIGINT, task.cancel)
+            except (NotImplementedError, ValueError):
+                sig_installed = False
+            try:
+                summary = await task
+            except asyncio.CancelledError:
+                print("\n⛔ cancelled — run marked aborted, containers reaped.")
+                continue
+            finally:
+                hb.cancel()
+                if sig_installed:
+                    try:
+                        loop.remove_signal_handler(signal.SIGINT)
+                    except Exception:  # noqa: BLE001
+                        pass
             last_answer = summary.answer
             print(f"\n=== {summary.status.upper()} "
                   f"(run {summary.run_id}, {summary.containers} containers, {summary.leaks} leaks) ===")
