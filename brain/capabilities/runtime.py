@@ -32,6 +32,25 @@ def _env_value(v) -> str:
     return json.dumps(v)
 
 
+def _save_outputs(workspace: Path, cap_name: str, output_files: dict) -> list[str]:
+    """Write a tool's captured /work/out files into the run workspace.
+
+    Handles nested paths (e.g. ``project/bot.py``) and refuses anything that
+    would escape the capability's directory. Returns workspace-relative paths.
+    """
+    capdir = (workspace / cap_name).resolve()
+    capdir.mkdir(parents=True, exist_ok=True)
+    produced: list[str] = []
+    for name, data in output_files.items():
+        dest = (capdir / name).resolve()
+        if not str(dest).startswith(str(capdir)):
+            continue  # path-traversal guard: tar names come from the container
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_bytes(data)
+        produced.append(f"{cap_name}/{dest.relative_to(capdir)}")
+    return produced
+
+
 def build_caps_server(
     capabilities: Iterable[Capability],
     *,
@@ -88,11 +107,7 @@ def build_caps_server(
 
             produced: list[str] = []
             if result.output_files and ws is not None:
-                capdir = ws / cap.name
-                capdir.mkdir(parents=True, exist_ok=True)
-                for name, data in result.output_files.items():
-                    (capdir / name).write_bytes(data)
-                    produced.append(f"{cap.name}/{name}")
+                produced = _save_outputs(ws, cap.name, result.output_files)
 
             text = result.stdout.strip() or "(no stdout)"
             if produced:
