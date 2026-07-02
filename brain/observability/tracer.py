@@ -169,6 +169,15 @@ class Tracer:
         with self._conn:
             self._conn.executescript(_SCHEMA)
         self._run: Optional[Run] = None
+        self._listeners: list = []
+
+    def add_listener(self, fn) -> None:
+        """Register a callback invoked with each event record as it is written.
+
+        For live consumers (e.g. the REPL's progress stream). Best-effort: a
+        listener that raises never affects recording or the run.
+        """
+        self._listeners.append(fn)
 
     # -- run lifecycle ---------------------------------------------------- #
     def start_run(self, objective: str, *, model: Optional[str] = None) -> "Run":
@@ -224,14 +233,16 @@ class Tracer:
                              "status": status, "data": data or {}})
         return eid
 
-    def _update(self, eid: str, *, status: str, duration_ms: int, data: dict, error: Optional[str]) -> None:
+    def _update(self, eid: str, *, status: str, duration_ms: int, data: dict, error: Optional[str],
+                kind: str = "", name: str = "") -> None:
         with self._lock, self._conn:
             self._conn.execute(
                 "UPDATE events SET status=?, duration_ms=?, data_json=?, error=? WHERE event_id=?",
                 (status, duration_ms, json.dumps(data or {}), error, eid),
             )
-        self._jsonl_run({"phase": "end", "event_id": eid, "status": status,
-                         "duration_ms": duration_ms, "data": data or {}, "error": error})
+        self._jsonl_run({"phase": "end", "event_id": eid, "kind": kind, "name": name,
+                         "status": status, "duration_ms": duration_ms,
+                         "data": data or {}, "error": error})
 
     def _jsonl(self, run_id: str, record: dict) -> None:
         self._jsonl_run(record)
@@ -245,6 +256,11 @@ class Tracer:
                 f.write(json.dumps(record) + "\n")
         except Exception:
             pass
+        for fn in self._listeners:
+            try:
+                fn(record)
+            except Exception:
+                pass
 
     def close(self) -> None:
         with self._lock:
@@ -279,11 +295,13 @@ class Run:
         try:
             yield sp
         except Exception as e:
-            self._t._update(eid, status="failed", duration_ms=int((time.monotonic() - t0) * 1000),
+            self._t._update(eid, kind=kind, name=name, status="failed",
+                            duration_ms=int((time.monotonic() - t0) * 1000),
                             data=sp.data, error=repr(e))
             raise
         else:
-            self._t._update(eid, status=sp.status, duration_ms=int((time.monotonic() - t0) * 1000),
+            self._t._update(eid, kind=kind, name=name, status=sp.status,
+                            duration_ms=int((time.monotonic() - t0) * 1000),
                             data=sp.data, error=None)
         finally:
             _current_span.reset(token)
