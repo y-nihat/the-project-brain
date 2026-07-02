@@ -89,3 +89,10 @@ SANDBOX_MAX_OUTPUT_MB = int(os.environ.get("SANDBOX_MAX_OUTPUT_MB", "128"))
 # AGENT_STALL_TIMEOUT seconds, or when a session exceeds AGENT_TOTAL_TIMEOUT.
 AGENT_STALL_TIMEOUT = float(os.environ.get("AGENT_STALL_TIMEOUT", "180"))
 AGENT_TOTAL_TIMEOUT = float(os.environ.get("AGENT_TOTAL_TIMEOUT", "900"))
+
+# Reflection loop: watch a trusted tool's live health and repair it if it degrades.
+CAPABILITY_CALL_BUDGET = int(os.environ.get("CAPABILITY_CALL_BUDGET", "25"))          # per (agent, capability)
+CAPABILITY_UNHEALTHY_CONSECUTIVE_EMPTY = int(os.environ.get("CAPABILITY_UNHEALTHY_CONSECUTIVE_EMPTY", "3"))
+CAPABILITY_UNHEALTHY_MIN_CALLS = int(os.environ.get("CAPABILITY_UNHEALTHY_MIN_CALLS", "5"))
+CAPABILITY_UNHEALTHY_EMPTY_RATIO = float(os.environ.get("CAPABILITY_UNHEALTHY_EMPTY_RATIO", "0.7"))
+CAPABILITY_MAX_REPAIRS_PER_RUN = int(os.environ.get("CAPABILITY_MAX_REPAIRS_PER_RUN", "2"))

@@ -22,6 +22,7 @@ from typing import Iterable, Optional
 
 from ..models import Capability
 from ..sandbox import policy
+from . import health as health_mod
 
 
 def _env_value(v) -> str:
@@ -30,6 +31,14 @@ def _env_value(v) -> str:
     if isinstance(v, (int, float, bool)):
         return str(v)
     return json.dumps(v)
+
+
+def _observe(monitor, tracer, cap_name: str, result_class: str, count: int) -> None:
+    """Record a tool result's health and surface it in the trace."""
+    if monitor is not None:
+        monitor.record(cap_name, result_class)
+    if tracer is not None:
+        tracer.event("tool.result", cap_name, status=result_class, result=result_class, count=count)
 
 
 def _save_outputs(workspace: Path, cap_name: str, output_files: dict) -> list[str]:
@@ -56,9 +65,16 @@ def build_caps_server(
     *,
     manager,
     workspace: Optional[str | Path] = None,
+    monitor=None,
+    tracer=None,
     server_name: str = "caps",
 ):
-    """Create an in-process MCP server exposing each capability as a tool."""
+    """Create an in-process MCP server exposing each capability as a tool.
+
+    ``monitor`` (a :class:`~brain.capabilities.health.HealthMonitor`) observes each
+    tool's live results and enforces a per-capability call budget, so the
+    orchestrator can repair a degraded tool instead of letting an agent grind it.
+    """
     from claude_agent_sdk import create_sdk_mcp_server, tool
 
     ws = Path(workspace) if workspace else None
@@ -66,6 +82,16 @@ def build_caps_server(
     def make(cap: Capability):
         @tool(cap.name, cap.description, cap.input_schema)
         async def handler(args):
+            # Bound effort: a degraded tool must not be hammered forever.
+            if monitor is not None and monitor.over_budget(cap.name):
+                return {
+                    "content": [{"type": "text", "text": (
+                        f"call budget for '{cap.name}' is exhausted "
+                        f"({monitor.call_budget} calls). Stop calling it and conclude "
+                        "with what you have already gathered.")}],
+                    "is_error": True,
+                }
+
             args = dict(args)
             file_refs = args.pop("files", None)  # reserved: workspace paths to attach
 
@@ -97,6 +123,7 @@ def build_caps_server(
                 else:
                     reason = (f"exit={result.exit_code}, timed_out={result.timed_out}: "
                               f"{result.stderr[-800:]}")
+                _observe(monitor, tracer, cap.name, health_mod.ERROR, 0)
                 return {
                     "content": [{
                         "type": "text",
@@ -109,12 +136,22 @@ def build_caps_server(
             if result.output_files and ws is not None:
                 produced = _save_outputs(ws, cap.name, result.output_files)
 
+            # Observe what actually came back (ok / empty / error) — the silent
+            # failure mode is exit 0 with no data.
+            rclass, count = health_mod.classify_result(result.stdout)
+            if produced and rclass == health_mod.EMPTY:
+                rclass, count = health_mod.OK, len(produced)  # producing files is a real result
+            _observe(monitor, tracer, cap.name, rclass, count)
+
             text = result.stdout.strip() or "(no stdout)"
             if produced:
                 text += ("\n\nProduced files (pass these paths as `files` to a downstream tool): "
                          + json.dumps(produced))
             if result.error_note:
                 text += f"\n\n[engine note] {result.error_note}"
+            if rclass == health_mod.EMPTY:
+                text += ("\n\n[engine note] this returned NO results. If this keeps happening the "
+                         "tool may be degraded — vary your query or stop and report the limitation.")
             return {"content": [{"type": "text", "text": text}]}
 
         return handler
