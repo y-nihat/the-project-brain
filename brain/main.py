@@ -1,119 +1,48 @@
-"""CLI entrypoint:  python -m brain.main "<objective>"
+"""One-shot CLI:  python -m brain.main "<objective>"
 
-Wires the components together, runs one objective end-to-end, and prints the
-answer plus a resource-accounting summary (so leaks are visible).
+Runs one objective end-to-end through a BrainSession and prints the answer plus a
+resource-accounting summary. For an interactive, live-streamed session see
+`python -m brain.repl`.
 """
 from __future__ import annotations
 
 import asyncio
-import os
 import sys
-import urllib.request
 
-from . import config
-from .approval import ApprovalBroker
-from .ledger import Ledger
-from .memory.blackboard import Blackboard
-from .observability import Tracer
-from .orchestrator import Orchestrator
-from .planner import Planner
-from .registry import Registry
-from .resolver import Resolver
-from .sandbox.manager import SandboxManager
+from .session import BrainSession
 
 
 async def _amain(objective: str) -> int:
-    config.enforce_auth_invariant()
+    session = BrainSession()
+    try:
+        if s := _history_note(session, objective):
+            print(s)
+        summary = await session.run_objective(objective)
+        print("\n==== ANSWER ====\n" + summary.answer)
+        print(
+            f"\n[accounting] run={summary.run_id} status={summary.status} "
+            f"containers={summary.containers} leaks={summary.leaks} "
+            f"capabilities={summary.capabilities}"
+        )
+        print(f"[trace]      python -m brain.observability show {summary.run_id}")
+        return 0 if summary.status == "succeeded" else 1
+    finally:
+        session.close()
 
-    # Episodic memory: assemble relevant prior-run context BEFORE this run is
-    # recorded, so it never matches itself.
+
+def _history_note(session: BrainSession, objective: str) -> str:
+    from . import config
     from .memory import history as history_mod
 
-    hist_text, seed_run = history_mod.history_block(config.DB_PATH, config.RUNS_DIR, objective)
-
-    tracer = Tracer(config.DB_PATH, config.RUNS_DIR, engine_version=config.ENGINE_VERSION)
-    run = tracer.start_run(objective, model=config.BRAIN_MODEL)
-    session = run.run_id  # ledger, blackboard, and the trace all share the run id
-
-    ledger = Ledger(config.DB_PATH)
-    registry = Registry(config.DB_PATH, config.CAPABILITIES_STORE)
-    blackboard = Blackboard(config.DB_PATH, session)
-    manager = SandboxManager(session, ledger, tracer=tracer)
-    broker = ApprovalBroker(tracer=tracer)  # interactive, blocking
-    known = {c.name: c.description for c in registry.all()}
-    planner = Planner(model=config.BRAIN_MODEL, known_capabilities=known, tracer=tracer)
-    resolver = Resolver(registry)
-    orchestrator = Orchestrator(
-        session=session,
-        manager=manager,
-        ledger=ledger,
-        registry=registry,
-        blackboard=blackboard,
-        broker=broker,
-        planner=planner,
-        resolver=resolver,
-        model=config.BRAIN_MODEL,
-        use_builder=True,
-        tracer=tracer,
-    )
-
-    try:
-        if hist_text:
-            print(f"[memory]     applying context from prior runs"
-                  + (f"; seeding workspace from {seed_run}" if seed_run else ""))
-        try:
-            answer = await orchestrator.run(objective, history=hist_text, seed_run=seed_run)
-            status = "succeeded"
-        except Exception as e:  # noqa: BLE001
-            answer = f"ERROR: {type(e).__name__}: {e}"
-            status = "failed"
-
-        leaks = ledger.find_leaks(session)
-        if leaks:
-            status = "failed"
-        run.finish(status, outcome=answer)
-        _export_to_viewer(session)
-
-        print("\n==== ANSWER ====\n" + answer)
-        print(
-            f"\n[accounting] run={session} status={status} "
-            f"containers={len(ledger.all(session))} leaks={len(leaks)} "
-            f"capabilities={[c.name for c in registry.all()]}"
-        )
-        print(f"[trace]      python -m brain.observability show {session}")
-        return 0 if status == "succeeded" else 1
-    finally:
-        manager.close()
-        ledger.close()
-        registry.close()
-        blackboard.close()
-        tracer.close()
-
-
-def _export_to_viewer(run_id: str) -> None:
-    """Best-effort: push the finished run to the Phoenix viewer if it's running.
-
-    A missing viewer must never affect a run — traces stay in data/ and can be
-    exported later with `python -m brain.observability export`.
-    """
-    endpoint = os.environ.get("PHOENIX_COLLECTOR_ENDPOINT", "http://phoenix:6006/v1/traces")
-    base = endpoint.split("/v1/")[0]
-    try:
-        urllib.request.urlopen(base, timeout=2)  # quick reachability probe
-    except Exception:
-        return  # viewer not running
-    try:
-        from .observability import otel_export
-
-        n = otel_export.export_run(config.DB_PATH, run_id, endpoint)
-        print(f"[phoenix]    exported {n} spans — view at http://localhost:6006")
-    except Exception as e:  # noqa: BLE001
-        print(f"[phoenix]    export skipped ({e})")
+    hist, seed = history_mod.history_block(config.DB_PATH, config.RUNS_DIR, objective)
+    if not hist:
+        return ""
+    return "[memory]     applying context from prior runs" + (f"; seeding workspace from {seed}" if seed else "")
 
 
 def main() -> None:
     if len(sys.argv) < 2:
-        print('usage: python -m brain.main "<objective>"')
+        print('usage: python -m brain.main "<objective>"   (or: python -m brain.repl)')
         sys.exit(2)
     objective = " ".join(sys.argv[1:])
     sys.exit(asyncio.run(_amain(objective)))
