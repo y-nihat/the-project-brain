@@ -68,6 +68,26 @@ them directly in your editor). `data/` is git-ignored (runtime state).
 Everything generated lives under `data/` (an **output**, git-ignored) — kept separate from the
 engine source in `brain/`. A run never writes to tracked files.
 
+## Resource model (sandboxes are capped, measured, and cleaned up)
+
+- **Hard limits, no swap.** Every sandbox container gets `memory` (default 256 MB, swap disabled so
+  the limit is real), `cpus` (0.5), `pids`, and a timeout (120 s).
+- **Tools declare needs; the engine clamps.** An authored tool may declare
+  `resources: {memory_mb, cpus, timeout_seconds}`; the engine bounds them to ceilings
+  (2048 MB / 2 CPU / 300 s — overridable via `SANDBOX_MAX_*` env vars).
+- **OOM kills are detected and reported** (`RunResult.oom`, ledger `oom` column, trace span) — and
+  fed back to the tool-authoring self-repair loop in plain language, since an OOM kill leaves no
+  traceback.
+- **Usage is measured**: a best-effort sampler records each container's peak memory
+  (`peak_mem_mb` in the ledger and trace) so limits can be tuned from data.
+- **Output capture is bounded** (`SANDBOX_MAX_OUTPUT_MB`, default 128 MB) so a runaway tool cannot
+  exhaust the orchestrator.
+- **The control plane is capped too**: compose sets brain 2 GB / 2 CPU, socket-proxy 128 MB / 0.5.
+- **No sprawl**: session containers are reaped; dangling brain-built image layers are pruned on
+  shutdown (tagged capability images — the library — are kept).
+- **Guaranteed stack teardown**: use `./scripts/run-objective.sh "<objective>"` to run an objective —
+  it always tears the compose stack down afterwards, even on failure/Ctrl-C.
+
 ## How others will use it (planned — **not built yet**, milestone M2)
 
 - Installable Python package + a host-side **`brain` CLI** you point at any folder:

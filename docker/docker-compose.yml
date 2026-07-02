@@ -23,6 +23,8 @@ services:
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
     restart: unless-stopped
+    mem_limit: 128m
+    cpus: 0.5
     networks: [brainnet]
 
   brain:
@@ -39,6 +41,8 @@ services:
     working_dir: /app
     volumes:
       - ..:/app                      # live source for iteration
+    mem_limit: 2g
+    cpus: 2.0
     networks: [brainnet]
     stdin_open: true                 # interactive approval gate reads stdin
     tty: true
