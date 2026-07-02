@@ -65,12 +65,23 @@ def agent_system_prompt(spec: AgentSpec, allowed_tools: list[str]) -> str:
     return "\n".join(lines)
 
 
-def agent_user_prompt(objective: str, spec: AgentSpec, upstream: dict[str, str]) -> str:
-    """Build the per-agent task prompt, injecting upstream agents' outputs."""
+def agent_user_prompt(
+    objective: str,
+    spec: AgentSpec,
+    upstream: dict[str, str],
+    history: str | None = None,
+) -> str:
+    """Build the per-agent task prompt, injecting upstream outputs and, when
+    present, the brain's relevant prior-run history."""
     parts = [
         f"Overall objective: {objective}",
         f"Your task ({spec.role}): {spec.goal}",
     ]
+    if history:
+        parts.append(
+            "\nPrior work by this system relevant to the objective (files listed there may "
+            "already be seeded under `prior/` in the current workspace):\n" + history
+        )
     if upstream:
         parts.append("\nContext from upstream agents:")
         for dep, out in upstream.items():

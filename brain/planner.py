@@ -79,7 +79,7 @@ class Planner:
 
         self.tracer = tracer or NullTracer()
 
-    async def plan(self, objective: str) -> Plan:
+    async def plan(self, objective: str, history: Optional[str] = None) -> Plan:
         from claude_agent_sdk import create_sdk_mcp_server, tool
 
         from .factory import locked_session
@@ -105,7 +105,14 @@ class Planner:
             max_turns=4,
         )
 
-        await trace_query(self.tracer, "planner", objective, options)
+        prompt = objective
+        if history:
+            prompt += (
+                "\n\nPRIOR WORK by this system (you may design agents that build on it; its files "
+                "can be seeded into the current workspace, and its capabilities are reusable):\n"
+                + history
+            )
+        await trace_query(self.tracer, "planner", prompt, options)
 
         agents = [_coerce_agent(a) for a in captured.get("agents", []) if a]
         if not agents:
@@ -120,5 +127,5 @@ class StubPlanner:
     def __init__(self, agents: list[AgentSpec]):
         self._agents = agents
 
-    async def plan(self, objective: str) -> Plan:
+    async def plan(self, objective: str, history: Optional[str] = None) -> Plan:
         return Plan(objective=objective, agents=list(self._agents))

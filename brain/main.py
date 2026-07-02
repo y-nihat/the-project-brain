@@ -25,6 +25,12 @@ from .sandbox.manager import SandboxManager
 async def _amain(objective: str) -> int:
     config.enforce_auth_invariant()
 
+    # Episodic memory: assemble relevant prior-run context BEFORE this run is
+    # recorded, so it never matches itself.
+    from .memory import history as history_mod
+
+    hist_text, seed_run = history_mod.history_block(config.DB_PATH, config.RUNS_DIR, objective)
+
     tracer = Tracer(config.DB_PATH, config.RUNS_DIR, engine_version=config.ENGINE_VERSION)
     run = tracer.start_run(objective, model=config.BRAIN_MODEL)
     session = run.run_id  # ledger, blackboard, and the trace all share the run id
@@ -52,8 +58,11 @@ async def _amain(objective: str) -> int:
     )
 
     try:
+        if hist_text:
+            print(f"[memory]     applying context from prior runs"
+                  + (f"; seeding workspace from {seed_run}" if seed_run else ""))
         try:
-            answer = await orchestrator.run(objective)
+            answer = await orchestrator.run(objective, history=hist_text, seed_run=seed_run)
             status = "succeeded"
         except Exception as e:  # noqa: BLE001
             answer = f"ERROR: {type(e).__name__}: {e}"
