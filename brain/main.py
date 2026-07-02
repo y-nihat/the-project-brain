@@ -6,7 +6,9 @@ answer plus a resource-accounting summary (so leaks are visible).
 from __future__ import annotations
 
 import asyncio
+import os
 import sys
+import urllib.request
 
 from . import config
 from .approval import ApprovalBroker
@@ -61,6 +63,7 @@ async def _amain(objective: str) -> int:
         if leaks:
             status = "failed"
         run.finish(status, outcome=answer)
+        _export_to_viewer(session)
 
         print("\n==== ANSWER ====\n" + answer)
         print(
@@ -76,6 +79,27 @@ async def _amain(objective: str) -> int:
         registry.close()
         blackboard.close()
         tracer.close()
+
+
+def _export_to_viewer(run_id: str) -> None:
+    """Best-effort: push the finished run to the Phoenix viewer if it's running.
+
+    A missing viewer must never affect a run — traces stay in data/ and can be
+    exported later with `python -m brain.observability export`.
+    """
+    endpoint = os.environ.get("PHOENIX_COLLECTOR_ENDPOINT", "http://phoenix:6006/v1/traces")
+    base = endpoint.split("/v1/")[0]
+    try:
+        urllib.request.urlopen(base, timeout=2)  # quick reachability probe
+    except Exception:
+        return  # viewer not running
+    try:
+        from .observability import otel_export
+
+        n = otel_export.export_run(config.DB_PATH, run_id, endpoint)
+        print(f"[phoenix]    exported {n} spans — view at http://localhost:6006")
+    except Exception as e:  # noqa: BLE001
+        print(f"[phoenix]    export skipped ({e})")
 
 
 def main() -> None:
