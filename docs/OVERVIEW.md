@@ -77,6 +77,27 @@ future milestones on this foundation.)
 Everything generated lives under `data/` (an **output**, git-ignored) — kept separate from the
 engine source in `brain/`. A run never writes to tracked files.
 
+## Interactive session (talk to the brain in a terminal)
+
+A Claude-Code-style REPL: type an objective, watch the brain work **live** (plan → agents → tool
+authoring → verification → answer), and every session is recorded under `data/` (and auto-exported
+to Phoenix if it's running). This is also where the approval gate can actually stop and ask you
+(e.g. for a credential), which non-interactive runs can't.
+
+```sh
+./scripts/brain-chat.sh            # brain only  (add --phoenix for the viewer)
+# then, at the prompt:
+brain> Build and test a small CSV-sorting tool
+brain> /runs        # recent runs
+brain> /show last   # a run's timeline
+brain> /caps        # the capability library
+brain> /quit        # (Ctrl-D also) — the script tears the stack down on exit
+```
+
+Under the hood both this REPL and the one-shot `python -m brain.main "<objective>"` run through the
+same `BrainSession`, so behavior is identical — the REPL just adds the live stream and reuses
+connections across turns (so follow-up objectives build on earlier ones via continuity).
+
 ## Interactive trace viewing (Arize Phoenix)
 
 The SQLite trace store under `data/` is the source of truth; any recorded run can be pushed to a
