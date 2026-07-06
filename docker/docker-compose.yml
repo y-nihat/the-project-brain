@@ -41,6 +41,8 @@ services:
     working_dir: /app
     volumes:
       - ..:/app                      # live source for iteration
+      - /etc/localtime:/etc/localtime:ro   # container clock renders in the laptop's timezone
+      - /etc/timezone:/etc/timezone:ro
     mem_limit: 2g
     cpus: 2.0
     networks: [brainnet]

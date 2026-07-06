@@ -101,6 +101,22 @@ def _summary(kind: str, data: dict) -> str:
     return s[:160]
 
 
+def local_ts(iso: str | None) -> str:
+    """Render a stored UTC ISO timestamp in the machine's local timezone.
+
+    Storage stays UTC (unambiguous, sortable); only display converts. The
+    compose file mounts the host's /etc/localtime, so 'local' means the
+    user's laptop, not the container."""
+    if not iso:
+        return ""
+    try:
+        import datetime as _dt
+
+        return _dt.datetime.fromisoformat(iso).astimezone().strftime("%Y-%m-%d %H:%M:%S")
+    except ValueError:
+        return iso[:19].replace("T", " ")
+
+
 def refresh_index(db_path: str | Path, runs_dir: str | Path) -> None:
     """Keep data/runs/ navigable: INDEX.md (all runs, newest first), a LATEST
     pointer, and a per-run README.md. Best-effort — never breaks a run."""
@@ -114,11 +130,11 @@ def refresh_index(db_path: str | Path, runs_dir: str | Path) -> None:
         "",
         f"**Latest:** `{runs[0]['run_id']}` — {(runs[0]['objective'] or '')[:80]}",
         "",
-        "| started (UTC) | run | status | cost $ | objective |",
+        "| started | run | status | cost $ | objective |",
         "|---|---|---|---|---|",
     ]
     for r in runs:
-        started = (r["started_at"] or "")[:19].replace("T", " ")
+        started = local_ts(r["started_at"])
         lines.append(
             f"| {started} | [{r['run_id']}]({r['run_id']}/) | {r['status']} "
             f"| {r['cost_usd'] or 0.0:.2f} | {(r['objective'] or '').replace('|', '/')[:80]} |"
@@ -141,7 +157,7 @@ def refresh_index(db_path: str | Path, runs_dir: str | Path) -> None:
             f"- **objective:** {r['objective']}\n"
             f"- **status:** {r['status']}   **cost:** ${r['cost_usd'] or 0.0:.2f}   "
             f"**containers:** {r['n_containers'] or 0}\n"
-            f"- **started:** {r['started_at']}\n\n"
+            f"- **started:** {local_ts(r['started_at'])}\n\n"
             "Contents: `trace.md` (timeline) · `outputs/` (agent outputs + ANSWER.md) · "
             "`workspace/` (files produced) · `artifacts/` (tool code authored)\n"
         )
@@ -165,7 +181,7 @@ def render_run(db_path: str | Path, run_id: str) -> str:
     out.append(f"- **Objective:** {run['objective']}")
     out.append(f"- **Status:** {run['status']}   **Model:** {run['model'] or '(default)'}   "
                f"**Engine:** {run['engine_version']}")
-    out.append(f"- **Started:** {run['started_at']}   **Duration:** {run['duration_ms']} ms")
+    out.append(f"- **Started:** {local_ts(run['started_at'])}   **Duration:** {run['duration_ms']} ms")
     out.append(f"- **Containers:** {run['n_containers'] or 0}   **Approvals:** {run['n_approvals'] or 0}   "
                f"**Tokens:** {run['tokens_in'] or 0}/{run['tokens_out'] or 0}   "
                f"**Cost:** ${run['cost_usd'] or 0.0:.4f}")

@@ -104,6 +104,23 @@ def test_history_block_empty_when_no_db(tmp_path):
     assert text is None and seed is None
 
 
+def test_local_ts_renders_stored_utc_in_local_zone(monkeypatch):
+    import time as _time
+
+    from brain.observability.view import local_ts
+
+    monkeypatch.setenv("TZ", "Europe/Istanbul")
+    _time.tzset()
+    try:
+        # Stored UTC 10:00 -> Istanbul (+03, fixed year-round) 13:00.
+        assert local_ts("2026-01-15T10:00:00+00:00") == "2026-01-15 13:00:00"
+        assert local_ts(None) == ""
+        assert local_ts("garbage-timestamp") == "garbage-timestamp"  # falls back, never raises
+    finally:
+        monkeypatch.undo()
+        _time.tzset()
+
+
 def test_readable_run_ids_index_and_latest(tmp_path):
     db, runs_dir = tmp_path / "b.db", tmp_path / "runs"
     tracer = Tracer(db, runs_dir)
