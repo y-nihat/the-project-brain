@@ -55,19 +55,32 @@ def score_run(run_id: str, scenario: Scenario | str,
     return card
 
 
-async def run_suite(scenario_ids: Optional[list[str]] = None, *, session=None) -> tuple[list[ScoreCard], Path]:
+async def run_suite(scenario_ids: Optional[list[str]] = None, *, session=None,
+                    echo: bool = False) -> tuple[list[ScoreCard], Path]:
     """Run scenarios LIVE through a BrainSession, score each, write scorecards.
 
     Costs real tokens and minutes; run it after major engine changes, not per
-    commit. A shared ``session`` may be injected (tests use a stub)."""
+    commit. A shared ``session`` may be injected (tests use a stub);
+    ``echo`` streams the same live progress lines the REPL shows."""
     from ..session import BrainSession
 
     chosen = [get(sid) for sid in scenario_ids] if scenario_ids else list(SCENARIOS)
     own_session = session is None
     session = session or BrainSession(auto_export=False)
+    if echo and hasattr(session, "add_listener"):
+        from ..repl import format_event
+
+        def _echo(rec: dict) -> None:
+            line = format_event(rec)
+            if line:
+                print(line, flush=True)
+
+        session.add_listener(_echo)
     cards: list[ScoreCard] = []
     try:
         for sc in chosen:
+            if echo:
+                print(f"\n⟳ scenario {sc.id}: {sc.objective}", flush=True)
             summary = await session.run_objective(sc.objective)
             cards.append(score_run(summary.run_id, sc))
     finally:

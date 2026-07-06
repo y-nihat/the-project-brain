@@ -30,7 +30,7 @@ def main(argv: list[str]) -> int:
         from .. import config
         config.enforce_auth_invariant()
         ids = argv[1:] or None
-        cards, out_dir = asyncio.run(runner.run_suite(ids))
+        cards, out_dir = asyncio.run(runner.run_suite(ids, echo=True))
         print(runner.render_markdown(cards))
         print(f"scorecard written to {out_dir}")
         return 0 if all(c.ok for c in cards) else 1
