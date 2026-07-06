@@ -83,6 +83,22 @@ def test_history_block_and_seeding(tmp_path):
     assert (runs_dir / "run-new" / "workspace" / "prior" / rid / "filegen" / "bot.py").exists()
 
 
+def test_seeding_skips_prior_subtree(tmp_path):
+    """A seeded run's own prior/ must not be re-copied — otherwise seeds nest
+    recursively, run after run (prior/run-A/prior/run-B/...)."""
+    runs = tmp_path / "runs"
+    src_ws = runs / "run-old" / "workspace"
+    (src_ws / "filegen").mkdir(parents=True)
+    (src_ws / "filegen" / "real.txt").write_text("keep me")
+    nested = src_ws / "prior" / "run-ancient" / "tool"
+    nested.mkdir(parents=True)
+    (nested / "old.txt").write_text("do not chain me")
+
+    copied = _seed_prior_workspace(runs, "run-new", "run-old")
+    assert copied == ["prior/run-old/filegen/real.txt"]
+    assert not (runs / "run-new" / "workspace" / "prior" / "run-old" / "prior").exists()
+
+
 def test_history_block_empty_when_no_db(tmp_path):
     text, seed = history.history_block(tmp_path / "missing.db", tmp_path / "runs", "anything")
     assert text is None and seed is None

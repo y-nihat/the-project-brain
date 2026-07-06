@@ -15,7 +15,7 @@ import pytest
 from brain import acquisition, config
 from brain.approval import ApprovalBroker
 from brain.ledger import Ledger
-from brain.models import CREATE, NOOP, REUSE, AgentSpec
+from brain.models import CREATE, NOOP, REUSE, StageSpec
 from brain.registry import Registry
 from brain.resolver import Resolver
 
@@ -246,10 +246,10 @@ def test_m1_end_to_end(tmp_path):
     mgr = SandboxManager("m1-e2e", ledger)
     broker = ApprovalBroker(auto="deny")
     planner = StubPlanner([
-        AgentSpec(id="researcher", role="researcher",
+        StageSpec(id="researcher", pattern="single", role="researcher",
                   goal="find what site reliability engineering is, using web search",
                   capabilities=["web_search"]),
-        AgentSpec(id="writer", role="writer",
+        StageSpec(id="writer", pattern="single", role="writer",
                   goal="write a two-sentence summary from the researcher's findings",
                   capabilities=[], depends_on=["researcher"]),
     ])

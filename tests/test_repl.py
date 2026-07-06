@@ -6,9 +6,32 @@ from brain.repl import format_event
 
 
 def test_format_event_renders_key_moments():
-    assert "2 agent(s)" in format_event(
+    plan_line = format_event(
+        {"kind": "plan.created", "name": "plan",
+         "data": {"stages": [{"id": "gather", "pattern": "single"},
+                             {"id": "survey", "pattern": "map"}]}}
+    )
+    assert "2 stage(s)" in plan_line and "survey(map)" in plan_line
+    # Legacy records (pre-workflow runs) still render.
+    assert "2 stage(s)" in format_event(
         {"kind": "plan.created", "name": "plan",
          "data": {"agents": [{"id": "a"}, {"id": "b"}]}}
+    )
+    assert "fan-out" in format_event(
+        {"kind": "map.fanout", "name": "survey",
+         "data": {"items": 12, "workers": 3, "shard_size": 5}}
+    )
+    assert "review round 1: revise" in format_event(
+        {"kind": "review.verdict", "name": "check", "data": {"round": 1, "verdict": "revise"}}
+    )
+    assert "ok (5 results)" in format_event(
+        {"kind": "tool.result", "name": "web_search", "data": {"result": "ok", "count": 5}}
+    )
+    assert "degraded" in format_event(
+        {"kind": "tool.result", "name": "web_search", "data": {"result": "empty", "count": 0}}
+    )
+    assert "stage survey [map]" in format_event(
+        {"kind": "stage", "name": "survey", "phase": "start", "data": {"pattern": "map"}}
     )
     assert "agent ▸ Researcher" in format_event(
         {"kind": "agent.created", "name": "r", "data": {"role": "Researcher", "capabilities": ["web_search"]}}
@@ -32,8 +55,13 @@ def test_format_event_renders_key_moments():
 
 def test_format_event_skips_noise():
     assert format_event({"kind": "run", "name": "start"}) is None
-    assert format_event({"kind": "agent.tool_call", "name": "mcp__caps__web_search"}) is None
     assert format_event({"kind": "decision", "name": "x", "data": {"choice": "noop"}}) is None
+
+
+def test_format_event_shows_tool_call_args():
+    line = format_event({"kind": "agent.tool_call", "name": "mcp__caps__web_search",
+                         "data": {"args_preview": "query=ISO 42001 adoption"}})
+    assert "web_search" in line and "ISO 42001 adoption" in line
 
 
 def test_tracer_listener_receives_events_and_survives_errors(tmp_path):
