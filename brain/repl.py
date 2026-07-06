@@ -33,13 +33,46 @@ def format_event(record: dict) -> Optional[str]:
     if kind == "run":
         return None  # the REPL frames the run itself
     if kind == "plan.created":
-        agents = data.get("agents") or []
-        roles = ", ".join(a.get("id", "?") for a in agents)
-        return f"  📋 plan: {len(agents)} agent(s) — {roles}"
+        stages = data.get("stages") or data.get("agents") or []
+        shape = ", ".join(f"{s.get('id', '?')}({s.get('pattern', 'single')})" for s in stages)
+        return f"  📋 plan: {len(stages)} stage(s) — {shape}"
+    if kind == "stage":
+        if phase == "start":
+            return f"  ▶ stage {name} [{data.get('pattern', 'single')}]"
+        return f"  ■ stage {name} done{dur_s}"
+    if kind == "map.fanout":
+        return (f"     ⑃ fan-out: {data.get('items')} items → {data.get('workers')} workers "
+                f"(≤{data.get('shard_size')} items each)")
+    if kind in ("map.no_manifest", "map.empty"):
+        return f"     ⚠ {name}: {'no machine-readable manifest upstream' if kind == 'map.no_manifest' else 'no work items'}"
+    if kind == "worker.failed":
+        return f"     ✗ worker {name} failed: {str(data.get('error', ''))[:80]}"
+    if kind == "reduce.batched":
+        return f"     ⑂ consolidating hierarchically in {data.get('batches')} batches"
+    if kind == "review.verdict":
+        v = data.get("verdict")
+        icon = "✓" if v == "approved" else "✎"
+        return f"     {icon} review round {data.get('round')}: {v}"
+    if kind == "review.revised":
+        return f"     ↻ draft revised after review ({name})"
+    if kind == "review.exhausted":
+        return f"     ⚠ review rounds exhausted — answer carries an honesty note"
+    if kind == "run.session_cap":
+        return f"  ⚠ session cap reached — {name} not run"
     if kind == "agent.created":
         caps = data.get("capabilities") or []
         cap_s = f" [{', '.join(caps)}]" if caps else " [no tools — reasons unaided]"
         return f"  🤖 agent ▸ {data.get('role', name)}{cap_s}"
+    if kind == "tool.result":
+        r = data.get("result")
+        n = data.get("count")
+        if r == "ok":
+            return f"         → ok ({n} result{'s' if n != 1 else ''})"
+        return f"         → {r}{' — tool may be degraded' if r == 'empty' else ''}"
+    if kind == "capability.unhealthy":
+        return f"     ⚠ {name} looks unhealthy ({str(data.get('reason', ''))[:80]}) — repairing…"
+    if kind == "agent.rerun":
+        return f"     ↻ re-running {name} with the repaired tool"
     if kind == "decision":
         if data.get("choice") == "reuse":
             return f"     ↩ reuse tool: {data.get('capability')}"
@@ -64,7 +97,9 @@ def format_event(record: dict) -> Optional[str]:
     if kind == "approval.resolved":
         return f"  ⚠ approval {status}"
     if kind == "agent.tool_call":
-        return None  # too chatty for the live view
+        short = name.split("__")[-1]
+        prev = data.get("args_preview")
+        return f"       ⚒ {short}({prev})" if prev else f"       ⚒ {short}"
     return None
 
 
