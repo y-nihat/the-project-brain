@@ -307,19 +307,25 @@ class Orchestrator:
         limit = config.REDUCE_MAX_INPUT_CHARS
         batches = _batch_notes(notes, limit)
         if len(batches) > 1:
-            # Hierarchical consolidation: partial merges first, then the final one.
+            # Hierarchical consolidation: independent partial merges run in
+            # bounded parallel (same width as map workers), then the final one.
             self.tracer.event("reduce.batched", stage.id, status="info", batches=len(batches))
-            partials: dict[str, str] = {}
-            for j, batch in enumerate(batches):
+            sem = asyncio.Semaphore(max(1, config.WORKER_PARALLELISM))
+
+            async def run_partial(j: int, batch: dict[str, str]) -> tuple[str, str]:
                 bid = f"{stage.id}.b{j + 1:02d}"
                 spec = AgentSpec(id=bid, role=stage.role,
                                  goal=("Partial consolidation towards: " + stage.goal +
                                        " Merge ONLY the notes given to you, faithfully; keep every "
                                        "source attribution; do not invent or drop findings."))
                 ctx = "Notes to consolidate:\n" + _notes_block(batch, limit)
-                partials[bid] = await self._run_agent_with_reflection(
-                    spec, {}, objective, {}, history, workspace, task_context=ctx)
-            notes = partials
+                async with sem:
+                    out = await self._run_agent_with_reflection(
+                        spec, {}, objective, {}, history, workspace, task_context=ctx)
+                return bid, out
+
+            done = await asyncio.gather(*(run_partial(j, b) for j, b in enumerate(batches)))
+            notes = dict(done)
 
         spec = AgentSpec(id=stage.id, role=stage.role, goal=stage.goal,
                          capabilities=stage.capabilities, depends_on=stage.depends_on)
