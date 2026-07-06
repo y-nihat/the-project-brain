@@ -28,24 +28,53 @@ class Capability:
 
 @dataclass
 class AgentSpec:
-    """One agent the brain decides to create for an objective.
+    """One concrete agent session.
 
-    The planner designs a *roster* of these; the agent factory turns each into a
-    concrete (dynamically-prompted) agent session, and the orchestrator runs them
-    in dependency order.
+    Since the workflow rework, this is the *instantiated* unit: the orchestrator
+    derives one AgentSpec per session from a :class:`StageSpec` (a `map` stage
+    yields one per shard). The factory turns it into a locked, dynamically
+    prompted session.
     """
 
     id: str
     role: str
     goal: str
     capabilities: list[str] = field(default_factory=list)   # capability keys this agent needs
-    depends_on: list[str] = field(default_factory=list)      # ids of upstream agents
+    depends_on: list[str] = field(default_factory=list)      # ids of upstream agents/stages
+
+
+# Stage execution patterns.
+SINGLE = "single"    # one agent, one session (the degenerate workflow)
+MAP = "map"          # replicate a worker template over runtime-determined shards
+REDUCE = "reduce"    # consolidate upstream workers' notes into one output
+REVIEW = "review"    # verify the upstream draft against evidence; demand fixes
+STAGE_PATTERNS = (SINGLE, MAP, REDUCE, REVIEW)
+
+
+@dataclass
+class StageSpec:
+    """One stage of a planned workflow.
+
+    The planner designs a DAG of these; the orchestrator executes them in
+    dependency order, deciding a `map` stage's fan-out width at run time from
+    the manifest its upstream stage actually produced.
+    """
+
+    id: str
+    pattern: str                                              # one of STAGE_PATTERNS
+    role: str
+    goal: str
+    capabilities: list[str] = field(default_factory=list)
+    depends_on: list[str] = field(default_factory=list)       # ids of upstream stages
+    shard_size: int = 0            # map: items per worker (0 => engine default)
+    shard_from: Optional[str] = None  # map: stage whose manifest is sharded (default: first dep)
+    rounds: int = 1                # review: max critique/fix cycles (clamped)
 
 
 @dataclass
 class Plan:
     objective: str
-    agents: list[AgentSpec]
+    stages: list[StageSpec]
 
 
 # Resolver decision kinds.

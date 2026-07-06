@@ -96,3 +96,15 @@ CAPABILITY_UNHEALTHY_CONSECUTIVE_EMPTY = int(os.environ.get("CAPABILITY_UNHEALTH
 CAPABILITY_UNHEALTHY_MIN_CALLS = int(os.environ.get("CAPABILITY_UNHEALTHY_MIN_CALLS", "5"))
 CAPABILITY_UNHEALTHY_EMPTY_RATIO = float(os.environ.get("CAPABILITY_UNHEALTHY_EMPTY_RATIO", "0.7"))
 CAPABILITY_MAX_REPAIRS_PER_RUN = int(os.environ.get("CAPABILITY_MAX_REPAIRS_PER_RUN", "2"))
+
+# Orchestration: staged workflows (single | map | reduce | review).
+# A `map` stage fans out over the manifest its upstream stage produced; width is
+# decided at RUN time from the data, clamped by these caps so a plan can never
+# stampede (the "50 subagents for a simple query" failure mode).
+MAP_DEFAULT_SHARD_SIZE = int(os.environ.get("MAP_DEFAULT_SHARD_SIZE", "5"))       # items per worker
+MAP_MAX_WORKERS_PER_STAGE = int(os.environ.get("MAP_MAX_WORKERS_PER_STAGE", "12"))
+WORKER_PARALLELISM = int(os.environ.get("WORKER_PARALLELISM", "3"))               # concurrent sessions
+RUN_MAX_AGENT_SESSIONS = int(os.environ.get("RUN_MAX_AGENT_SESSIONS", "40"))      # hard per-run cap
+REVIEW_MAX_ROUNDS = int(os.environ.get("REVIEW_MAX_ROUNDS", "2"))                 # critique/fix cycles
+# Above this, a reduce consolidates hierarchically (batches, then a final merge).
+REDUCE_MAX_INPUT_CHARS = int(os.environ.get("REDUCE_MAX_INPUT_CHARS", "100000"))

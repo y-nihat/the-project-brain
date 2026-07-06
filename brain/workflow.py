@@ -1,0 +1,168 @@
+"""Pure workflow mechanics: manifests, sharding, stage normalization, ordering.
+
+The staged-workflow model ("constrain locally, aggregate globally"):
+
+  * a stage that feeds a ``map`` ends its output with a fenced **manifest** — a
+    JSON array of work items — so fan-out width is decided from what was
+    actually found, not guessed at plan time;
+  * :func:`shard` splits the manifest into per-worker groups, widening shards
+    rather than exceeding the worker cap;
+  * :func:`normalize_stages` coerces whatever the planner emitted into a valid,
+    executable stage list (invalid patterns degrade to ``single``; dangling
+    references are dropped; bounds are clamped) — the planner is an LLM, so the
+    engine, not the model, guarantees structural validity.
+
+Everything here is deterministic and I/O-free.
+"""
+from __future__ import annotations
+
+import json
+import math
+import re
+from typing import Any, Optional
+
+from . import config
+from .models import MAP, REDUCE, REVIEW, SINGLE, STAGE_PATTERNS, StageSpec
+
+MANIFEST_FENCE = "manifest"
+_MANIFEST_RE = re.compile(r"```" + MANIFEST_FENCE + r"\s*\n(.*?)```", re.DOTALL)
+
+
+def manifest_instruction() -> str:
+    """Standard instruction appended to any stage whose output feeds a map."""
+    return (
+        "\nIMPORTANT — your output will be divided among parallel workers. End your "
+        "response with a machine-readable manifest of the work items you found "
+        "(one entry per item: a string or a small JSON object), in exactly this form:\n"
+        "```" + MANIFEST_FENCE + "\n"
+        '["item 1", "item 2", ...]\n'
+        "```\n"
+        "Include every distinct item; do not summarize items away."
+    )
+
+
+def parse_manifest(text: str) -> Optional[list]:
+    """Extract the LAST fenced manifest block from an agent's output.
+
+    Returns None when there is no parseable manifest (caller decides the
+    degraded behavior); [] is a valid, honest "nothing found".
+    """
+    if not text:
+        return None
+    matches = _MANIFEST_RE.findall(text)
+    for raw in reversed(matches):
+        try:
+            items = json.loads(raw.strip())
+        except json.JSONDecodeError:
+            continue
+        if isinstance(items, list):
+            return items
+    return None
+
+
+def render_item(item: Any) -> str:
+    return item if isinstance(item, str) else json.dumps(item, ensure_ascii=False)
+
+
+def shard(items: list, size: int, max_workers: int) -> list[list]:
+    """Split items into per-worker groups of ~`size`, never exceeding
+    `max_workers` — shards widen instead."""
+    if not items:
+        return []
+    size = max(1, size)
+    max_workers = max(1, max_workers)
+    if math.ceil(len(items) / size) > max_workers:
+        size = math.ceil(len(items) / max_workers)
+    return [items[i:i + size] for i in range(0, len(items), size)]
+
+
+def normalize_stages(raw: list) -> tuple[list[StageSpec], list[str]]:
+    """Coerce planner output into executable stages; returns (stages, warnings)."""
+    stages: list[StageSpec] = []
+    warnings: list[str] = []
+    seen: set[str] = set()
+
+    for i, r in enumerate(raw or []):
+        if not isinstance(r, dict):
+            continue
+        sid = str(r.get("id") or f"stage{i + 1}").strip() or f"stage{i + 1}"
+        if sid in seen:
+            new = f"{sid}-{i + 1}"
+            warnings.append(f"duplicate stage id '{sid}' renamed to '{new}'")
+            sid = new
+        seen.add(sid)
+        pattern = str(r.get("pattern") or SINGLE).strip().lower()
+        if pattern not in STAGE_PATTERNS:
+            warnings.append(f"stage '{sid}': unknown pattern '{pattern}' degraded to single")
+            pattern = SINGLE
+        stages.append(StageSpec(
+            id=sid,
+            pattern=pattern,
+            role=str(r.get("role") or sid),
+            goal=str(r.get("goal") or ""),
+            capabilities=[str(c) for c in (r.get("capabilities") or [])],
+            depends_on=[str(d) for d in (r.get("depends_on") or [])],
+            shard_size=int(r.get("shard_size") or 0),
+            shard_from=(str(r["shard_from"]) if r.get("shard_from") else None),
+            rounds=int(r.get("rounds") or 1),
+        ))
+
+    ids = {s.id for s in stages}
+    for idx, s in enumerate(stages):
+        dangling = [d for d in s.depends_on if d not in ids or d == s.id]
+        if dangling:
+            warnings.append(f"stage '{s.id}': dropped unknown dependencies {dangling}")
+            s.depends_on = [d for d in s.depends_on if d in ids and d != s.id]
+        if s.pattern in (MAP, REDUCE, REVIEW) and not s.depends_on:
+            if idx > 0:
+                prev = stages[idx - 1].id
+                warnings.append(f"stage '{s.id}' ({s.pattern}) had no dependencies; chained to '{prev}'")
+                s.depends_on = [prev]
+            else:
+                warnings.append(f"stage '{s.id}' ({s.pattern}) has nothing upstream; degraded to single")
+                s.pattern = SINGLE
+        if s.pattern == MAP:
+            if s.shard_from and s.shard_from not in s.depends_on:
+                warnings.append(f"stage '{s.id}': shard_from '{s.shard_from}' is not a dependency; using first dependency")
+                s.shard_from = None
+            if not s.shard_from:
+                s.shard_from = s.depends_on[0] if s.depends_on else None
+            if s.shard_size <= 0:
+                s.shard_size = config.MAP_DEFAULT_SHARD_SIZE
+        s.rounds = max(1, min(s.rounds, config.REVIEW_MAX_ROUNDS))
+
+    return stages, warnings
+
+
+def topo_order(stages: list[StageSpec]) -> list[StageSpec]:
+    """Dependency order (tolerant DFS; ignores cycles rather than failing)."""
+    by_id = {s.id: s for s in stages}
+    order: list[StageSpec] = []
+    visited: set[str] = set()
+    on_stack: set[str] = set()
+
+    def visit(s: StageSpec) -> None:
+        if s.id in visited or s.id in on_stack:
+            return
+        on_stack.add(s.id)
+        for dep in s.depends_on:
+            if dep in by_id:
+                visit(by_id[dep])
+        on_stack.discard(s.id)
+        visited.add(s.id)
+        order.append(s)
+
+    for s in stages:
+        visit(s)
+    return order
+
+
+def feeds_a_map(stage_id: str, stages: list[StageSpec]) -> bool:
+    """True when some map stage shards this stage's output."""
+    for s in stages:
+        if s.pattern != MAP:
+            continue
+        src = s.shard_from or (s.depends_on[0] if s.depends_on else None)
+        if src == stage_id:
+            return True
+    return False
