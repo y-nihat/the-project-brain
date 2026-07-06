@@ -448,7 +448,16 @@ def _maybe_emit_tool_calls(tracer, message) -> None:
         binput = getattr(block, "input", None)
         if bname is not None and binput is not None:
             keys = list(binput.keys()) if isinstance(binput, dict) else None
-            tracer.event("agent.tool_call", str(bname), status="ok", input_keys=keys)
+            preview = None
+            if isinstance(binput, dict):
+                # Compact args preview so the live stream shows WHAT was asked,
+                # not just that something was (25 different queries should not
+                # render as 25 identical lines).
+                preview = "; ".join(
+                    f"{k}={str(v)[:60]}" for k, v in list(binput.items())[:3]
+                )[:200] or None
+            tracer.event("agent.tool_call", str(bname), status="ok",
+                         input_keys=keys, args_preview=preview)
 
 
 def _maybe_capture_result(sp, message) -> None:
