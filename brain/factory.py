@@ -77,9 +77,14 @@ def agent_user_prompt(
     spec: AgentSpec,
     upstream: dict[str, str],
     history: str | None = None,
+    task_context: str | None = None,
 ) -> str:
     """Build the per-agent task prompt, injecting upstream outputs and, when
-    present, the brain's relevant prior-run history."""
+    present, the brain's relevant prior-run history.
+
+    ``task_context`` carries stage-pattern material the orchestrator computes at
+    run time — a map worker's shard, a reducer's notes, a reviewer's evidence,
+    or critique a draft must address."""
     parts = [
         f"Overall objective: {objective}",
         f"Your task ({spec.role}): {spec.goal}",
@@ -93,5 +98,7 @@ def agent_user_prompt(
         parts.append("\nContext from upstream agents:")
         for dep, out in upstream.items():
             parts.append(f"\n[{dep}]:\n{out}")
+    if task_context:
+        parts.append("\n" + task_context)
     parts.append("\nProduce your result now.")
     return "\n".join(parts)

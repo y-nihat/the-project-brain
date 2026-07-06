@@ -1,49 +1,42 @@
-"""Executor / orchestrator: objective -> agent roster -> run the team.
+"""Executor / orchestrator: objective -> staged workflow -> run the stages.
 
-Flat model: the orchestrator coordinates the whole hierarchy in code. The brain's
-planner designs the agents; the orchestrator resolves/acquires each agent's
-capabilities, synthesizes the agent (dynamic persona), runs it as its own session,
-and passes upstream agents' outputs downstream via the blackboard. Agents never
-spawn agents.
+The planner designs a DAG of stages (single | map | reduce | review); the
+orchestrator executes them in dependency order:
+
+  * ``single``  — one agent session (the degenerate workflow; simple tasks stay
+    exactly as cheap as before);
+  * ``map``     — fan-out decided at RUN time: the upstream stage's manifest is
+    sharded and one worker session runs per shard, in bounded parallel
+    ("constrain locally, aggregate globally");
+  * ``reduce``  — consolidates the workers' notes, hierarchically when the
+    volume exceeds one context;
+  * ``review``  — evidence-grounded critic: checks the draft's claims against
+    the underlying notes and demands fixes for a bounded number of rounds.
+
+Agents never spawn agents; all width and depth decisions happen here, in code,
+under hard caps. Every session keeps the existing safety rails (watchdog, call
+budget, health monitor + runtime tool repair).
 """
 from __future__ import annotations
 
+import asyncio
+import re
 from pathlib import Path
-from typing import Optional
+from typing import Awaitable, Callable, Optional
 
-from . import config, factory
+from . import config, factory, workflow
 from .acquisition import acquire, make_builder_agent
 from .acquisition import repair_capability as acquire_repair
 from .capabilities.runtime import build_caps_server
-from .models import CREATE, REUSE, AgentSpec, Capability
+from .models import CREATE, MAP, REDUCE, REUSE, REVIEW, AgentSpec, Capability, StageSpec
+
+_VERDICT_RE = re.compile(r"VERDICT:\s*(approved|revise)", re.IGNORECASE)
 
 
-def _topo_order(agents: list[AgentSpec]) -> list[AgentSpec]:
-    """Dependency order (Kahn-ish DFS); tolerant of missing deps and cycles."""
-    by_id = {a.id: a for a in agents}
-    order: list[AgentSpec] = []
-    visited: set[str] = set()
-    on_stack: set[str] = set()
-
-    def visit(a: AgentSpec) -> None:
-        if a.id in visited or a.id in on_stack:
-            return
-        on_stack.add(a.id)
-        for dep in a.depends_on:
-            if dep in by_id:
-                visit(by_id[dep])
-        on_stack.discard(a.id)
-        visited.add(a.id)
-        order.append(a)
-
-    for a in agents:
-        visit(a)
-    return order
-
-
-def _spec_dict(a: AgentSpec) -> dict:
-    return {"id": a.id, "role": a.role, "goal": a.goal,
-            "capabilities": a.capabilities, "depends_on": a.depends_on}
+def _stage_dict(s: StageSpec) -> dict:
+    return {"id": s.id, "pattern": s.pattern, "role": s.role, "goal": s.goal,
+            "capabilities": s.capabilities, "depends_on": s.depends_on,
+            "shard_size": s.shard_size, "shard_from": s.shard_from, "rounds": s.rounds}
 
 
 def _persist_agent(runs_dir, session: str, spec: AgentSpec, system_prompt: str, output: str) -> None:
@@ -64,7 +57,11 @@ def _persist_agent(runs_dir, session: str, spec: AgentSpec, system_prompt: str, 
 
 
 def _seed_prior_workspace(runs_dir, session: str, seed_run: str, *, max_bytes: int = 16 * 1024 * 1024) -> list[str]:
-    """Copy a prior run's workspace files under `prior/<run_id>/` (bounded)."""
+    """Copy a prior run's workspace files under `prior/<run_id>/` (bounded).
+
+    The prior run's own `prior/` subtree is skipped — otherwise seeds nest
+    recursively, run after run.
+    """
     src = Path(runs_dir) / seed_run / "workspace"
     dst = Path(runs_dir) / session / "workspace" / "prior" / seed_run
     copied: list[str] = []
@@ -74,16 +71,48 @@ def _seed_prior_workspace(runs_dir, session: str, seed_run: str, *, max_bytes: i
     for p in sorted(src.rglob("*")):
         if not p.is_file():
             continue
+        rel = p.relative_to(src)
+        if rel.parts and rel.parts[0] == "prior":
+            continue
         size = p.stat().st_size
         if total + size > max_bytes:
             break
-        rel = p.relative_to(src)
         target = dst / rel
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(p.read_bytes())
         total += size
         copied.append(f"prior/{seed_run}/{rel}")
     return copied
+
+
+def _notes_block(notes: dict[str, str], limit: int) -> str:
+    """Render worker notes for a prompt, hard-capped at `limit` chars."""
+    parts: list[str] = []
+    used = 0
+    for wid, text in notes.items():
+        chunk = f"\n[{wid}]:\n{text}\n"
+        if used + len(chunk) > limit:
+            parts.append(f"\n[engine note] remaining notes truncated at {limit} chars.")
+            break
+        parts.append(chunk)
+        used += len(chunk)
+    return "".join(parts)
+
+
+def _batch_notes(notes: dict[str, str], limit: int) -> list[dict[str, str]]:
+    """Greedily group notes into batches each fitting the char limit."""
+    batches: list[dict[str, str]] = []
+    current: dict[str, str] = {}
+    used = 0
+    for wid, text in notes.items():
+        if current and used + len(text) > limit:
+            batches.append(current)
+            current, used = {}, 0
+        current[wid] = text
+        used += len(text)
+    if current:
+        batches.append(current)
+    return batches
 
 
 class Orchestrator:
@@ -101,6 +130,7 @@ class Orchestrator:
         model: Optional[str] = None,
         use_builder: bool = True,
         tracer=None,
+        session_runner=None,
     ):
         self.session = session
         self.manager = manager
@@ -115,15 +145,22 @@ class Orchestrator:
         from .observability import NullTracer
 
         self.tracer = tracer or NullTracer()
+        # Test seam: run an agent session; defaults to observability.trace_query.
+        self._session_runner = session_runner
+        self._sessions = 0
 
+    # ------------------------------------------------------------------ #
+    # run
+    # ------------------------------------------------------------------ #
     async def run(self, objective: str, history: Optional[str] = None,
                   seed_run: Optional[str] = None) -> str:
         with self.tracer.span("plan", "planner"):
             plan = await self.planner.plan(objective, history=history)
         self.blackboard.put("objective", objective)
-        roster = [_spec_dict(a) for a in plan.agents]
+        stages = workflow.topo_order(plan.stages)
+        roster = [_stage_dict(s) for s in stages]
         self.blackboard.put("plan", roster)
-        self.tracer.event("plan.created", "plan", status="info", agents=roster)
+        self.tracer.event("plan.created", "plan", status="info", stages=roster)
 
         # Shared per-run workspace so file-producing tools can hand files to
         # file-consuming tools across agents.
@@ -138,34 +175,245 @@ class Orchestrator:
                 self.tracer.event("history.seeded", seed_run, status="info",
                                   files=seeded[:20], count=len(seeded))
 
-        order = _topo_order(plan.agents)
+        self._sessions = 0
+        self._stages_by_id = {s.id: s for s in stages}
+        self._stage_notes: dict[str, dict[str, str]] = {}
+        self._redo: dict[str, Callable[[str], Awaitable[str]]] = {}
         outputs: dict[str, str] = {}
 
-        for spec in order:
-            caps = await self._acquire_caps(spec)
-            self.tracer.event(
-                "agent.created", spec.id, status="info",
-                role=spec.role, goal=spec.goal,
-                capabilities=list(caps), depends_on=spec.depends_on,
-            )
-            upstream = {dep: outputs[dep] for dep in spec.depends_on if dep in outputs}
-            out = await self._run_agent_with_reflection(spec, caps, objective, upstream, history, workspace)
-            outputs[spec.id] = out
-            self.blackboard.put(f"output:{spec.id}", out)
+        for stage in stages:
+            with self.tracer.span("stage", stage.id, pattern=stage.pattern):
+                out = await self._run_stage(stage, stages, outputs, objective, history, workspace)
+            outputs[stage.id] = out
+            self.blackboard.put(f"output:{stage.id}", out)
 
-        answer = outputs.get(order[-1].id, "") if order else "No agents were produced."
+        answer = outputs.get(stages[-1].id, "") if stages else "No stages were produced."
         self.blackboard.put("answer", answer)
         answer_dir = Path(config.RUNS_DIR) / self.session / "outputs"
         answer_dir.mkdir(parents=True, exist_ok=True)
         (answer_dir / "ANSWER.md").write_text(answer or "")
         return answer or "(no answer produced)"
 
-    async def _run_agent_with_reflection(self, spec, caps, objective, upstream, history, workspace) -> str:
+    # ------------------------------------------------------------------ #
+    # stage dispatch
+    # ------------------------------------------------------------------ #
+    async def _run_stage(self, stage: StageSpec, stages: list[StageSpec],
+                         outputs: dict[str, str], objective: str,
+                         history: Optional[str], workspace: Path) -> str:
+        if stage.pattern == MAP:
+            return await self._run_map(stage, outputs, objective, history, workspace)
+        if stage.pattern == REDUCE:
+            return await self._run_reduce(stage, outputs, objective, history, workspace)
+        if stage.pattern == REVIEW:
+            return await self._run_review(stage, outputs, objective, history, workspace)
+        return await self._run_single(stage, stages, outputs, objective, history, workspace)
+
+    async def _run_single(self, stage: StageSpec, stages: list[StageSpec],
+                          outputs: dict[str, str], objective: str,
+                          history: Optional[str], workspace: Path) -> str:
+        spec = AgentSpec(id=stage.id, role=stage.role, goal=stage.goal,
+                         capabilities=stage.capabilities, depends_on=stage.depends_on)
+        caps = await self._acquire_caps(spec)
+        upstream = {d: outputs[d] for d in stage.depends_on if d in outputs}
+        task_context = workflow.manifest_instruction() if workflow.feeds_a_map(stage.id, stages) else None
+        out = await self._run_agent_with_reflection(
+            spec, caps, objective, upstream, history, workspace, task_context=task_context)
+        self._stage_notes[stage.id] = {stage.id: out}
+
+        async def redo(critique: str, _spec=spec, _caps=caps, _up=upstream, _ctx=task_context) -> str:
+            fix_ctx = ((_ctx or "") + "\n\nA reviewer requires these fixes — produce a corrected, "
+                       "complete version of your result:\n" + critique)
+            spec_fix = AgentSpec(id=f"{_spec.id}.fix", role=_spec.role, goal=_spec.goal,
+                                 capabilities=_spec.capabilities, depends_on=_spec.depends_on)
+            return await self._run_agent_with_reflection(
+                spec_fix, _caps, objective, _up, history, workspace, task_context=fix_ctx)
+
+        self._redo[stage.id] = redo
+        return out
+
+    async def _run_map(self, stage: StageSpec, outputs: dict[str, str], objective: str,
+                       history: Optional[str], workspace: Path) -> str:
+        source = stage.shard_from or (stage.depends_on[0] if stage.depends_on else "")
+        items = workflow.parse_manifest(outputs.get(source, ""))
+        if items is None:
+            # Degrade honestly: no machine-readable manifest -> one worker over the raw output.
+            self.tracer.event("map.no_manifest", stage.id, status="failed", source=source)
+            items = [outputs.get(source, "")] if outputs.get(source) else []
+        if not items:
+            self.tracer.event("map.empty", stage.id, status="failed", source=source)
+            return f"(map stage '{stage.id}': upstream '{source}' produced no work items)"
+
+        shards = workflow.shard(items, stage.shard_size or config.MAP_DEFAULT_SHARD_SIZE,
+                                config.MAP_MAX_WORKERS_PER_STAGE)
+        self.tracer.event("map.fanout", stage.id, status="info",
+                          items=len(items), workers=len(shards),
+                          shard_size=max(len(s) for s in shards), source=source)
+
+        # Acquire the worker template's capabilities ONCE, before fan-out, so
+        # parallel workers never race to build the same tool.
+        template = AgentSpec(id=stage.id, role=stage.role, goal=stage.goal,
+                             capabilities=stage.capabilities, depends_on=[])
+        caps = await self._acquire_caps(template)
+
+        sem = asyncio.Semaphore(max(1, config.WORKER_PARALLELISM))
+        total = len(shards)
+
+        async def run_worker(k: int, shard_items: list) -> str:
+            wid = f"{stage.id}.w{k + 1:02d}"
+            spec = AgentSpec(id=wid, role=stage.role, goal=stage.goal,
+                             capabilities=stage.capabilities, depends_on=[])
+            listing = "\n".join(f"- {workflow.render_item(it)}" for it in shard_items)
+            task_context = (
+                f"Your assigned work items (group {k + 1} of {total}; other workers handle "
+                f"the rest — work ONLY on these, in depth):\n{listing}\n\n"
+                "Return your findings as structured notes: per item, what you established, "
+                "with evidence (quote or cite the source/location). Flag anything you could "
+                "not verify. Do not pad; depth over breadth."
+            )
+            async with sem:
+                return await self._run_agent_with_reflection(
+                    spec, caps, objective, {}, history, workspace, task_context=task_context)
+
+        results = await asyncio.gather(
+            *(run_worker(k, s) for k, s in enumerate(shards)), return_exceptions=True)
+
+        notes: dict[str, str] = {}
+        failed = 0
+        for k, res in enumerate(results):
+            wid = f"{stage.id}.w{k + 1:02d}"
+            if isinstance(res, BaseException):
+                failed += 1
+                self.tracer.event("worker.failed", wid, status="failed", error=str(res)[:300])
+                notes[wid] = f"(worker failed: {str(res)[:300]})"
+            else:
+                notes[wid] = res
+        self._stage_notes[stage.id] = notes
+        if failed == len(shards):
+            return f"(map stage '{stage.id}': all {failed} workers failed)"
+
+        digest = (f"[map:{stage.id}] {len(shards)} workers processed {len(items)} items "
+                  f"({failed} failed). Full notes are in this run's outputs/, one file per worker.")
+        return digest
+
+    async def _run_reduce(self, stage: StageSpec, outputs: dict[str, str], objective: str,
+                          history: Optional[str], workspace: Path) -> str:
+        notes: dict[str, str] = {}
+        for dep in stage.depends_on:
+            notes.update(self._stage_notes.get(dep) or
+                         ({dep: outputs[dep]} if dep in outputs else {}))
+        if not notes:
+            return f"(reduce stage '{stage.id}': nothing to consolidate)"
+
+        limit = config.REDUCE_MAX_INPUT_CHARS
+        batches = _batch_notes(notes, limit)
+        if len(batches) > 1:
+            # Hierarchical consolidation: partial merges first, then the final one.
+            self.tracer.event("reduce.batched", stage.id, status="info", batches=len(batches))
+            partials: dict[str, str] = {}
+            for j, batch in enumerate(batches):
+                bid = f"{stage.id}.b{j + 1:02d}"
+                spec = AgentSpec(id=bid, role=stage.role,
+                                 goal=("Partial consolidation towards: " + stage.goal +
+                                       " Merge ONLY the notes given to you, faithfully; keep every "
+                                       "source attribution; do not invent or drop findings."))
+                ctx = "Notes to consolidate:\n" + _notes_block(batch, limit)
+                partials[bid] = await self._run_agent_with_reflection(
+                    spec, {}, objective, {}, history, workspace, task_context=ctx)
+            notes = partials
+
+        spec = AgentSpec(id=stage.id, role=stage.role, goal=stage.goal,
+                         capabilities=stage.capabilities, depends_on=stage.depends_on)
+        caps = await self._acquire_caps(spec)
+        ctx = ("Notes from the workers (merge faithfully; keep source attributions; "
+               "flag disagreements between workers rather than papering over them):\n"
+               + _notes_block(notes, limit))
+        out = await self._run_agent_with_reflection(
+            spec, caps, objective, {}, history, workspace, task_context=ctx)
+        self._stage_notes[stage.id] = {stage.id: out}
+
+        async def redo(critique: str, _spec=spec, _caps=caps, _ctx=ctx) -> str:
+            fix_ctx = (_ctx + "\n\nA reviewer requires these fixes — produce a corrected, "
+                       "complete version of the deliverable:\n" + critique)
+            spec_fix = AgentSpec(id=f"{_spec.id}.fix", role=_spec.role, goal=_spec.goal,
+                                 capabilities=_spec.capabilities, depends_on=_spec.depends_on)
+            return await self._run_agent_with_reflection(
+                spec_fix, _caps, objective, {}, history, workspace, task_context=fix_ctx)
+
+        self._redo[stage.id] = redo
+        return out
+
+    async def _run_review(self, stage: StageSpec, outputs: dict[str, str], objective: str,
+                          history: Optional[str], workspace: Path) -> str:
+        if not stage.depends_on:
+            return f"(review stage '{stage.id}': nothing to review)"
+        draft_id = stage.depends_on[0]
+        draft = outputs.get(draft_id, "")
+
+        # Evidence: the draft stage's underlying notes (its dependencies' outputs),
+        # plus any additional dependencies the planner attached to the review.
+        evidence: dict[str, str] = {}
+        draft_stage = self._stages_by_id.get(draft_id)
+        if draft_stage is not None:
+            for dep in draft_stage.depends_on:
+                evidence.update(self._stage_notes.get(dep) or {})
+        for dep in stage.depends_on[1:]:
+            evidence.update(self._stage_notes.get(dep) or
+                            ({dep: outputs[dep]} if dep in outputs else {}))
+
+        limit = config.REDUCE_MAX_INPUT_CHARS
+        verdict = "revise"
+        for rnd in range(1, max(1, stage.rounds) + 1):
+            spec = AgentSpec(id=f"{stage.id}.r{rnd}", role=stage.role, goal=stage.goal,
+                             capabilities=stage.capabilities, depends_on=stage.depends_on)
+            caps = await self._acquire_caps(spec)
+            ctx = (
+                "DRAFT under review:\n---\n" + draft + "\n---\n\n"
+                + ("EVIDENCE (the notes the draft must be supported by):\n"
+                   + _notes_block(evidence, limit) + "\n\n" if evidence else "")
+                + "Check every load-bearing claim in the draft against the evidence. Unsupported "
+                  "claims, numbers without a source, or claims resting on weak/promotional sources "
+                  "must be flagged. Your FIRST line must be exactly 'VERDICT: approved' or "
+                  "'VERDICT: revise'. If revising, follow with a numbered list of specific, "
+                  "actionable fixes."
+            )
+            critique = await self._run_agent_with_reflection(
+                spec, caps, objective, {}, history, workspace, task_context=ctx)
+            m = _VERDICT_RE.search(critique or "")
+            verdict = m.group(1).lower() if m else "approved"
+            self.tracer.event("review.verdict", stage.id, status="info",
+                              round=rnd, verdict=verdict, parsed=bool(m))
+            if verdict == "approved":
+                return draft
+
+            redo = self._redo.get(draft_id)
+            if redo is None or rnd >= stage.rounds:
+                break
+            draft = await redo(critique)
+            outputs[draft_id] = draft
+            self.tracer.event("review.revised", draft_id, status="info", round=rnd)
+
+        self.tracer.event("review.exhausted", stage.id, status="failed", rounds=stage.rounds)
+        return (draft + f"\n\n[engine note] review flagged unresolved issues after "
+                        f"{stage.rounds} round(s); see outputs/{stage.id}.r*.md for the critique.")
+
+    # ------------------------------------------------------------------ #
+    # sessions
+    # ------------------------------------------------------------------ #
+    async def _run_agent_with_reflection(self, spec, caps, objective, upstream, history,
+                                         workspace, task_context: Optional[str] = None) -> str:
         """Run an agent; if a tool it relied on degrades at runtime, reflect —
         repair that tool and re-run the agent — bounded, then best-effort."""
         from .capabilities.health import HealthMonitor
         from .observability import trace_query
 
+        if self._sessions >= config.RUN_MAX_AGENT_SESSIONS:
+            self.tracer.event("run.session_cap", spec.id, status="failed",
+                              cap=config.RUN_MAX_AGENT_SESSIONS)
+            return (f"(not run: this run reached its cap of "
+                    f"{config.RUN_MAX_AGENT_SESSIONS} agent sessions)")
+        self._sessions += 1
+
+        runner = self._session_runner or trace_query
         allowed = [f"mcp__caps__{name}" for name in caps]
         system_prompt = factory.agent_system_prompt(spec, allowed)
         repairs = 0
@@ -182,9 +430,11 @@ class Orchestrator:
                 mcp_servers={"caps": caps_server} if caps_server else {},
                 allowed_tools=allowed, model=self.model, max_turns=10,
             )
-            out = await trace_query(
+            out = await runner(
                 self.tracer, spec.id,
-                factory.agent_user_prompt(objective, spec, upstream, history=history), options,
+                factory.agent_user_prompt(objective, spec, upstream, history=history,
+                                          task_context=task_context),
+                options,
             )
 
             # Reflect: did any tool this agent used degrade in practice?
