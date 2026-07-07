@@ -55,6 +55,20 @@ def format_event(record: dict) -> Optional[str]:
         return f"     {icon} review round {data.get('round')}: {v}"
     if kind == "review.revised":
         return f"     ↻ draft revised after review ({name})"
+    if kind == "review.evidence" and phase == "start":
+        return "     ⇣ reviewer demanded missing evidence — courier fetching…"
+    if kind == "review.failed":
+        return f"     ⚠ reviewer died ({str(data.get('error', ''))[:60]}) — draft delivered UNVERIFIED"
+    if kind == "team.question":
+        return f"     🗨 {name} asks {data.get('to')}: {str(data.get('question', ''))[:70]}"
+    if kind == "team.blocker":
+        return f"     ✋ {name} reports a blocker: {str(data.get('issue', ''))[:70]}"
+    if kind == "agent.salvaged":
+        return f"     ♻ {name} ran out of budget — partial findings salvaged ({data.get('chars')} chars)"
+    if kind == "map.retry":
+        return f"     ↻ retrying failed shard(s) {data.get('shards')} with fresh sessions"
+    if kind == "stage.failed":
+        return f"  ⚠ stage {name} failed ({str(data.get('error', ''))[:70]}) — delivering best effort"
     if kind == "review.exhausted":
         return f"     ⚠ review rounds exhausted — answer carries an honesty note"
     if kind == "run.session_cap":
