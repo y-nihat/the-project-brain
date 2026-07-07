@@ -29,8 +29,9 @@ from .acquisition import acquire, make_builder_agent
 from .acquisition import repair_capability as acquire_repair
 from .capabilities.runtime import build_caps_server
 from .models import CREATE, MAP, REDUCE, REUSE, REVIEW, AgentSpec, Capability, StageSpec
+from .team import TEAM_TOOLS, TeamChannel, build_team_server
 
-_VERDICT_RE = re.compile(r"VERDICT:\s*(approved|revise)", re.IGNORECASE)
+_VERDICT_RE = re.compile(r"VERDICT:\s*(approved|revise|needs-evidence)", re.IGNORECASE)
 
 
 def _stage_dict(s: StageSpec) -> dict:
@@ -180,6 +181,10 @@ class Orchestrator:
         self._stage_notes: dict[str, dict[str, str]] = {}
         self._redo: dict[str, Callable[[str], Awaitable[str]]] = {}
         outputs: dict[str, str] = {}
+        # Team-channel context: completed outputs + what a follow-up needs.
+        self._outputs = outputs
+        self._run_ctx = (objective, history, workspace)
+        self._questions_answered = 0
 
         last_done: Optional[str] = None
         failure_note: Optional[str] = None
@@ -289,7 +294,8 @@ class Orchestrator:
             )
             async with sem:
                 return await self._run_agent_with_reflection(
-                    spec, caps, objective, {}, history, workspace, task_context=task_context)
+                    spec, caps, objective, {}, history, workspace, task_context=task_context,
+                    model=config.model_for("worker"))
 
         results = await asyncio.gather(
             *(run_worker(k, s) for k, s in enumerate(shards)), return_exceptions=True)
@@ -408,6 +414,7 @@ class Orchestrator:
 
         limit = config.REDUCE_MAX_INPUT_CHARS
         verdict = "revise"
+        couriers_left = config.REVIEW_EVIDENCE_FETCHES
         try:
             for rnd in range(1, max(1, stage.rounds) + 1):
                 spec = AgentSpec(id=f"{stage.id}.r{rnd}", role=stage.role, goal=stage.goal,
@@ -419,9 +426,11 @@ class Orchestrator:
                        + _notes_block(evidence, limit) + "\n\n" if evidence else "")
                     + "Check every load-bearing claim in the draft against the evidence. Unsupported "
                       "claims, numbers without a source, or claims resting on weak/promotional sources "
-                      "must be flagged. Your FIRST line must be exactly 'VERDICT: approved' or "
-                      "'VERDICT: revise'. If revising, follow with a numbered list of specific, "
-                      "actionable fixes."
+                      "must be flagged. Your FIRST line must be exactly one of: 'VERDICT: approved' — "
+                      "'VERDICT: revise' (problems fixable from the existing evidence) — "
+                      "'VERDICT: needs-evidence' (a load-bearing claim can only be settled by fetching "
+                      "a specific missing source; then list EXACTLY what to fetch). If revising, follow "
+                      "with a numbered list of specific, actionable fixes."
                 )
                 critique = await self._run_agent_with_reflection(
                     spec, caps, objective, {}, history, workspace, task_context=ctx)
@@ -432,10 +441,26 @@ class Orchestrator:
                 if verdict == "approved":
                     return draft
 
+                extra = ""
+                if verdict == "needs-evidence" and couriers_left > 0:
+                    couriers_left -= 1
+                    courier = AgentSpec(
+                        id=f"{stage.id}.evidence", role="Evidence courier",
+                        goal="Obtain EXACTLY the missing evidence the reviewer listed; return it "
+                             "with full source attribution. Fetch nothing else.",
+                        capabilities=self._evidence_capabilities(draft_stage))
+                    with self.tracer.span("review.evidence", stage.id):
+                        fetched = await self._run_agent_with_reflection(
+                            courier, await self._acquire_caps(courier), objective, {},
+                            history, workspace,
+                            task_context="The reviewer needs this evidence:\n" + critique)
+                    evidence[courier.id] = fetched
+                    extra = "\n\nNEWLY FETCHED EVIDENCE (courier):\n" + fetched[:20000]
+
                 redo = self._redo.get(draft_id)
                 if redo is None or rnd >= stage.rounds:
                     break
-                draft = await redo(critique)
+                draft = await redo(critique + extra)
                 outputs[draft_id] = draft
                 self.tracer.event("review.revised", draft_id, status="info", round=rnd)
         except Exception as e:  # noqa: BLE001
@@ -450,11 +475,40 @@ class Orchestrator:
         return (draft + f"\n\n[engine note] review flagged unresolved issues after "
                         f"{stage.rounds} round(s); see outputs/{stage.id}.r*.md for the critique.")
 
+    def _evidence_capabilities(self, draft_stage: Optional[StageSpec]) -> list[str]:
+        """Tools an evidence courier may use: whatever the draft's own evidence
+        stages used (e.g. the map workers' fetch tool)."""
+        caps: list[str] = []
+        if draft_stage is not None:
+            for dep in draft_stage.depends_on:
+                st = self._stages_by_id.get(dep)
+                if st is not None:
+                    caps += [c for c in st.capabilities if c not in caps]
+        return caps
+
     # ------------------------------------------------------------------ #
     # sessions
     # ------------------------------------------------------------------ #
+    async def _answer_from_stage(self, stage_id: str, question: str) -> str:
+        """Run a short, tool-less follow-up session of a completed stage's agent
+        so a teammate's question gets answered by 'the person who did the work'."""
+        objective, history, workspace = self._run_ctx
+        st = self._stages_by_id.get(stage_id)
+        prev = (self._outputs.get(stage_id) or "")[:40000]
+        self._questions_answered += 1
+        spec = AgentSpec(id=f"{stage_id}.q{self._questions_answered}",
+                         role=(st.role if st else stage_id),
+                         goal="Answer a teammate's question about your earlier work, "
+                              "concisely and factually.")
+        ctx = ("Your earlier output:\n---\n" + prev + "\n---\n\n"
+               "Teammate's question: " + question +
+               "\nAnswer strictly from your output and context; if you do not know, say so.")
+        return await self._run_agent_with_reflection(
+            spec, {}, objective, {}, history, workspace, task_context=ctx, team=False)
+
     async def _run_agent_with_reflection(self, spec, caps, objective, upstream, history,
-                                         workspace, task_context: Optional[str] = None) -> str:
+                                         workspace, task_context: Optional[str] = None,
+                                         model: Optional[str] = None, team: bool = True) -> str:
         """Run an agent; if a tool it relied on degrades at runtime, reflect —
         repair that tool and re-run the agent — bounded, then best-effort."""
         from .capabilities.health import HealthMonitor
@@ -468,21 +522,31 @@ class Orchestrator:
         self._sessions += 1
 
         runner = self._session_runner or trace_query
+        completed = list(getattr(self, "_outputs", {}) or {})
+        channel = TeamChannel(agent_id=spec.id, completed_stages=completed,
+                              ask_fn=self._answer_from_stage, blackboard=self.blackboard,
+                              tracer=self.tracer) if team else None
         allowed = [f"mcp__caps__{name}" for name in caps]
-        system_prompt = factory.agent_system_prompt(spec, allowed)
+        if channel is not None:
+            allowed = allowed + TEAM_TOOLS
+        system_prompt = factory.agent_system_prompt(
+            spec, allowed, team_stages=(completed if channel is not None else None))
         repairs = 0
         out = ""
         while True:
             monitor = HealthMonitor()
-            caps_server = (
-                build_caps_server(list(caps.values()), manager=self.manager,
-                                  workspace=workspace, monitor=monitor, tracer=self.tracer)
-                if caps else None
-            )
+            servers: dict = {}
+            if caps:
+                servers["caps"] = build_caps_server(
+                    list(caps.values()), manager=self.manager,
+                    workspace=workspace, monitor=monitor, tracer=self.tracer)
+            if channel is not None:
+                servers["team"] = build_team_server(channel)
             options = factory.locked_session(
                 system_prompt=system_prompt,
-                mcp_servers={"caps": caps_server} if caps_server else {},
-                allowed_tools=allowed, model=self.model,
+                mcp_servers=servers,
+                allowed_tools=allowed,
+                model=(model if model is not None else self.model),
                 max_turns=config.AGENT_MAX_TURNS,
             )
             out = await runner(

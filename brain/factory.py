@@ -46,12 +46,27 @@ def locked_session(
         return ClaudeAgentOptions(**kwargs)
 
 
-def agent_system_prompt(spec: AgentSpec, allowed_tools: list[str]) -> str:
-    """Synthesize an agent's persona/instructions from its spec."""
+def agent_system_prompt(spec: AgentSpec, allowed_tools: list[str],
+                        team_stages: Optional[list[str]] = None) -> str:
+    """Synthesize an agent's persona/instructions from its spec.
+
+    ``team_stages`` (when the session has the team channel) lists completed
+    stages the agent may question via ``ask_upstream``."""
     lines = [
         f'You are the "{spec.role}" agent in a self-organizing, sandboxed multi-agent system.',
         f"Your goal: {spec.goal}",
     ]
+    if team_stages is not None:
+        from . import config
+
+        lines.append(
+            "You work in a team. If something about an earlier stage's output is unclear or "
+            "missing, ask that teammate directly with the ask_upstream tool (completed stages: "
+            + (", ".join(team_stages) if team_stages else "none yet")
+            + f"; budget {config.TEAM_MAX_QUESTIONS} questions). If an item is impossible "
+            "(unreachable source, missing input), report it with report_blocker and move on — "
+            "never guess or fabricate around an obstacle."
+        )
     if allowed_tools:
         from . import config
 
