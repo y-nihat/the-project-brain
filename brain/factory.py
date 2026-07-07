@@ -28,7 +28,7 @@ def locked_session(
     """Build a hard-confined ClaudeAgentOptions for an agent session."""
     from claude_agent_sdk import ClaudeAgentOptions
 
-    return ClaudeAgentOptions(
+    kwargs = dict(
         system_prompt=system_prompt,
         mcp_servers=mcp_servers,
         tools=[],                       # remove all built-in/host tools from context
@@ -38,6 +38,12 @@ def locked_session(
         model=model,
         max_turns=max_turns,
     )
+    try:
+        # Stream partial messages so the session watchdog sees token generation
+        # as liveness — a long healthy synthesis must not look like a stall.
+        return ClaudeAgentOptions(**kwargs, include_partial_messages=True)
+    except TypeError:  # older SDK without the field
+        return ClaudeAgentOptions(**kwargs)
 
 
 def agent_system_prompt(spec: AgentSpec, allowed_tools: list[str]) -> str:
