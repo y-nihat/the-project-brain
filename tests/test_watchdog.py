@@ -5,10 +5,46 @@ import asyncio
 
 import pytest
 
+from types import SimpleNamespace
+
 from brain.ledger import Ledger
-from brain.observability import Tracer
-from brain.observability.tracer import AgentStallError, _iter_with_watchdog
+from brain.observability import NullTracer, Tracer
+from brain.observability.tracer import AgentStallError, _iter_with_watchdog, trace_query
 from brain.sandbox import policy
+
+
+def test_trace_query_salvages_partial_output_on_exhaustion():
+    """A session dying of turn/stall exhaustion returns its last real text with
+    an honest note instead of discarding the work."""
+    async def dying_query(prompt, options):
+        yield SimpleNamespace(content=[SimpleNamespace(text="finding A"),
+                                       SimpleNamespace(text="finding B")])
+        raise RuntimeError("Claude Code returned an error result: "
+                           "Reached maximum number of turns (24)")
+
+    out = asyncio.run(trace_query(NullTracer(), "w", "prompt", None, query_fn=dying_query))
+    assert "finding A" in out and "finding B" in out
+    assert "PARTIAL" in out
+
+
+def test_trace_query_salvages_on_stall_too():
+    async def stalling_query(prompt, options):
+        yield SimpleNamespace(content=[SimpleNamespace(text="half-done notes")])
+        await asyncio.sleep(10)  # goes silent
+        yield SimpleNamespace()
+
+    out = asyncio.run(trace_query(NullTracer(), "w", "prompt", None,
+                                  query_fn=stalling_query, stall_timeout=0.05, total_timeout=5))
+    assert "half-done notes" in out and "PARTIAL" in out
+
+
+def test_trace_query_reraises_unexpected_errors():
+    async def crashing_query(prompt, options):
+        yield SimpleNamespace(content=[SimpleNamespace(text="text before crash")])
+        raise ValueError("kaboom")
+
+    with pytest.raises(ValueError):
+        asyncio.run(trace_query(NullTracer(), "w", "prompt", None, query_fn=crashing_query))
 
 
 def test_watchdog_raises_on_stall():

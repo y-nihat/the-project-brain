@@ -134,6 +134,81 @@ def test_session_cap_stops_new_sessions(tmp_path, monkeypatch):
     assert "cap" in answer or "not run" in answer
 
 
+def test_review_failure_delivers_draft_unverified(tmp_path, monkeypatch):
+    """The reviewer dying must not cost the user the draft."""
+    monkeypatch.setattr(config, "RUNS_DIR", tmp_path / "runs")
+
+    async def runner(tracer, name, prompt, options):
+        if name == "gather":
+            return "```manifest\n" + json.dumps(ITEMS[:5]) + "\n```"
+        if name.startswith("check.r"):
+            raise RuntimeError("agent 'check.r1': no activity for 180s")
+        return "DRAFT v1" if name == "synthesize" else f"notes({name})"
+
+    orch, bb = _orchestrator(tmp_path, runner)
+    try:
+        answer = asyncio.run(orch.run("study"))
+    finally:
+        bb.close()
+    assert answer.startswith("DRAFT v1")
+    assert "UNVERIFIED" in answer
+
+
+def test_stage_failure_delivers_best_completed_output(tmp_path, monkeypatch):
+    """A mid-workflow death delivers the last completed stage, honestly noted."""
+    monkeypatch.setattr(config, "RUNS_DIR", tmp_path / "runs")
+
+    async def runner(tracer, name, prompt, options):
+        if name == "gather":
+            return "```manifest\n" + json.dumps(ITEMS[:5]) + "\n```"
+        if name == "synthesize":
+            raise RuntimeError("reduce died")
+        return f"notes({name})"
+
+    stages = _stages()[:3]  # gather -> map -> reduce
+    orch, bb = _orchestrator(tmp_path, runner, stages)
+    try:
+        answer = asyncio.run(orch.run("study"))
+    finally:
+        bb.close()
+    assert "[map:survey]" in answer                      # the map digest survived
+    assert "delivering the last completed" in answer
+    # ANSWER.md carries the best-effort result too.
+    assert "delivering the last completed" in (
+        tmp_path / "runs" / "wf-test" / "outputs" / "ANSWER.md").read_text()
+
+
+def test_failed_map_shard_is_retried_once(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "RUNS_DIR", tmp_path / "runs")
+    calls: list[tuple[str, str]] = []
+
+    async def runner(tracer, name, prompt, options):
+        calls.append((name, prompt))
+        if name == "gather":
+            return "```manifest\n" + json.dumps(ITEMS) + "\n```"
+        if name == "survey.w02":
+            raise RuntimeError("transient network failure")   # first attempt dies
+        if name == "survey.w02.r2":
+            return "notes(recovered)"                          # retry succeeds
+        if name.startswith("survey.w"):
+            return f"notes({name})"
+        return "FINAL"
+
+    stages = _stages()[:3]
+    orch, bb = _orchestrator(tmp_path, runner, stages)
+    try:
+        asyncio.run(orch.run("study"))
+    finally:
+        bb.close()
+    names = [n for n, _ in calls]
+    assert "survey.w02.r2" in names                           # a fresh session ran the shard
+    # The reducer received the recovered notes (under the original worker id),
+    # not the failure placeholder.
+    reduce_prompt = dict(calls)["synthesize"]
+    assert "notes(recovered)" in reduce_prompt
+    assert "worker failed" not in reduce_prompt
+
+
 def test_reduce_batches_hierarchically(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "RUNS_DIR", tmp_path / "runs")
     monkeypatch.setattr(config, "REDUCE_MAX_INPUT_CHARS", 200)  # force batching
