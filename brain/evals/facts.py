@@ -33,6 +33,9 @@ class RunFacts:
     capabilities_created: list[str] = field(default_factory=list)
     capabilities_reused: list[str] = field(default_factory=list)
     repairs: int = 0
+    team_questions: int = 0
+    team_blockers: int = 0
+    salvaged_sessions: int = 0
     events_by_kind: Counter = field(default_factory=Counter)
     answer: str = ""
     workspace_files: list[str] = field(default_factory=list)
@@ -85,6 +88,12 @@ def load_facts(db_path: Path | str, runs_dir: Path | str, run_id: str) -> RunFac
                 facts.capabilities_reused.append(str(data.get("capability")))
             elif kind == "capability.repair":
                 facts.repairs += 1
+            elif kind == "team.question":
+                facts.team_questions += 1
+            elif kind == "team.blocker":
+                facts.team_blockers += 1
+            elif kind == "agent.salvaged":
+                facts.salvaged_sessions += 1
     finally:
         conn.close()
 

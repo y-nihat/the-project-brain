@@ -103,6 +103,14 @@ def produced_file(f: RunFacts, glob: str):
 
 
 @_check
+def team_activity(f: RunFacts, min_count: int = 1):
+    total = f.team_questions + f.team_blockers
+    return total >= min_count, (f"team signals={total} "
+                                f"({f.team_questions} questions, {f.team_blockers} blockers; "
+                                f"want >= {min_count})")
+
+
+@_check
 def capability_created_or_reused(f: RunFacts, name_contains: str = ""):
     pool = f.capabilities_created + f.capabilities_reused
     hits = [c for c in pool if name_contains in c]
