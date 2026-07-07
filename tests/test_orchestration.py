@@ -209,6 +209,72 @@ def test_failed_map_shard_is_retried_once(tmp_path, monkeypatch):
     assert "worker failed" not in reduce_prompt
 
 
+def test_answer_from_stage_runs_a_followup_session(tmp_path, monkeypatch):
+    """The team channel's ask_upstream is answered by a short follow-up session
+    of the completed stage's own agent, over its own output."""
+    monkeypatch.setattr(config, "RUNS_DIR", tmp_path / "runs")
+    calls: list[tuple[str, str]] = []
+
+    async def runner(tracer, name, prompt, options):
+        calls.append((name, prompt))
+        if name == "gather":
+            return "Found: [7] mystery-item — see https://x.example\n```manifest\n[\"a\"]\n```"
+        if name == "gather.q1":
+            return "item 7 is https://x.example"
+        return f"out({name})"
+
+    stages = _stages()[:3]
+    orch, bb = _orchestrator(tmp_path, runner, stages)
+    try:
+        asyncio.run(orch.run("study"))
+        answer = asyncio.run(orch._answer_from_stage("gather", "what is item 7's URL?"))
+    finally:
+        bb.close()
+    assert answer == "item 7 is https://x.example"
+    q_prompt = dict(calls)["gather.q1"]
+    assert "mystery-item" in q_prompt          # the agent saw its own earlier output
+    assert "what is item 7's URL?" in q_prompt
+
+
+def test_review_needs_evidence_dispatches_a_courier(tmp_path, monkeypatch):
+    """'VERDICT: needs-evidence' sends a courier for the missing sources; the
+    draft is redone with the critique AND the fetched evidence, then approved."""
+    monkeypatch.setattr(config, "RUNS_DIR", tmp_path / "runs")
+    calls: list[tuple[str, str]] = []
+    verdicts = iter(["VERDICT: needs-evidence\n1. fetch the primary NRC ruling.",
+                     "VERDICT: approved"])
+
+    async def runner(tracer, name, prompt, options):
+        calls.append((name, prompt))
+        if name == "gather":
+            return "```manifest\n" + json.dumps(ITEMS[:5]) + "\n```"
+        if name.startswith("survey.w"):
+            return f"notes({name})"
+        if name == "synthesize":
+            return "DRAFT v1"
+        if name == "check.evidence":
+            return "EVIDENCE BLOB: the NRC ruling text"
+        if name == "synthesize.fix":
+            return "DRAFT v2"
+        if name.startswith("check.r"):
+            return next(verdicts)
+        raise AssertionError(f"unexpected session: {name}")
+
+    orch, bb = _orchestrator(tmp_path, runner)
+    try:
+        answer = asyncio.run(orch.run("study"))
+    finally:
+        bb.close()
+    names = [n for n, _ in calls]
+    assert "check.evidence" in names
+    fix_prompt = dict(calls)["synthesize.fix"]
+    assert "EVIDENCE BLOB" in fix_prompt and "NRC ruling" in fix_prompt
+    # Round 2 reviewed the revised draft and approved it.
+    r2_prompt = dict(calls)["check.r2"]
+    assert "DRAFT v2" in r2_prompt
+    assert answer == "DRAFT v2"
+
+
 def test_reduce_batches_hierarchically(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "RUNS_DIR", tmp_path / "runs")
     monkeypatch.setattr(config, "REDUCE_MAX_INPUT_CHARS", 200)  # force batching
