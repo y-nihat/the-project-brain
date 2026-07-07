@@ -104,7 +104,9 @@ def normalize_stages(raw: list) -> tuple[list[StageSpec], list[str]]:
             depends_on=[str(d) for d in (r.get("depends_on") or [])],
             shard_size=int(r.get("shard_size") or 0),
             shard_from=(str(r["shard_from"]) if r.get("shard_from") else None),
-            rounds=int(r.get("rounds") or 1),
+            # A 1-round review can only complain, never fix: unspecified rounds
+            # on a review default to 2 (verdict -> one fix cycle -> re-verdict).
+            rounds=int(r.get("rounds") or (2 if pattern == REVIEW else 1)),
         ))
 
     ids = {s.id for s in stages}

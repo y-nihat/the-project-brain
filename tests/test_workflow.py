@@ -82,6 +82,17 @@ def test_normalize_clamps_review_rounds():
     assert stages[1].rounds == config.REVIEW_MAX_ROUNDS
 
 
+def test_normalize_review_rounds_default_allows_a_fix_cycle():
+    # Unspecified rounds on a review default to 2 — a 1-round review could
+    # only complain, never fix.
+    stages, _ = workflow.normalize_stages([
+        {"id": "a", "pattern": "single", "role": "r", "goal": "g"},
+        {"id": "check", "pattern": "review", "role": "critic", "goal": "verify",
+         "depends_on": ["a"]},
+    ])
+    assert stages[1].rounds == 2
+
+
 # --- ordering / topology ------------------------------------------------------ #
 def test_topo_order_and_feeds_a_map():
     stages, _ = workflow.normalize_stages([
