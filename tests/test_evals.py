@@ -42,6 +42,8 @@ def test_load_facts_reads_trace_and_data_layer(tmp_path):
             ("tool.result", "web_search", {"result": "empty", "count": 0}),
             ("review.verdict", "check", {"round": 1, "verdict": "approved"}),
             ("decision", "web_search", {"choice": "reuse", "capability": "web_search"}),
+            ("team.question", "survey.w01", {"to": "gather", "question": "?"}),
+            ("team.blocker", "survey.w02", {"issue": "404"}),
         ],
     )
     f = load_facts(db, runs_dir, rid)
@@ -53,6 +55,9 @@ def test_load_facts_reads_trace_and_data_layer(tmp_path):
     assert f.capabilities_reused == ["web_search"]
     assert f.sessions == 1
     assert len(f.cited_urls) == 2
+    assert f.team_questions == 1 and f.team_blockers == 1
+    ok, detail = checks.team_activity(f, min_count=2)
+    assert ok and "2" in detail
 
 
 def test_checks_pass_and_fail(tmp_path):

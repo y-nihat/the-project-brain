@@ -84,10 +84,12 @@ def test_workflow_fanout_reduce_review(tmp_path, monkeypatch):
     # The reducer received every worker's notes.
     reduce_prompt = dict(calls)["synthesize"]
     assert all(f"notes(survey.w{k:02d})" in reduce_prompt for k in (1, 2, 3))
-    # Review round 1 rejected -> the reducer was re-run with the critique -> approved.
+    # Review round 1 rejected -> the reducer was re-run with the critique AND
+    # its previous draft -> approved.
     assert "synthesize.fix" in names and "check.r2" in names
     fix_prompt = dict(calls)["synthesize.fix"]
     assert "drop the unsupported claim" in fix_prompt
+    assert "DRAFT v1" in fix_prompt
     # The final answer is the REVISED draft, and it landed in ANSWER.md.
     assert answer == "DRAFT v2"
     assert (tmp_path / "runs" / "wf-test" / "outputs" / "ANSWER.md").read_text() == "DRAFT v2"
