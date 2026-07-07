@@ -242,9 +242,12 @@ class Orchestrator:
             spec, caps, objective, upstream, history, workspace, task_context=task_context)
         self._stage_notes[stage.id] = {stage.id: out}
 
-        async def redo(critique: str, _spec=spec, _caps=caps, _up=upstream, _ctx=task_context) -> str:
-            fix_ctx = ((_ctx or "") + "\n\nA reviewer requires these fixes — produce a corrected, "
-                       "complete version of your result:\n" + critique)
+        async def redo(critique: str, prior: str = "", _spec=spec, _caps=caps,
+                       _up=upstream, _ctx=task_context) -> str:
+            fix_ctx = ((_ctx or "")
+                       + (f"\n\nYour previous draft:\n---\n{prior}\n---" if prior else "")
+                       + "\n\nA reviewer requires these fixes — produce a corrected, "
+                         "complete version of your result:\n" + critique)
             spec_fix = AgentSpec(id=f"{_spec.id}.fix", role=_spec.role, goal=_spec.goal,
                                  capabilities=_spec.capabilities, depends_on=_spec.depends_on)
             return await self._run_agent_with_reflection(
@@ -383,9 +386,11 @@ class Orchestrator:
             spec, caps, objective, {}, history, workspace, task_context=ctx)
         self._stage_notes[stage.id] = {stage.id: out}
 
-        async def redo(critique: str, _spec=spec, _caps=caps, _ctx=ctx) -> str:
-            fix_ctx = (_ctx + "\n\nA reviewer requires these fixes — produce a corrected, "
-                       "complete version of the deliverable:\n" + critique)
+        async def redo(critique: str, prior: str = "", _spec=spec, _caps=caps, _ctx=ctx) -> str:
+            fix_ctx = (_ctx
+                       + (f"\n\nYour previous draft:\n---\n{prior}\n---" if prior else "")
+                       + "\n\nA reviewer requires these fixes — produce a corrected, "
+                         "complete version of the deliverable:\n" + critique)
             spec_fix = AgentSpec(id=f"{_spec.id}.fix", role=_spec.role, goal=_spec.goal,
                                  capabilities=_spec.capabilities, depends_on=_spec.depends_on)
             return await self._run_agent_with_reflection(
@@ -426,7 +431,9 @@ class Orchestrator:
                        + _notes_block(evidence, limit) + "\n\n" if evidence else "")
                     + "Check every load-bearing claim in the draft against the evidence. Unsupported "
                       "claims, numbers without a source, or claims resting on weak/promotional sources "
-                      "must be flagged. Your FIRST line must be exactly one of: 'VERDICT: approved' — "
+                      "must be flagged. APPROVE when the load-bearing claims are supported — style "
+                      "preferences and minor wording are NOT grounds for revision. Your FIRST line must "
+                      "be exactly one of: 'VERDICT: approved' — "
                       "'VERDICT: revise' (problems fixable from the existing evidence) — "
                       "'VERDICT: needs-evidence' (a load-bearing claim can only be settled by fetching "
                       "a specific missing source; then list EXACTLY what to fetch). If revising, follow "
@@ -460,7 +467,7 @@ class Orchestrator:
                 redo = self._redo.get(draft_id)
                 if redo is None or rnd >= stage.rounds:
                     break
-                draft = await redo(critique + extra)
+                draft = await redo(critique + extra, draft)
                 outputs[draft_id] = draft
                 self.tracer.event("review.revised", draft_id, status="info", round=rnd)
         except Exception as e:  # noqa: BLE001
