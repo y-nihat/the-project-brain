@@ -104,12 +104,13 @@ class BrainSession:
         blackboard = Blackboard(config.DB_PATH, session_id)
         manager = SandboxManager(session_id, self.ledger, tracer=self.tracer)
         known = {c.name: c.description for c in self.registry.all()}
-        planner = Planner(model=config.BRAIN_MODEL, known_capabilities=known, tracer=self.tracer)
+        planner = Planner(model=config.model_for("planner"), known_capabilities=known,
+                          tracer=self.tracer)
         orchestrator = Orchestrator(
             session=session_id, manager=manager, ledger=self.ledger, registry=self.registry,
             blackboard=blackboard, broker=self.broker, planner=planner,
-            resolver=Resolver(self.registry), model=config.BRAIN_MODEL, use_builder=True,
-            tracer=self.tracer,
+            resolver=Resolver(self.registry), model=config.model_for("orchestrator"),
+            use_builder=True, tracer=self.tracer,
         )
         try:
             try:

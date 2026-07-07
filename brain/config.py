@@ -39,6 +39,20 @@ SANDBOX_BASE_IMAGE = os.environ.get("SANDBOX_BASE_IMAGE", "python:3.12-slim")
 # Optional model override for orchestrator-side reasoning (None => SDK/CLI default).
 BRAIN_MODEL = os.environ.get("BRAIN_MODEL") or None
 
+# Model tiers (each falls back to BRAIN_MODEL, then the SDK default).
+# STRONG carries judgment-heavy roles: planning, synthesis, review, tool authoring.
+# FAST carries volume roles: map workers doing bounded per-shard extraction.
+# e.g. BRAIN_MODEL_STRONG=claude-opus-4-8  BRAIN_MODEL_FAST=claude-sonnet-5
+BRAIN_MODEL_STRONG = os.environ.get("BRAIN_MODEL_STRONG") or None
+BRAIN_MODEL_FAST = os.environ.get("BRAIN_MODEL_FAST") or None
+
+
+def model_for(role: str):
+    """Pick the model tier for an engine role: 'worker' -> fast, else strong."""
+    if role == "worker":
+        return BRAIN_MODEL_FAST or BRAIN_MODEL
+    return BRAIN_MODEL_STRONG or BRAIN_MODEL
+
 
 class ConfigError(RuntimeError):
     """Raised when the runtime environment violates a hard invariant."""
@@ -96,6 +110,12 @@ AGENT_TOTAL_TIMEOUT = float(os.environ.get("AGENT_TOTAL_TIMEOUT", "1200"))
 AGENT_MAX_TURNS = int(os.environ.get("AGENT_MAX_TURNS", "24"))
 # A failed map shard is retried this many times with a fresh session.
 MAP_RETRY_FAILED_SHARDS = int(os.environ.get("MAP_RETRY_FAILED_SHARDS", "1"))
+
+# Team channel: agents signal the orchestrator (mediated — never each other
+# directly): ask a completed upstream stage a question, or report a blocker.
+TEAM_MAX_QUESTIONS = int(os.environ.get("TEAM_MAX_QUESTIONS", "3"))       # per session
+# The reviewer may demand missing evidence once; a courier session fetches it.
+REVIEW_EVIDENCE_FETCHES = int(os.environ.get("REVIEW_EVIDENCE_FETCHES", "1"))
 
 # Reflection loop: watch a trusted tool's live health and repair it if it degrades.
 CAPABILITY_CALL_BUDGET = int(os.environ.get("CAPABILITY_CALL_BUDGET", "25"))          # per (agent, capability)
