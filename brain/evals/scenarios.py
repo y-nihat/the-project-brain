@@ -48,13 +48,32 @@ SCENARIOS: list[Scenario] = [
         ],
     ),
     Scenario(
+        id="team-smoke",
+        objective=(
+            "Survey 6 distinct sources on the current commercialization status of "
+            "solid-state batteries and write a ~150-word summary with source citations. "
+            "Verify the claims against the sources before finalizing."
+        ),
+        intent="Fast per-slice regression: full team shape (map/reduce/review) at a fraction of the time and cost.",
+        checks=[
+            ("status_is", {}),
+            ("used_pattern", {"pattern": "map"}),
+            ("min_workers", {"n": 2}),
+            ("review_ran", {}),
+            ("cites_url", {"min_count": 3}),
+            ("answer_min_chars", {"limit": 400}),
+            ("max_cost_usd", {"limit": 1.50}),
+            ("tool_error_ratio_below", {"limit": 0.6}),
+        ],
+    ),
+    Scenario(
         id="multi-source-brief",
         objective=(
             "Survey at least 12 distinct sources on the current state of small modular "
             "nuclear reactors (SMRs) and write a ~300-word brief with source citations. "
             "Accuracy matters: verify claims against the sources before finalizing."
         ),
-        intent="The scale band: planner must choose gather->map->reduce(->review), not a monolith.",
+        intent="The DEEP scale band (slow, ~$2-4): full breadth fan-out. Run sparingly; team-smoke is the per-slice loop.",
         checks=[
             ("status_is", {}),
             ("used_pattern", {"pattern": "map"}),
