@@ -87,8 +87,15 @@ SANDBOX_MAX_OUTPUT_MB = int(os.environ.get("SANDBOX_MAX_OUTPUT_MB", "128"))
 
 # Watchdogs for agent (LLM) sessions: abort when no SDK message arrives for
 # AGENT_STALL_TIMEOUT seconds, or when a session exceeds AGENT_TOTAL_TIMEOUT.
+# Partial-message streaming makes token generation count as activity, so the
+# stall timer only fires on true silence.
 AGENT_STALL_TIMEOUT = float(os.environ.get("AGENT_STALL_TIMEOUT", "180"))
-AGENT_TOTAL_TIMEOUT = float(os.environ.get("AGENT_TOTAL_TIMEOUT", "900"))
+AGENT_TOTAL_TIMEOUT = float(os.environ.get("AGENT_TOTAL_TIMEOUT", "1200"))
+# Turn budget per agent session. Tool-looping stages (map workers fetching and
+# retrying) need real room; 10 proved too tight in live runs.
+AGENT_MAX_TURNS = int(os.environ.get("AGENT_MAX_TURNS", "24"))
+# A failed map shard is retried this many times with a fresh session.
+MAP_RETRY_FAILED_SHARDS = int(os.environ.get("MAP_RETRY_FAILED_SHARDS", "1"))
 
 # Reflection loop: watch a trusted tool's live health and repair it if it degrades.
 CAPABILITY_CALL_BUDGET = int(os.environ.get("CAPABILITY_CALL_BUDGET", "25"))          # per (agent, capability)
