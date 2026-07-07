@@ -50,23 +50,35 @@ SCENARIOS: list[Scenario] = [
     Scenario(
         id="orchestration-drill",
         objective=(
-            "Analyze the six incident reports below and produce a ~200-word post-mortem with a "
-            "unified UTC timeline, the root cause, and an explicit list of contradictions or gaps "
-            "in the records. Work ONLY from these reports — no external research or tools are "
-            "needed. Accuracy matters: verify the post-mortem against the reports before "
-            "finalizing.\n\n"
-            "INC-1 (ops log): 01:58 UTC — api-gateway p99 latency alarms fired across eu-west. "
-            "Traffic volume normal per the monitoring snapshot referenced in INC-5.\n"
-            "INC-2 (db team): Primary database failover initiated at 02:14 UTC after replication "
-            "lag exceeded 90s. Failover completed cleanly.\n"
-            "INC-3 (platform team): Cache cluster fully restarted as a precaution. NOTE: root "
-            "cause analysis is recorded separately in INC-6.\n"
-            "INC-4 (pager log): 02:2— [record corrupted; remainder of this entry is unrecoverable]\n"
-            "INC-5 (SRE handover notes): Monitoring snapshot attached. Database failover was "
-            "initiated at 02:41 UTC, i.e. AFTER the cache restart, not before.\n"
-            "INC-6 (RCA draft): Root cause: an expired TLS certificate on the internal service "
-            "mesh caused connection storms between services. Certificate renewed and fix deployed "
-            "at 03:20 UTC."
+            "Analyze the eighteen operations log entries below. For EACH entry produce a "
+            "structured note (component; event; what it references or depends on; anomalies), "
+            "dividing the per-entry analysis among parallel analysts. Then synthesize a ~250-word "
+            "post-mortem with a unified UTC timeline, the root cause, and an explicit list of "
+            "contradictions or gaps in the records. Work ONLY from these entries — no external "
+            "research or tools are needed. Accuracy matters: verify the post-mortem against the "
+            "entries before finalizing.\n\n"
+            "L01 01:52 edge-lb: p99 latency rising across eu-west\n"
+            "L02 01:55 monitoring: traffic snapshot captured — volume NORMAL\n"
+            "L03 01:58 api-gateway: alarm storm begins; correlation notes point to the mesh RCA "
+            "recorded in L15\n"
+            "L04 02:01 payments-svc: timeout errors calling auth-svc spike\n"
+            "L05 02:04 service-mesh: connection churn 40x baseline between all mesh services\n"
+            "L06 02:09 oncall: SEV-1 declared\n"
+            "L07 02:14 db-team: primary database failover INITIATED (replication lag > 90s)\n"
+            "L08 02:20 platform: cache cluster restarted as a precaution\n"
+            "L09 02:2— [record corrupted; remainder unrecoverable]\n"
+            "L10 02:31 auth-svc: repeated mTLS handshake failures logged\n"
+            "L11 02:35 service-mesh: handshake failure rate 97% on mesh sidecars\n"
+            "L12 02:41 SRE handover: notes state the database failover was initiated at 02:41, "
+            "AFTER the cache restart — conflicts with the db-team log\n"
+            "L13 02:47 network: packet loss ruled out; all links healthy\n"
+            "L14 02:55 comms: status page updated, partial outage acknowledged\n"
+            "L15 03:02 RCA draft: root cause = EXPIRED TLS CERTIFICATE on the internal service "
+            "mesh CA; sidecars rejecting handshakes\n"
+            "L16 03:08 security: emergency certificate renewal approved\n"
+            "L17 03:11 capacity review: confirms the L02 snapshot — no traffic anomaly, ruling "
+            "out load as the cause\n"
+            "L18 03:20 deploy: renewed certificate rolled out; error rates recovering"
         ),
         intent=("FAST coordination drill (~minutes, no tools/containers): forces cross-shard "
                 "references, a contradiction, and a corrupted record — observes team signals, "
@@ -77,7 +89,6 @@ SCENARIOS: list[Scenario] = [
             ("min_workers", {"n": 2}),
             ("review_ran", {}),
             ("no_tools_used", {}),
-            ("team_activity", {"min_count": 1}),
             ("answer_matches", {"regex": "(contradict|conflict|discrepan|inconsisten)"}),
             ("answer_matches", {"regex": "(TLS|certificat)"}),
             ("answer_min_chars", {"limit": 600}),
@@ -97,6 +108,7 @@ SCENARIOS: list[Scenario] = [
             ("used_pattern", {"pattern": "map"}),
             ("min_workers", {"n": 2}),
             ("review_ran", {}),
+            ("team_activity", {"min_count": 1}),
             ("cites_url", {"min_count": 3}),
             ("answer_min_chars", {"limit": 400}),
             ("max_cost_usd", {"limit": 1.50}),
