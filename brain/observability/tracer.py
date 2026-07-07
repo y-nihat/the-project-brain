@@ -393,7 +393,7 @@ async def _iter_with_watchdog(ait, stall_s: float, total_s: float, label: str):
                     ) from None
                 raise AgentStallError(
                     f"{label}: no activity for {int(wait)}s "
-                    f"(stall watchdog; {int(elapsed)}s elapsed in session)"
+                    f"(stall watchdog; ~{int(elapsed + wait)}s into the session)"
                 ) from None
             except StopAsyncIteration:
                 return
@@ -407,34 +407,64 @@ async def _iter_with_watchdog(ait, stall_s: float, total_s: float, label: str):
                 pass
 
 
+def _salvageable(e: BaseException) -> bool:
+    """Errors after which an agent's already-produced text is still worth keeping:
+    the session ran out of budget or stalled — it did not produce garbage."""
+    if isinstance(e, AgentStallError):
+        return True
+    s = str(e).lower()
+    return "error result" in s or "maximum number of turns" in s
+
+
 async def trace_query(tracer, name: str, prompt, options, *,
                       stall_timeout: Optional[float] = None,
-                      total_timeout: Optional[float] = None) -> str:
+                      total_timeout: Optional[float] = None,
+                      query_fn=None) -> str:
     """Run an SDK ``query()`` inside an ``agent.session`` span, emitting a
     ``agent.tool_call`` event per tool use and capturing the final text + usage —
     under a watchdog so a stalled session fails loudly instead of hanging.
 
-    Token/cost field names are read defensively (``getattr``/dict) so we tolerate
-    SDK version differences.
-    """
-    from claude_agent_sdk import query  # lazy: keep module importable without the SDK
+    When a session dies of exhaustion (turn budget, stall) after producing real
+    text, that text is SALVAGED and returned with an honest engine note instead
+    of being discarded — a person's half-finished notes still have value.
 
+    Token/cost field names are read defensively (``getattr``/dict) so we tolerate
+    SDK version differences. ``query_fn`` is a test seam.
+    """
     from .. import config
+
+    if query_fn is None:
+        from claude_agent_sdk import query as query_fn  # lazy: importable without the SDK
 
     stall = stall_timeout if stall_timeout is not None else config.AGENT_STALL_TIMEOUT
     total = total_timeout if total_timeout is not None else config.AGENT_TOTAL_TIMEOUT
 
     final = ""
+    last_text = ""
     with tracer.span("agent.session", name) as sp:
         stream = _iter_with_watchdog(
-            query(prompt=prompt, options=options), stall, total, f"agent '{name}'"
+            query_fn(prompt=prompt, options=options), stall, total, f"agent '{name}'"
         )
-        async for message in stream:
-            _maybe_emit_tool_calls(tracer, message)
-            _maybe_capture_result(sp, message)
-            text = getattr(message, "result", None)
-            if text:
-                final = text
+        try:
+            async for message in stream:
+                _maybe_emit_tool_calls(tracer, message)
+                _maybe_capture_result(sp, message)
+                content = getattr(message, "content", None)
+                if isinstance(content, list):
+                    texts = [t for t in (getattr(b, "text", None) for b in content) if t]
+                    if texts:
+                        last_text = "\n".join(texts)  # most recent full assistant message
+                text = getattr(message, "result", None)
+                if text:
+                    final = text
+        except Exception as e:  # noqa: BLE001
+            if last_text.strip() and _salvageable(e):
+                tracer.event("agent.salvaged", name, status="failed",
+                             error=str(e)[:300], chars=len(last_text))
+                return (last_text
+                        + f"\n\n[engine note] this agent's session ended early "
+                          f"({type(e).__name__}: {str(e)[:200]}). The findings above are PARTIAL.")
+            raise
     return final or ""
 
 
