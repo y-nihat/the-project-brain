@@ -48,6 +48,43 @@ SCENARIOS: list[Scenario] = [
         ],
     ),
     Scenario(
+        id="orchestration-drill",
+        objective=(
+            "Analyze the six incident reports below and produce a ~200-word post-mortem with a "
+            "unified UTC timeline, the root cause, and an explicit list of contradictions or gaps "
+            "in the records. Work ONLY from these reports — no external research or tools are "
+            "needed. Accuracy matters: verify the post-mortem against the reports before "
+            "finalizing.\n\n"
+            "INC-1 (ops log): 01:58 UTC — api-gateway p99 latency alarms fired across eu-west. "
+            "Traffic volume normal per the monitoring snapshot referenced in INC-5.\n"
+            "INC-2 (db team): Primary database failover initiated at 02:14 UTC after replication "
+            "lag exceeded 90s. Failover completed cleanly.\n"
+            "INC-3 (platform team): Cache cluster fully restarted as a precaution. NOTE: root "
+            "cause analysis is recorded separately in INC-6.\n"
+            "INC-4 (pager log): 02:2— [record corrupted; remainder of this entry is unrecoverable]\n"
+            "INC-5 (SRE handover notes): Monitoring snapshot attached. Database failover was "
+            "initiated at 02:41 UTC, i.e. AFTER the cache restart, not before.\n"
+            "INC-6 (RCA draft): Root cause: an expired TLS certificate on the internal service "
+            "mesh caused connection storms between services. Certificate renewed and fix deployed "
+            "at 03:20 UTC."
+        ),
+        intent=("FAST coordination drill (~minutes, no tools/containers): forces cross-shard "
+                "references, a contradiction, and a corrupted record — observes team signals, "
+                "initiative, and honest verification."),
+        checks=[
+            ("status_is", {}),
+            ("used_pattern", {"pattern": "map"}),
+            ("min_workers", {"n": 2}),
+            ("review_ran", {}),
+            ("no_tools_used", {}),
+            ("team_activity", {"min_count": 1}),
+            ("answer_matches", {"regex": "(contradict|conflict|discrepan|inconsisten)"}),
+            ("answer_matches", {"regex": "(TLS|certificat)"}),
+            ("answer_min_chars", {"limit": 600}),
+            ("max_cost_usd", {"limit": 1.00}),
+        ],
+    ),
+    Scenario(
         id="team-smoke",
         objective=(
             "Survey 6 distinct sources on the current commercialization status of "
