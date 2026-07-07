@@ -181,13 +181,30 @@ class Orchestrator:
         self._redo: dict[str, Callable[[str], Awaitable[str]]] = {}
         outputs: dict[str, str] = {}
 
+        last_done: Optional[str] = None
+        failure_note: Optional[str] = None
         for stage in stages:
-            with self.tracer.span("stage", stage.id, pattern=stage.pattern):
-                out = await self._run_stage(stage, stages, outputs, objective, history, workspace)
+            try:
+                with self.tracer.span("stage", stage.id, pattern=stage.pattern):
+                    out = await self._run_stage(stage, stages, outputs, objective, history, workspace)
+            except Exception as e:  # noqa: BLE001
+                # Best-effort delivery: a completed draft must never be vaporized
+                # by a later stage's death. With nothing completed, fail loudly.
+                self.tracer.event("stage.failed", stage.id, status="failed",
+                                  error=f"{type(e).__name__}: {str(e)[:300]}")
+                if last_done is None:
+                    raise
+                failure_note = (f"[engine note] stage '{stage.id}' failed "
+                                f"({type(e).__name__}: {str(e)[:200]}); delivering the last "
+                                f"completed stage's result ('{last_done}') as-is.")
+                break
             outputs[stage.id] = out
             self.blackboard.put(f"output:{stage.id}", out)
+            last_done = stage.id
 
-        answer = outputs.get(stages[-1].id, "") if stages else "No stages were produced."
+        answer = outputs.get(last_done, "") if last_done else "No stages were produced."
+        if failure_note:
+            answer = (answer + "\n\n" + failure_note).strip()
         self.blackboard.put("answer", answer)
         answer_dir = Path(config.RUNS_DIR) / self.session / "outputs"
         answer_dir.mkdir(parents=True, exist_ok=True)
@@ -258,8 +275,8 @@ class Orchestrator:
         sem = asyncio.Semaphore(max(1, config.WORKER_PARALLELISM))
         total = len(shards)
 
-        async def run_worker(k: int, shard_items: list) -> str:
-            wid = f"{stage.id}.w{k + 1:02d}"
+        async def run_worker(k: int, shard_items: list, attempt: int = 1) -> str:
+            wid = f"{stage.id}.w{k + 1:02d}" + (f".r{attempt}" if attempt > 1 else "")
             spec = AgentSpec(id=wid, role=stage.role, goal=stage.goal,
                              capabilities=stage.capabilities, depends_on=[])
             listing = "\n".join(f"- {workflow.render_item(it)}" for it in shard_items)
@@ -278,15 +295,38 @@ class Orchestrator:
             *(run_worker(k, s) for k, s in enumerate(shards)), return_exceptions=True)
 
         notes: dict[str, str] = {}
-        failed = 0
+        dead: list[int] = []
         for k, res in enumerate(results):
             wid = f"{stage.id}.w{k + 1:02d}"
             if isinstance(res, BaseException):
-                failed += 1
+                dead.append(k)
                 self.tracer.event("worker.failed", wid, status="failed", error=str(res)[:300])
                 notes[wid] = f"(worker failed: {str(res)[:300]})"
             else:
                 notes[wid] = res
+
+        # A person re-assigns a sick colleague's pile: failed shards get one
+        # fresh session before the stage gives up on their items.
+        for attempt in range(2, config.MAP_RETRY_FAILED_SHARDS + 2):
+            if not dead:
+                break
+            self.tracer.event("map.retry", stage.id, status="info",
+                              attempt=attempt, shards=[k + 1 for k in dead])
+            retries = await asyncio.gather(
+                *(run_worker(k, shards[k], attempt=attempt) for k in dead),
+                return_exceptions=True)
+            still_dead: list[int] = []
+            for k, res in zip(dead, retries):
+                wid = f"{stage.id}.w{k + 1:02d}"
+                if isinstance(res, BaseException):
+                    still_dead.append(k)
+                    self.tracer.event("worker.failed", f"{wid}.r{attempt}",
+                                      status="failed", error=str(res)[:300])
+                else:
+                    notes[wid] = res
+            dead = still_dead
+
+        failed = len(dead)
         self._stage_notes[stage.id] = notes
         if failed == len(shards):
             return f"(map stage '{stage.id}': all {failed} workers failed)"
@@ -368,35 +408,43 @@ class Orchestrator:
 
         limit = config.REDUCE_MAX_INPUT_CHARS
         verdict = "revise"
-        for rnd in range(1, max(1, stage.rounds) + 1):
-            spec = AgentSpec(id=f"{stage.id}.r{rnd}", role=stage.role, goal=stage.goal,
-                             capabilities=stage.capabilities, depends_on=stage.depends_on)
-            caps = await self._acquire_caps(spec)
-            ctx = (
-                "DRAFT under review:\n---\n" + draft + "\n---\n\n"
-                + ("EVIDENCE (the notes the draft must be supported by):\n"
-                   + _notes_block(evidence, limit) + "\n\n" if evidence else "")
-                + "Check every load-bearing claim in the draft against the evidence. Unsupported "
-                  "claims, numbers without a source, or claims resting on weak/promotional sources "
-                  "must be flagged. Your FIRST line must be exactly 'VERDICT: approved' or "
-                  "'VERDICT: revise'. If revising, follow with a numbered list of specific, "
-                  "actionable fixes."
-            )
-            critique = await self._run_agent_with_reflection(
-                spec, caps, objective, {}, history, workspace, task_context=ctx)
-            m = _VERDICT_RE.search(critique or "")
-            verdict = m.group(1).lower() if m else "approved"
-            self.tracer.event("review.verdict", stage.id, status="info",
-                              round=rnd, verdict=verdict, parsed=bool(m))
-            if verdict == "approved":
-                return draft
+        try:
+            for rnd in range(1, max(1, stage.rounds) + 1):
+                spec = AgentSpec(id=f"{stage.id}.r{rnd}", role=stage.role, goal=stage.goal,
+                                 capabilities=stage.capabilities, depends_on=stage.depends_on)
+                caps = await self._acquire_caps(spec)
+                ctx = (
+                    "DRAFT under review:\n---\n" + draft + "\n---\n\n"
+                    + ("EVIDENCE (the notes the draft must be supported by):\n"
+                       + _notes_block(evidence, limit) + "\n\n" if evidence else "")
+                    + "Check every load-bearing claim in the draft against the evidence. Unsupported "
+                      "claims, numbers without a source, or claims resting on weak/promotional sources "
+                      "must be flagged. Your FIRST line must be exactly 'VERDICT: approved' or "
+                      "'VERDICT: revise'. If revising, follow with a numbered list of specific, "
+                      "actionable fixes."
+                )
+                critique = await self._run_agent_with_reflection(
+                    spec, caps, objective, {}, history, workspace, task_context=ctx)
+                m = _VERDICT_RE.search(critique or "")
+                verdict = m.group(1).lower() if m else "approved"
+                self.tracer.event("review.verdict", stage.id, status="info",
+                                  round=rnd, verdict=verdict, parsed=bool(m))
+                if verdict == "approved":
+                    return draft
 
-            redo = self._redo.get(draft_id)
-            if redo is None or rnd >= stage.rounds:
-                break
-            draft = await redo(critique)
-            outputs[draft_id] = draft
-            self.tracer.event("review.revised", draft_id, status="info", round=rnd)
+                redo = self._redo.get(draft_id)
+                if redo is None or rnd >= stage.rounds:
+                    break
+                draft = await redo(critique)
+                outputs[draft_id] = draft
+                self.tracer.event("review.revised", draft_id, status="info", round=rnd)
+        except Exception as e:  # noqa: BLE001
+            # The reviewer dying must not cost the user the draft: deliver it
+            # unverified, honestly labeled.
+            self.tracer.event("review.failed", stage.id, status="failed",
+                              error=f"{type(e).__name__}: {str(e)[:300]}")
+            return (draft + f"\n\n[engine note] the verification stage failed "
+                            f"({type(e).__name__}: {str(e)[:200]}); this draft is delivered UNVERIFIED.")
 
         self.tracer.event("review.exhausted", stage.id, status="failed", rounds=stage.rounds)
         return (draft + f"\n\n[engine note] review flagged unresolved issues after "
@@ -434,7 +482,8 @@ class Orchestrator:
             options = factory.locked_session(
                 system_prompt=system_prompt,
                 mcp_servers={"caps": caps_server} if caps_server else {},
-                allowed_tools=allowed, model=self.model, max_turns=10,
+                allowed_tools=allowed, model=self.model,
+                max_turns=config.AGENT_MAX_TURNS,
             )
             out = await runner(
                 self.tracer, spec.id,
