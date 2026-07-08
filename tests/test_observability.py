@@ -99,3 +99,30 @@ def test_artifact_path_creates_run_dirs(tmp_path):
     # NullTracer returns a usable throwaway dir (no-op safe for untraced callers)
     assert NullTracer().artifact_path("x").is_dir()
     tracer.close()
+
+
+def test_wait_for_collector_returns_once_reachable(monkeypatch):
+    """Boot-wait: retries quietly while the viewer starts, returns once any
+    HTTP response arrives, and gives up after the deadline without raising."""
+    import urllib.request
+
+    from brain.observability import otel_export
+
+    monkeypatch.setattr(otel_export.time, "sleep", lambda _s: None)
+    attempts = {"n": 0}
+
+    def flaky(url, timeout=0):
+        attempts["n"] += 1
+        if attempts["n"] < 3:
+            raise ConnectionRefusedError("not up yet")
+        return object()
+
+    monkeypatch.setattr(urllib.request, "urlopen", flaky)
+    otel_export.wait_for_collector("http://phoenix:6006/v1/traces", timeout_s=30)
+    assert attempts["n"] == 3
+
+    def never_up(url, timeout=0):
+        raise ConnectionRefusedError("still down")
+
+    monkeypatch.setattr(urllib.request, "urlopen", never_up)
+    otel_export.wait_for_collector("http://phoenix:6006/v1/traces", timeout_s=0.05)  # no raise

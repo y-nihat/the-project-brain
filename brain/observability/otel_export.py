@@ -12,6 +12,9 @@ from __future__ import annotations
 import datetime as _dt
 import json
 import sqlite3
+import time
+import urllib.error
+import urllib.request
 from pathlib import Path
 from typing import Optional
 
@@ -61,11 +64,36 @@ def _attributes(kind: str, name: str, run_id: str, data: dict) -> dict:
     return attrs
 
 
+def wait_for_collector(endpoint: str, timeout_s: float = 60.0) -> None:
+    """Block until the collector answers HTTP (Phoenix takes seconds to boot).
+
+    Without this, exporting right after `up` sprays scary-but-harmless OTLP
+    retry warnings. Any HTTP response counts as ready; on timeout we return
+    and let the exporter's own retries take over."""
+    base = endpoint.split("/v1/")[0]
+    deadline = time.monotonic() + timeout_s
+    waited = False
+    while time.monotonic() < deadline:
+        try:
+            urllib.request.urlopen(base, timeout=2)
+            break
+        except urllib.error.HTTPError:
+            break  # an HTTP status (even 404) means it's listening
+        except Exception:  # noqa: BLE001 — not up yet (conn refused, DNS, ...)
+            if not waited:
+                print(f"waiting for the trace viewer at {base} to finish starting…", flush=True)
+                waited = True
+            time.sleep(1)
+    if waited:
+        print("trace viewer is up — exporting.", flush=True)
+
+
 def export_run(db_path: str | Path, run_id: str, endpoint: str) -> int:
     """Replay one recorded run as an OTLP trace. Returns the span count.
 
     Raises RuntimeError if the collector doesn't acknowledge the export.
     """
+    wait_for_collector(endpoint)
     from opentelemetry.sdk.resources import Resource
     from opentelemetry.sdk.trace import TracerProvider
     from opentelemetry.sdk.trace.export import BatchSpanProcessor
