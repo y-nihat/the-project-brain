@@ -110,6 +110,13 @@ def format_event(record: dict) -> Optional[str]:
         return f"  ⚠ approval needed: {data.get('action')}"
     if kind == "approval.resolved":
         return f"  ⚠ approval {status}"
+    if kind == "secret.requested":
+        return f"  🔑 secret needed: {name} — {str(data.get('purpose', ''))[:70]}"
+    if kind == "secret.provided":
+        return (f"  🔑 {name} provided (held in memory for this session only)"
+                if status == "granted" else f"  🔑 {name} NOT provided")
+    if kind == "capability.unavailable":
+        return f"     ⛔ tool {name} unavailable this session (needs {data.get('needs')})"
     if kind == "agent.tool_call":
         short = name.split("__")[-1]
         prev = data.get("args_preview")
