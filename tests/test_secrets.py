@@ -43,12 +43,12 @@ def test_collect_secret_prompts_hidden_and_caches():
         return "tok-12345"
 
     b = ApprovalBroker(secret_input_fn=fake_secret_input)
-    assert b.collect_secret("TELEGRAM_BOT_TOKEN", "bot capability") == "tok-12345"
-    assert b.secrets == {"TELEGRAM_BOT_TOKEN": "tok-12345"}
+    assert b.collect_secret("SERVICE_API_KEY", "external service capability") == "tok-12345"
+    assert b.secrets == {"SERVICE_API_KEY": "tok-12345"}
     # Cached: asking again does not re-prompt.
-    assert b.collect_secret("TELEGRAM_BOT_TOKEN", "again") == "tok-12345"
+    assert b.collect_secret("SERVICE_API_KEY", "again") == "tok-12345"
     assert len(prompts) == 1
-    assert "TELEGRAM_BOT_TOKEN" in prompts[0]
+    assert "SERVICE_API_KEY" in prompts[0]
 
 
 def test_collect_secret_refusal_and_auto_modes():

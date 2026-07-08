@@ -25,7 +25,7 @@ class Capability:
     cpus: Optional[float] = None
     timeout_seconds: Optional[int] = None
     # Name of the credential env var this tool fundamentally needs (e.g.
-    # "TELEGRAM_BOT_TOKEN"). The VALUE lives only in the session's ApprovalBroker
+    # "SERVICE_API_KEY"). The VALUE lives only in the session's ApprovalBroker
     # and is injected at run time — never stored, never traced.
     requires_credential: Optional[str] = None
 

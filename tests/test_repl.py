@@ -36,13 +36,13 @@ def test_format_event_renders_key_moments():
     # A completed stage streams the head of its output — mid-run text meant for
     # the user (a how-to, a warning) must not hide in a file until the end.
     done = format_event(
-        {"kind": "stage", "name": "collect_token", "phase": "end", "duration_ms": 1000,
+        {"kind": "stage", "name": "prepare", "phase": "end", "duration_ms": 1000,
          "data": {"pattern": "single",
-                  "output_head": "How to get your token:\n1. Open Telegram\n2. Talk to @BotFather"}}
+                  "output_head": "Before continuing you will need:\n1. an account\n2. an API key"}}
     )
-    assert "stage collect_token done" in done
-    assert "@BotFather" in done and "│" in done
-    assert "outputs/collect_token.md" in done
+    assert "stage prepare done" in done
+    assert "an API key" in done and "│" in done
+    assert "outputs/prepare.md" in done
     assert "agent ▸ Researcher" in format_event(
         {"kind": "agent.created", "name": "r", "data": {"role": "Researcher", "capabilities": ["web_search"]}}
     )

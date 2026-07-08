@@ -344,8 +344,8 @@ async def _author_capability(
             secret_env: dict[str, str] = {}
             if rc:
                 # Canonical env-var name: developers drift between spellings
-                # across attempts ("telegram_bot_token" vs TELEGRAM_BOT_TOKEN),
-                # which double-prompted the user. One name, one ask, cached.
+                # across attempts ("service_api_key" vs SERVICE_API_KEY), which
+                # double-prompts the user. One name, one ask, cached.
                 rc = re.sub(r"\W+", "_", str(rc).strip()).upper().strip("_")
                 if rc in broker.secrets:
                     secret_env[rc] = broker.secrets[rc]
@@ -540,7 +540,7 @@ _DEVELOPER_SYSTEM = (
     "1024+ MB — declare it.\n"
     "  * requires_credential: ONLY IF the tool fundamentally needs an API key/account/paid "
     "service (no free path), set this to the UPPERCASE ENV VAR NAME of the credential "
-    "(e.g. TELEGRAM_BOT_TOKEN); otherwise null. The engine collects the REAL value from the "
+    "(e.g. SERVICE_API_KEY); otherwise null. The engine collects the REAL value from the "
     "human and injects it as that exact environment variable at BOTH verify time and run time, "
     "so: your program MUST read the credential from exactly that env var; do NOT declare the "
     "credential as a tool argument in input_schema/env_map; and NEVER put a credential value "
