@@ -187,7 +187,6 @@ async def _repl() -> int:
     session.add_listener(_on_event)
     last_answer = ""
     attached: list[str] = []           # session-scoped user file set
-    (config.DATA_DIR / "inbox").mkdir(parents=True, exist_ok=True)
     try:
         while True:
             try:

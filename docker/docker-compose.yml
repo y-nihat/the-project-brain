@@ -34,10 +34,14 @@ services:
       context: ..
       dockerfile: docker/brain.Dockerfile
     depends_on: [docker-socket-proxy]
+    # Run as the HOST user so everything the brain writes under the bind-mounted
+    # data/ is host-owned (no root-owned run folders, inbox, or capability
+    # library the user cannot read/delete). Defaults to 1000:1000; override via
+    # BRAIN_UID/BRAIN_GID in .env if your host ids differ. Also drops root in
+    # the container — defense in depth.
+    user: "${BRAIN_UID:-1000}:${BRAIN_GID:-1000}"
     # SECURITY: no blanket env_file. Only the ALLOWLISTED variables below enter
     # the container — anything else a user adds to .env stays on the host.
-    # (Compose reads ../.env for ${...} substitution because of `env_file` at
-    # the project level being absent; values come from the shell or .env.)
     environment:
       CLAUDE_CODE_OAUTH_TOKEN: ${CLAUDE_CODE_OAUTH_TOKEN:?set it in .env}
       DOCKER_HOST: tcp://docker-socket-proxy:2375
@@ -45,6 +49,9 @@ services:
       BRAIN_MODEL: ${BRAIN_MODEL:-}
       BRAIN_MODEL_STRONG: ${BRAIN_MODEL_STRONG:-}
       BRAIN_MODEL_FAST: ${BRAIN_MODEL_FAST:-}
+      # The claude CLI needs a writable HOME; the container HOME (/root or unset)
+      # is not writable for an arbitrary uid. /tmp always is.
+      HOME: /tmp
     working_dir: /app
     volumes:
       - ..:/app                      # live source for iteration
