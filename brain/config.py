@@ -123,6 +123,10 @@ REVIEW_EVIDENCE_FETCHES = int(os.environ.get("REVIEW_EVIDENCE_FETCHES", "1"))
 SUPERVISOR_ENABLED = os.environ.get("SUPERVISOR_ENABLED", "1").lower() not in ("0", "false", "no")
 SUPERVISOR_MAX_CALLS = int(os.environ.get("SUPERVISOR_MAX_CALLS", "12"))
 
+# User-provided files (@mentions / attach): copied into the run workspace.
+FILE_ATTACH_MAX_MB = int(os.environ.get("FILE_ATTACH_MAX_MB", "50"))
+FILE_ATTACH_TOTAL_MAX_MB = int(os.environ.get("FILE_ATTACH_TOTAL_MAX_MB", "200"))
+
 # Reflection loop: watch a trusted tool's live health and repair it if it degrades.
 CAPABILITY_CALL_BUDGET = int(os.environ.get("CAPABILITY_CALL_BUDGET", "25"))          # per (agent, capability)
 CAPABILITY_UNHEALTHY_CONSECUTIVE_EMPTY = int(os.environ.get("CAPABILITY_UNHEALTHY_CONSECUTIVE_EMPTY", "3"))
