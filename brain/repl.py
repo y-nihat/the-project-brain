@@ -125,6 +125,8 @@ def format_event(record: dict) -> Optional[str]:
         return None  # fail-open is silent; the trace has it
     if kind == "user.informed":
         return None  # the broker already printed the message itself
+    if kind == "files.attached":
+        return f"  📎 files in workspace: {', '.join(data.get('files') or [])}"
     if kind == "secret.requested":
         return f"  🔑 secret needed: {name} — {str(data.get('purpose', ''))[:70]}"
     if kind == "secret.provided":
@@ -141,6 +143,9 @@ def format_event(record: dict) -> Optional[str]:
 
 _HELP = """commands:
   <text>        run an objective (watch it work live)
+                mention files inline with @path (e.g. @data/inbox/report.pdf)
+  /attach <p>   attach a file for ALL following objectives (/detach to remove)
+  /files        list attached files
   /runs         list recent runs
   /show [id]    print a run's timeline (default: last)
   /caps         list the capability library
@@ -181,6 +186,8 @@ async def _repl() -> int:
 
     session.add_listener(_on_event)
     last_answer = ""
+    attached: list[str] = []           # session-scoped user file set
+    (config.DATA_DIR / "inbox").mkdir(parents=True, exist_ok=True)
     try:
         while True:
             try:
@@ -213,6 +220,24 @@ async def _repl() -> int:
             if raw == "/last":
                 print(last_answer or "(nothing yet)")
                 continue
+            if raw.startswith("/attach"):
+                p = raw.split(None, 1)[1].strip() if " " in raw else ""
+                from . import config as _cfg
+                if p and (_cfg.PROJECT_ROOT / p).is_file():
+                    attached.append(p)
+                    print(f"  📎 attached: {p}")
+                else:
+                    print(f"  file not found: {p or '(missing path)'} — put it under the "
+                          "project dir (e.g. data/inbox/) and use a relative path")
+                continue
+            if raw.startswith("/detach"):
+                p = raw.split(None, 1)[1].strip() if " " in raw else "all"
+                attached[:] = [] if p == "all" else [a for a in attached if a != p]
+                print(f"  attached files: {attached or '(none)'}")
+                continue
+            if raw == "/files":
+                print(f"  attached files: {attached or '(none)'}")
+                continue
             if raw.startswith("/"):
                 print(f"unknown command: {raw} — try /help")
                 continue
@@ -222,7 +247,7 @@ async def _repl() -> int:
             state["ts"] = time.monotonic()
             state["label"] = "planning"
             loop = asyncio.get_running_loop()
-            task = asyncio.create_task(session.run_objective(raw))
+            task = asyncio.create_task(session.run_objective(raw, files=list(attached)))
             hb = asyncio.create_task(_heartbeat(state, config.AGENT_STALL_TIMEOUT))
             sig_installed = True
             try:
