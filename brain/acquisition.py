@@ -248,14 +248,18 @@ def _capability_from_submission(need_key: str, description: str, sub: dict) -> C
     )
 
 
-def _generic_verify(cap: Capability, sample_input: dict, sample_files: dict, manager):
+def _generic_verify(cap: Capability, sample_input: dict, sample_files: dict, manager,
+                    extra_env: Optional[dict] = None):
     """Generic acceptance: run the tool on a sample input (plus optional sample
     files placed under /work/in); success = exit 0 and a parseable, non-error JSON
     object on the last stdout line. Returns (ok, detail, run_result) — detail
-    carries the TAIL of stderr (the end is where tracebacks live)."""
+    carries the TAIL of stderr (the end is where tracebacks live).
+
+    ``extra_env`` carries session secrets (credential env vars) so a
+    credentialed tool can be verified for real; values are never traced."""
     args = dict(sample_input or {})
     args.pop("files", None)  # reserved runtime arg, not an env input
-    env = {}
+    env = dict(extra_env or {})
     for key, val in args.items():
         if key in cap.env_map:
             if isinstance(val, str):
@@ -331,19 +335,23 @@ async def _author_capability(
 
             # Free-first: escalate to the human ONLY if the tool needs a credential.
             rc = sub.get("requires_credential")
+            secret_env: dict[str, str] = {}
             if rc:
+                rc = str(rc).strip()
                 approved = broker.request(
                     action=f"build capability '{need_key}', which needs {rc}",
                     reason="the tool fundamentally requires a credential/account/paid service (no free path)",
-                    requirements=[str(rc)],
+                    requirements=[rc],
                 )
                 if not approved:
                     raise AcquisitionError(f"approval denied: '{need_key}' needs {rc}")
-                raise AcquisitionError(
-                    f"'{need_key}' needs a credential ({rc}); secret provisioning is not yet supported"
-                )
+                secret = broker.collect_secret(rc, purpose=f"capability '{need_key}' ({description[:80]})")
+                if not secret:
+                    raise AcquisitionError(f"'{need_key}' needs {rc}, but no value was provided")
+                secret_env[rc] = secret
 
             cap = _capability_from_submission(need_key, description, sub)
+            cap.requires_credential = rc or None
             build_context = {"Dockerfile": sub["dockerfile"], "tool.py": sub["program"]}
             attempt_dir = tracer.artifact_path(cap.name, f"attempt-{attempt}-author")
             _write_context(attempt_dir, build_context)
@@ -366,7 +374,7 @@ async def _author_capability(
             with tracer.span("capability.verify", cap.name) as vsp:
                 ok, detail, run_res = await asyncio.to_thread(
                     _generic_verify, cap, sub.get("sample_input") or {},
-                    sub.get("sample_files") or {}, manager,
+                    sub.get("sample_files") or {}, manager, secret_env or None,
                 )
                 vsp.set(passed=ok, detail=detail, source="author")
                 if not ok:
