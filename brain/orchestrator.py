@@ -546,7 +546,8 @@ class Orchestrator:
             if caps:
                 servers["caps"] = build_caps_server(
                     list(caps.values()), manager=self.manager,
-                    workspace=workspace, monitor=monitor, tracer=self.tracer)
+                    workspace=workspace, monitor=monitor, tracer=self.tracer,
+                    secrets=getattr(self.broker, "secrets", None))
             if channel is not None:
                 servers["team"] = build_team_server(channel)
             options = factory.locked_session(
@@ -595,9 +596,23 @@ class Orchestrator:
             with self.tracer.span("resolve", need, agent=spec.id):
                 decision = self.resolver.resolve(need)
                 if decision.kind == REUSE and decision.capability is not None:
+                    cap = decision.capability
+                    # A reused credentialed tool still needs its secret THIS session.
+                    if cap.requires_credential and cap.requires_credential not in (
+                            getattr(self.broker, "secrets", {}) or {}):
+                        granted = self.broker is not None and self.broker.request(
+                            action=f"reuse capability '{cap.name}', which needs {cap.requires_credential}",
+                            reason="the tool requires a credential; its value is held per session only",
+                            requirements=[cap.requires_credential],
+                        ) and self.broker.collect_secret(
+                            cap.requires_credential, purpose=f"capability '{cap.name}'")
+                        if not granted:
+                            self.tracer.event("capability.unavailable", cap.name, status="denied",
+                                              needs=cap.requires_credential, agent=spec.id)
+                            continue  # the agent works without it and reports honestly
                     self.tracer.event("decision", need, status="info",
-                                      choice="reuse", capability=decision.capability.name, agent=spec.id)
-                    caps[decision.capability.name] = decision.capability
+                                      choice="reuse", capability=cap.name, agent=spec.id)
+                    caps[cap.name] = cap
                 elif decision.kind == CREATE and decision.capability_need:
                     builder = make_builder_agent(self.model, self.tracer) if self.use_builder else None
                     cap = await acquire(
