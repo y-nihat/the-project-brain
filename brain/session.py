@@ -97,6 +97,28 @@ class BrainSession:
         self.tracer.add_listener(fn)
 
     async def run_objective(self, objective: str) -> RunSummary:
+        # Secrets must enter via the hidden gate prompt — objectives are stored
+        # forever (trace DB, run folders, history). Catch the mistake BEFORE
+        # anything is recorded.
+        from .observability.redact import contains_secret_shape
+
+        if contains_secret_shape(objective):
+            allowed = self.broker.request(
+                action="run an objective that appears to CONTAIN A CREDENTIAL",
+                reason="objectives are permanently logged (trace, run history); a secret pasted "
+                       "here would be stored in masked form and should instead be provided at the "
+                       "hidden secret prompt when the brain asks for it",
+                requirements=["resubmit the objective without the secret (recommended: deny)"],
+            )
+            if not allowed:
+                return RunSummary(
+                    run_id="(not started)", status="refused",
+                    answer=("Objective not run: it appears to contain a credential. Remove it and "
+                            "resubmit — the brain will ask for the secret at a hidden prompt when "
+                            "a tool needs it, keeping it out of all logs."),
+                    containers=0, leaks=0, used_history=False, seeded_from=None,
+                    capabilities=[c.name for c in self.registry.all()])
+
         hist_text, seed_run = history_mod.history_block(config.DB_PATH, config.RUNS_DIR, objective)
 
         run = self.tracer.start_run(objective, model=config.BRAIN_MODEL)
