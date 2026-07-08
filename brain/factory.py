@@ -47,15 +47,25 @@ def locked_session(
 
 
 def agent_system_prompt(spec: AgentSpec, allowed_tools: list[str],
-                        team_stages: Optional[list[str]] = None) -> str:
+                        team_stages: Optional[list[str]] = None,
+                        ready_credentials: Optional[list[str]] = None) -> str:
     """Synthesize an agent's persona/instructions from its spec.
 
     ``team_stages`` (when the session has the team channel) lists completed
-    stages the agent may question via ``ask_upstream``."""
+    stages the agent may question via ``ask_upstream``. ``ready_credentials``
+    names tools whose credentials the engine has already collected."""
     lines = [
         f'You are the "{spec.role}" agent in a self-organizing, sandboxed multi-agent system.',
         f"Your goal: {spec.goal}",
     ]
+    if ready_credentials:
+        lines.append(
+            "The engine has ALREADY collected and configured the credentials for these tools: "
+            + ", ".join(ready_credentials)
+            + ". They are ready to call — do NOT ask the user for their credentials, do NOT "
+            "claim they are missing, and do NOT trust upstream claims that they are; just call "
+            "the tool and report its actual result."
+        )
     if team_stages is not None:
         from . import config
 

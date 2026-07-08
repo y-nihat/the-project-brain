@@ -536,8 +536,12 @@ class Orchestrator:
         allowed = [f"mcp__caps__{name}" for name in caps]
         if channel is not None:
             allowed = allowed + TEAM_TOOLS
+        session_secrets = getattr(self.broker, "secrets", {}) or {}
+        ready = [c.name for c in caps.values()
+                 if c.requires_credential and session_secrets.get(c.requires_credential)]
         system_prompt = factory.agent_system_prompt(
-            spec, allowed, team_stages=(completed if channel is not None else None))
+            spec, allowed, team_stages=(completed if channel is not None else None),
+            ready_credentials=ready or None)
         repairs = 0
         out = ""
         while True:
