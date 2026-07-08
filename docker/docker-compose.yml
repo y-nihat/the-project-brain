@@ -23,8 +23,10 @@ services:
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
     restart: unless-stopped
-    mem_limit: 128m
-    cpus: 0.5
+    # haproxy measures ~15MiB in use; 64m hard cap (no swap) is 4x headroom.
+    mem_limit: 64m
+    memswap_limit: 64m
+    cpus: 0.25
     networks: [brainnet]
 
   brain:
@@ -43,7 +45,12 @@ services:
       - ..:/app                      # live source for iteration
       - /etc/localtime:/etc/localtime:ro   # container clock renders in the laptop's timezone
       - /etc/timezone:/etc/timezone:ro
+    # Idle the brain is ~MBs, but a live run holds several concurrent agent
+    # CLI subprocesses plus image builds — peaks are GBs, so the ceiling stays
+    # 2g. memswap==mem makes it a HARD cap (no silent spill into swap), same
+    # policy the sandboxes get.
     mem_limit: 2g
+    memswap_limit: 2g
     cpus: 2.0
     networks: [brainnet]
     stdin_open: true                 # interactive approval gate reads stdin
@@ -64,7 +71,10 @@ services:
       - "6006:6006"     # UI + OTLP HTTP collector (/v1/traces)
     volumes:
       - ../data/phoenix:/mnt/data
+    # Phoenix sits at ~400MiB with today's trace volume and grows with it;
+    # 1g hard-capped is the honest floor, not generosity.
     mem_limit: 1g
+    memswap_limit: 1g
     cpus: 1.0
     networks: [brainnet]
 
