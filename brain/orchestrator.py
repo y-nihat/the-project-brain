@@ -116,6 +116,28 @@ def _batch_notes(notes: dict[str, str], limit: int) -> list[dict[str, str]]:
     return batches
 
 
+def _observed_artifacts(workspace: Path, limit: int = 1500) -> str:
+    """Read the HEADS of files the run actually produced, so a reviewer/supervisor
+    judges the real artifact rather than an agent's description of it. Generic
+    across modalities — text is shown, binaries are noted by size."""
+    root = Path(workspace)
+    if not root.is_dir():
+        return ""
+    parts: list[str] = []
+    for p in sorted(root.rglob("*")):
+        if not p.is_file():
+            continue
+        rel = p.relative_to(root)
+        if rel.parts and rel.parts[0] in ("prior", "input"):
+            continue  # prior-run seeds and user inputs are not THIS run's output
+        try:
+            head = p.read_text(errors="strict")[:limit]
+            parts.append(f"[{rel}] ({p.stat().st_size} bytes):\n{head}")
+        except (UnicodeDecodeError, OSError):
+            parts.append(f"[{rel}] ({p.stat().st_size} bytes, binary)")
+    return "\n\n".join(parts)
+
+
 class Orchestrator:
     def __init__(
         self,
@@ -189,6 +211,9 @@ class Orchestrator:
         self._run_ctx = (objective, history, workspace)
         self._questions_answered = 0
         self._sup_redone: set[str] = set()
+        self._criteria = list(getattr(plan, "success_criteria", []) or [])
+        if self._criteria:
+            self.tracer.event("plan.criteria", "plan", status="info", criteria=self._criteria)
 
         last_done: Optional[str] = None
         failure_note: Optional[str] = None
@@ -446,20 +471,30 @@ class Orchestrator:
         limit = config.REDUCE_MAX_INPUT_CHARS
         verdict = "revise"
         couriers_left = config.REVIEW_EVIDENCE_FETCHES
+        criteria_block = (
+            "\n\nSUCCESS CRITERIA (compiled from the user's objective — check the deliverable "
+            "against EACH; an unmet criterion is grounds to revise):\n"
+            + "\n".join(f"- {c}" for c in self._criteria) if self._criteria else "")
         try:
             for rnd in range(1, max(1, stage.rounds) + 1):
                 spec = AgentSpec(id=f"{stage.id}.r{rnd}", role=stage.role, goal=stage.goal,
                                  capabilities=stage.capabilities, depends_on=stage.depends_on)
                 caps = await self._acquire_caps(spec)
+                observed = _observed_artifacts(workspace)
                 ctx = (
                     "DRAFT under review:\n---\n" + draft + "\n---\n\n"
                     + ("EVIDENCE (the notes the draft must be supported by):\n"
                        + _notes_block(evidence, limit) + "\n\n" if evidence else "")
-                    + "Check every load-bearing claim in the draft against the evidence. Unsupported "
-                      "claims, numbers without a source, or claims resting on weak/promotional sources "
-                      "must be flagged. APPROVE when the load-bearing claims are supported — style "
-                      "preferences and minor wording are NOT grounds for revision. Your FIRST line must "
-                      "be exactly one of: 'VERDICT: approved' — "
+                    + (f"OBSERVED ARTIFACT FILES actually produced this run (judge THESE, not the "
+                       f"draft's self-description of them):\n{observed}\n\n" if observed else "")
+                    + criteria_block
+                    + "\nCheck every load-bearing claim in the draft against the evidence, and verify "
+                      "the observed artifact matches what the draft claims about it (counts, length, "
+                      "described features must actually be present). Unsupported claims, numbers "
+                      "without a source, or claims resting on weak/promotional sources must be "
+                      "flagged. APPROVE when the load-bearing claims are supported and the criteria "
+                      "are met — style preferences and minor wording are NOT grounds for revision. "
+                      "Your FIRST line must be exactly one of: 'VERDICT: approved' — "
                       "'VERDICT: revise' (problems fixable from the existing evidence) — "
                       "'VERDICT: needs-evidence' (a load-bearing claim can only be settled by fetching "
                       "a specific missing source; then list EXACTLY what to fetch). If revising, follow "
@@ -512,11 +547,14 @@ class Orchestrator:
                 just_completed: Optional[tuple] = None) -> str:
         """Compact run-state summary for the supervisor: what a person glancing
         at the situation would want to know before judging it."""
-        objective, _history, _workspace = self._run_ctx
+        objective, _history, workspace = self._run_ctx
         lines = [f"OBJECTIVE (the user's own words): {objective}", "", "PLAN:"]
         for s in self._stages_by_id.values():
             status = "done" if s.id in self._outputs else "not yet run"
             lines.append(f"- {s.id} [{s.pattern}] ({status}): {s.goal[:140]}")
+        if self._criteria:
+            lines.append("\nSUCCESS CRITERIA (from the objective — the deliverable must meet these):")
+            lines += [f"- {c}" for c in self._criteria]
         if self._outputs:
             lines.append("")
             lines.append("COMPLETED STAGE OUTPUTS (heads — already streamed to the user's terminal):")
@@ -525,6 +563,11 @@ class Orchestrator:
         if just_completed is not None:
             sid, out = just_completed
             lines.append(f"\nJUST COMPLETED — stage '{sid}', fuller output:\n{(out or '')[:1200]}")
+            # Judge the real artifact, not the agent's description of it.
+            observed = _observed_artifacts(workspace, limit=800)
+            if observed:
+                lines.append(f"\nOBSERVED ARTIFACT FILES this run produced (verify claims against "
+                             f"THESE, not the narration above):\n{observed[:2500]}")
         if pending:
             lines.append(f"\nPENDING USER INTERACTION (about to happen in the terminal): {pending}")
         return "\n".join(lines)
