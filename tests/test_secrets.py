@@ -78,6 +78,37 @@ def test_secret_value_never_traced(tmp_path):
     assert b"API_KEY" in everything            # the NAME is traced
 
 
+def test_help_is_shown_before_the_prompt():
+    """Whoever asks a human for a key must first tell them where to find it —
+    the retrieval instructions print BEFORE the value prompt, in one flow."""
+    timeline: list[str] = []
+
+    def out(s: str) -> None:
+        timeline.append(f"OUT:{s}")
+
+    def secret_in(p: str) -> str:
+        timeline.append(f"PROMPT:{p}")
+        return "key-123"
+
+    b = ApprovalBroker(secret_input_fn=secret_in, output_fn=out)
+    b.collect_secret("SERVICE_API_KEY", "external tool",
+                     help_text="1. Register at the provider\n2. Open the API console\n3. Copy the key")
+    help_idx = next(i for i, s in enumerate(timeline) if "HOW TO OBTAIN" in s)
+    prompt_idx = next(i for i, s in enumerate(timeline) if s.startswith("PROMPT:"))
+    assert help_idx < prompt_idx
+    assert "API console" in timeline[help_idx]
+
+
+def test_registry_persists_credential_help(tmp_path):
+    reg = Registry(tmp_path / "r.db", tmp_path / "store")
+    reg.add(Capability(name="svc", description="d", image_tag="i:1", command=["x"],
+                       input_schema={}, env_map={}, requires_credential="SVC_KEY",
+                       credential_help="1. sign up\n2. copy key", verified=True))
+    got = reg.get("svc")
+    reg.close()
+    assert got.credential_help == "1. sign up\n2. copy key"
+
+
 def test_hidden_entry_confirms_with_masked_receipt(monkeypatch):
     """Blind input gets a masked echo-back: a bad paste is caught at the prompt,
     not as a cryptic API failure later."""
@@ -247,7 +278,8 @@ def test_author_credentialed_tool_collects_and_verifies_with_secret(tmp_path):
         return {"program": program, "dockerfile": dockerfile,
                 "command": ["python", "-B", "/app/tool.py"],
                 "input_schema": {"type": "object"}, "env_map": {}, "network": "none",
-                "sample_input": {}, "requires_credential": "fake service token"}
+                "sample_input": {}, "requires_credential": "fake service token",
+                "credential_help": "1. open the fake console\n2. copy the token"}
 
     try:
         cap = asyncio.run(acquisition.acquire(
@@ -258,7 +290,9 @@ def test_author_credentialed_tool_collects_and_verifies_with_secret(tmp_path):
         assert broker.secrets == {"FAKE_SERVICE_TOKEN": "tok-abc"}
         assert len(secret_prompts) == 1                          # asked exactly once
         # Persisted on the promoted capability for future-session reuse prompts.
-        assert reg.get("fake_service_send").requires_credential == "FAKE_SERVICE_TOKEN"
+        promoted = reg.get("fake_service_send")
+        assert promoted.requires_credential == "FAKE_SERVICE_TOKEN"
+        assert "fake console" in promoted.credential_help
         # The secret VALUE appears nowhere in the registry store or artifacts.
         blob = b""
         for f in list((tmp_path / "store").rglob("*")) + list((tmp_path / "runs").rglob("*")):

@@ -28,6 +28,10 @@ class Capability:
     # "SERVICE_API_KEY"). The VALUE lives only in the session's ApprovalBroker
     # and is injected at run time — never stored, never traced.
     requires_credential: Optional[str] = None
+    # Human-facing instructions for OBTAINING that credential, written by the
+    # tool's author. The engine shows this BEFORE prompting for the value — the
+    # asker must deliver the help, whatever the plan shape.
+    credential_help: Optional[str] = None
 
 
 @dataclass

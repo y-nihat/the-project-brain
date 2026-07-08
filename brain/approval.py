@@ -86,15 +86,20 @@ class ApprovalBroker:
         if not self.request(action, reason, requirements):
             raise ApprovalDenied(action)
 
-    def collect_secret(self, name: str, purpose: str) -> Optional[str]:
-        """Interactively collect a credential VALUE (e.g. a bot token).
+    def collect_secret(self, name: str, purpose: str,
+                       help_text: Optional[str] = None) -> Optional[str]:
+        """Interactively collect a credential VALUE (e.g. an API key).
 
-        The value is cached for this session under ``name`` and injected into
-        sandbox environments by the runtime; only the NAME is ever traced.
-        Returns None when the user provides nothing (or on auto-deny)."""
+        ``help_text`` — instructions for OBTAINING the credential — is shown
+        BEFORE the prompt: whoever asks a human for a key must first tell them
+        where to find it. The value is cached for this session under ``name``
+        and injected into sandbox environments by the runtime; only the NAME is
+        ever traced. Returns None when the user provides nothing (or on
+        auto-deny)."""
         if name in self.secrets:
             return self.secrets[name]
-        self.tracer.event("secret.requested", name, status="info", purpose=purpose[:200])
+        self.tracer.event("secret.requested", name, status="info", purpose=purpose[:200],
+                          help_shown=bool(help_text))
 
         if self.auto == "deny":
             value = ""
@@ -107,6 +112,11 @@ class ApprovalBroker:
                 "it is never logged, traced, or stored on disk.\n"
                 "  (leave empty to refuse)"
             )
+            if help_text:
+                self._output(
+                    "  HOW TO OBTAIN " + name + ":\n"
+                    + "\n".join(f"    {ln}" for ln in str(help_text).strip().splitlines())
+                )
             hidden = self._secret_input is None
             if hidden:
                 import getpass

@@ -613,7 +613,8 @@ class Orchestrator:
                             reason="the tool requires a credential; its value is held per session only",
                             requirements=[cap.requires_credential],
                         ) and self.broker.collect_secret(
-                            cap.requires_credential, purpose=f"capability '{cap.name}'")
+                            cap.requires_credential, purpose=f"capability '{cap.name}'",
+                            help_text=cap.credential_help)
                         if not granted:
                             self.tracer.event("capability.unavailable", cap.name, status="denied",
                                               needs=cap.requires_credential, agent=spec.id)

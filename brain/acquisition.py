@@ -357,13 +357,17 @@ async def _author_capability(
                     )
                     if not approved:
                         raise AcquisitionError(f"approval denied: '{need_key}' needs {rc}")
-                    secret = broker.collect_secret(rc, purpose=f"capability '{need_key}' ({description[:80]})")
+                    secret = broker.collect_secret(
+                        rc, purpose=f"capability '{need_key}' ({description[:80]})",
+                        help_text=sub.get("credential_help"))
                     if not secret:
                         raise AcquisitionError(f"'{need_key}' needs {rc}, but no value was provided")
                     secret_env[rc] = secret
 
             cap = _capability_from_submission(need_key, description, sub)
             cap.requires_credential = rc or None
+            cap.credential_help = (str(sub.get("credential_help")).strip()[:2000]
+                                   if rc and sub.get("credential_help") else None)
             build_context = {"Dockerfile": sub["dockerfile"], "tool.py": sub["program"]}
             attempt_dir = tracer.artifact_path(cap.name, f"attempt-{attempt}-author")
             _write_context(attempt_dir, build_context)
@@ -545,7 +549,11 @@ _DEVELOPER_SYSTEM = (
     "so: your program MUST read the credential from exactly that env var; do NOT declare the "
     "credential as a tool argument in input_schema/env_map; and NEVER put a credential value "
     "(real or placeholder) in sample_input — verification runs with the real injected value, "
-    "and a placeholder will make it fail (e.g. 401).\n\n"
+    "and a placeholder will make it fail (e.g. 401).\n"
+    "  * credential_help: REQUIRED whenever requires_credential is set — short numbered steps "
+    "a HUMAN follows to obtain that credential (where to register, which console/menu/command, "
+    "what the value looks like). The engine shows this to the user BEFORE prompting for the "
+    "value. Write it for the end user, not for developers.\n\n"
     "Tools run NON-INTERACTIVELY in an isolated sandbox: they can never prompt, ask, or wait "
     "for the user (no stdin, no UI). NEVER author a tool whose job is to collect input, "
     "credentials, or confirmation from a human — declare requires_credential instead and the "
@@ -589,6 +597,7 @@ _SUBMIT_TOOL_SCHEMA = {
             },
         },
         "requires_credential": {"type": ["string", "null"]},
+        "credential_help": {"type": ["string", "null"]},
     },
     "required": ["program", "dockerfile", "command", "input_schema", "env_map", "network", "sample_input"],
 }
