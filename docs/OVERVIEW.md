@@ -41,7 +41,7 @@ host (WSL2 + Docker Desktop)
 ## How to run it **today**
 
 ```sh
-DC="docker compose -f docker/docker-compose.yml"
+DC="docker compose -f docker/docker-compose.yml --env-file .env"
 $DC up -d --build        # first time builds the image; afterwards just: $DC up -d
 $DC exec brain python -m brain.main "<your objective>"     # run an objective
 $DC exec brain python -m pytest                            # tests
@@ -105,7 +105,7 @@ local [Phoenix](https://github.com/Arize-ai/phoenix) viewer as OpenTelemetry tra
 tree: who called whom, when, how long, tokens/cost, errors).
 
 ```sh
-DC="docker compose -f docker/docker-compose.yml"
+DC="docker compose -f docker/docker-compose.yml --env-file .env"
 $DC --profile observability up -d phoenix          # start the viewer (opt-in profile)
 $DC exec brain python -m brain.observability export --last   # or <run_id>, or --all
 # browse http://localhost:6006 — then stop everything:

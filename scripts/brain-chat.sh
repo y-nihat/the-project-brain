@@ -9,7 +9,7 @@
 # tears everything down on exit (including the observability profile).
 set -e
 cd "$(dirname "$0")/.."
-DC="docker compose -f docker/docker-compose.yml"
+DC="docker compose -f docker/docker-compose.yml --env-file .env"
 
 PROFILE=""
 [ "$1" = "--phoenix" ] && PROFILE="--profile observability"

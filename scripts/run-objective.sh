@@ -8,7 +8,7 @@
 # linger. Run outputs persist under data/ on the host.
 set -e
 cd "$(dirname "$0")/.."
-DC="docker compose -f docker/docker-compose.yml"
+DC="docker compose -f docker/docker-compose.yml --env-file .env"
 
 cleanup() {
     echo "[run-objective] tearing the stack down..."

@@ -8,7 +8,7 @@
 # only when every check in every scenario passed.
 set -e
 cd "$(dirname "$0")/.."
-DC="docker compose -f docker/docker-compose.yml"
+DC="docker compose -f docker/docker-compose.yml --env-file .env"
 
 cleanup() {
     echo "[run-evals] tearing the stack down..."
