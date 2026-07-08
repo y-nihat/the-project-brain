@@ -107,15 +107,39 @@ class ApprovalBroker:
                 "it is never logged, traced, or stored on disk.\n"
                 "  (leave empty to refuse)"
             )
-            fn = self._secret_input
-            if fn is None:
+            hidden = self._secret_input is None
+            if hidden:
                 import getpass
 
                 fn = getpass.getpass
-            try:
-                value = (fn(f"  Enter {name}: ") or "").strip()
-            except Exception:  # noqa: BLE001 — no tty, EOF, interrupted, ...
-                value = ""
+            else:
+                fn = self._secret_input
+            while True:
+                prompt = (f"  Enter {name} (input hidden — type show to switch to visible typing): "
+                          if hidden else f"  Enter {name}: ")
+                try:
+                    value = (fn(prompt) or "").strip()
+                except Exception:  # noqa: BLE001 — no tty, EOF, interrupted, ...
+                    value = ""
+                if hidden and value.lower() == "show":
+                    try:
+                        value = (self._input(f"  Enter {name} (VISIBLE on screen): ") or "").strip()
+                    except Exception:  # noqa: BLE001
+                        value = ""
+                if not value or not hidden:
+                    break
+                # Hidden input is unverifiable by eye: echo a masked receipt so a
+                # bad paste is caught HERE, not as a cryptic API failure later.
+                masked = f"{value[:4]}…{value[-4:]}" if len(value) > 12 else "•" * len(value)
+                try:
+                    ans = (self._input(
+                        f"  Received {len(value)} characters: {masked} — use this? (Y/n): ")
+                        or "").strip().lower()
+                except Exception:  # noqa: BLE001
+                    ans = ""
+                if ans in ("", "y", "yes"):
+                    break
+                self._output("  OK — let's try again.")
 
         if not value:
             self.tracer.event("secret.provided", name, status="denied")
