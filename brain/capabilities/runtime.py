@@ -67,6 +67,7 @@ def build_caps_server(
     workspace: Optional[str | Path] = None,
     monitor=None,
     tracer=None,
+    secrets: Optional[dict] = None,
     server_name: str = "caps",
 ):
     """Create an in-process MCP server exposing each capability as a tool.
@@ -96,6 +97,20 @@ def build_caps_server(
             file_refs = args.pop("files", None)  # reserved: workspace paths to attach
 
             env = {cap.env_map[k]: _env_value(v) for k, v in args.items() if k in cap.env_map}
+
+            # Session secrets: injected engine-side, never through agent args,
+            # never traced. A credentialed tool without its secret fails honestly.
+            if cap.requires_credential:
+                secret = (secrets or {}).get(cap.requires_credential)
+                if not secret:
+                    return {
+                        "content": [{"type": "text", "text": (
+                            f"'{cap.name}' needs the credential {cap.requires_credential}, which was "
+                            "not provided in this session. Do not fabricate results; report this "
+                            "limitation and what the user must supply.")}],
+                        "is_error": True,
+                    }
+                env[cap.requires_credential] = secret
 
             input_files = {}
             if file_refs and ws is not None:

@@ -36,7 +36,8 @@ CREATE TABLE IF NOT EXISTS capabilities (
 """
 
 # Columns added after the original schema; applied to pre-existing databases.
-_MIGRATIONS = {"memory_mb": "INTEGER", "cpus": "REAL", "timeout_seconds": "INTEGER"}
+_MIGRATIONS = {"memory_mb": "INTEGER", "cpus": "REAL", "timeout_seconds": "INTEGER",
+               "requires_credential": "TEXT"}
 
 
 def _migrate(conn: sqlite3.Connection, table: str, columns: dict[str, str]) -> None:
@@ -74,6 +75,7 @@ class Registry:
             memory_mb=r["memory_mb"],
             cpus=r["cpus"],
             timeout_seconds=r["timeout_seconds"],
+            requires_credential=r["requires_credential"],
         )
 
     def get(self, name: str) -> Optional[Capability]:
@@ -93,8 +95,8 @@ class Registry:
             self._conn.execute(
                 "INSERT OR REPLACE INTO capabilities "
                 "(name, version, description, image_tag, command, input_schema, env_map, network, "
-                " tags, verified, created_at, memory_mb, cpus, timeout_seconds) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                " tags, verified, created_at, memory_mb, cpus, timeout_seconds, requires_credential) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (
                     cap.name,
                     cap.version,
@@ -110,6 +112,7 @@ class Registry:
                     cap.memory_mb,
                     cap.cpus,
                     cap.timeout_seconds,
+                    cap.requires_credential,
                 ),
             )
         # Persist a manifest + build context for reproducibility/audit.
