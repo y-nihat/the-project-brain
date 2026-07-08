@@ -48,6 +48,7 @@ class ApprovalBroker:
         auto: Optional[str] = None,  # None | "approve" | "deny"
         input_fn: Callable[[str], str] = input,
         output_fn: Callable[[str], None] = print,
+        secret_input_fn: Optional[Callable[[str], str]] = None,  # None => getpass (hidden)
         tracer=None,
     ):
         if auto not in (None, "approve", "deny"):
@@ -55,10 +56,15 @@ class ApprovalBroker:
         self.auto = auto
         self._input = input_fn
         self._output = output_fn
+        self._secret_input = secret_input_fn
         from .observability import NullTracer
 
         self.tracer = tracer or NullTracer()
         self.log: list[tuple[ApprovalRequest, bool]] = []
+        # Session-only secret store: {ENV_VAR_NAME: value}. Values are injected
+        # into sandbox environments at run time and are NEVER written to the
+        # trace, the registry, or disk.
+        self.secrets: dict[str, str] = {}
 
     def request(self, action: str, reason: str, requirements: Iterable[str] = ()) -> bool:
         req = ApprovalRequest(action=action, reason=reason, requirements=list(requirements))
@@ -79,6 +85,44 @@ class ApprovalBroker:
         """Like :meth:`request` but raises :class:`ApprovalDenied` on refusal."""
         if not self.request(action, reason, requirements):
             raise ApprovalDenied(action)
+
+    def collect_secret(self, name: str, purpose: str) -> Optional[str]:
+        """Interactively collect a credential VALUE (e.g. a bot token).
+
+        The value is cached for this session under ``name`` and injected into
+        sandbox environments by the runtime; only the NAME is ever traced.
+        Returns None when the user provides nothing (or on auto-deny)."""
+        if name in self.secrets:
+            return self.secrets[name]
+        self.tracer.event("secret.requested", name, status="info", purpose=purpose[:200])
+
+        if self.auto == "deny":
+            value = ""
+        elif self.auto == "approve":
+            value = f"auto-secret-{name}"   # tests/automation: a stand-in value
+        else:
+            self._output(
+                f"\n  SECRET NEEDED — {purpose}\n"
+                f"  The value of {name} is held in memory for THIS session only; "
+                "it is never logged, traced, or stored on disk.\n"
+                "  (leave empty to refuse)"
+            )
+            fn = self._secret_input
+            if fn is None:
+                import getpass
+
+                fn = getpass.getpass
+            try:
+                value = (fn(f"  Enter {name}: ") or "").strip()
+            except Exception:  # noqa: BLE001 — no tty, EOF, interrupted, ...
+                value = ""
+
+        if not value:
+            self.tracer.event("secret.provided", name, status="denied")
+            return None
+        self.secrets[name] = value
+        self.tracer.event("secret.provided", name, status="granted")  # name only, never the value
+        return value
 
     def _decide(self, req: ApprovalRequest) -> bool:
         banner = (
