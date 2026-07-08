@@ -130,6 +130,43 @@ def test_reuse_prompts_for_missing_secret_or_skips(tmp_path, monkeypatch):
     assert caps2 == {} and broker2.secrets == {}
 
 
+# --- verification env: the real secret must always win ------------------------ #
+class _CapturingManager:
+    def __init__(self, stdout='{"sent": true}'):
+        self.env = None
+        self.stdout = stdout
+
+    def run_ephemeral(self, image, command, *, policy, capability, environment=None,
+                      input_files=None, capture_output_files=False):
+        from types import SimpleNamespace
+
+        self.env = dict(environment or {})
+        return SimpleNamespace(ok=True, oom=False, exit_code=0, timed_out=False,
+                               stdout=self.stdout, stderr="", output_files={},
+                               error_note=None)
+
+
+def test_verify_injected_secret_beats_sample_placeholder():
+    """A placeholder credential smuggled into sample_input must not shadow the
+    real injected secret (the exact bug behind the Telegram 401s)."""
+    mgr = _CapturingManager()
+    cap = Capability(name="t", description="d", image_tag="i:1", command=["x"],
+                     input_schema={}, env_map={"token": "BOT_TOKEN"})
+    ok, detail, _ = acquisition._generic_verify(
+        cap, {"token": "dummy-placeholder"}, {}, mgr, {"BOT_TOKEN": "real-token"})
+    assert ok
+    assert mgr.env["BOT_TOKEN"] == "real-token"
+
+
+def test_verify_rejects_error_payload_even_with_extra_keys():
+    """{"error": ..., "helpful_extras": ...} with exit 0 is still a failure."""
+    mgr = _CapturingManager(stdout='{"error": "401 Unauthorized", "how_to": "..."}')
+    cap = Capability(name="t", description="d", image_tag="i:1", command=["x"],
+                     input_schema={}, env_map={})
+    ok, detail, _ = acquisition._generic_verify(cap, {}, {}, mgr, None)
+    assert not ok and "401" in detail and "env vars provided" in detail
+
+
 # --- Docker: author a credentialed tool end-to-end ---------------------------- #
 @pytest.mark.skipif(not DOCKER, reason="Docker daemon not reachable")
 def test_author_credentialed_tool_collects_and_verifies_with_secret(tmp_path):
@@ -142,8 +179,14 @@ def test_author_credentialed_tool_collects_and_verifies_with_secret(tmp_path):
     tracer = Tracer(tmp_path / "t.db", tmp_path / "runs")
     tracer.start_run("credentialed authoring")
     mgr = SandboxManager("secret-test", ledger, tracer=tracer)
+    secret_prompts: list[str] = []
+
+    def secret_input(prompt: str) -> str:
+        secret_prompts.append(prompt)
+        return "tok-abc"
+
     broker = ApprovalBroker(input_fn=lambda _p: "y",
-                            secret_input_fn=lambda _p: "tok-abc", tracer=tracer)
+                            secret_input_fn=secret_input, tracer=tracer)
 
     # The tool FAILS without the credential — verification can only pass if the
     # engine injected the collected secret into the verify environment.
@@ -155,18 +198,21 @@ def test_author_credentialed_tool_collects_and_verifies_with_secret(tmp_path):
     dockerfile = "FROM python:3.12-slim\nWORKDIR /app\nCOPY tool.py /app/tool.py\n"
 
     async def stub_developer(need_key, description, previous=None, error=None):
+        # Deliberately MESSY credential naming: the engine must canonicalize it
+        # to FAKE_SERVICE_TOKEN (the name the program reads) and ask only once.
         return {"program": program, "dockerfile": dockerfile,
                 "command": ["python", "-B", "/app/tool.py"],
                 "input_schema": {"type": "object"}, "env_map": {}, "network": "none",
-                "sample_input": {}, "requires_credential": "FAKE_SERVICE_TOKEN"}
+                "sample_input": {}, "requires_credential": "fake service token"}
 
     try:
         cap = asyncio.run(acquisition.acquire(
             "fake_service_send", manager=mgr, registry=reg, broker=broker,
             developer=stub_developer, description="send via fake service", tracer=tracer))
         assert cap.verified
-        assert cap.requires_credential == "FAKE_SERVICE_TOKEN"
+        assert cap.requires_credential == "FAKE_SERVICE_TOKEN"   # canonicalized
         assert broker.secrets == {"FAKE_SERVICE_TOKEN": "tok-abc"}
+        assert len(secret_prompts) == 1                          # asked exactly once
         # Persisted on the promoted capability for future-session reuse prompts.
         assert reg.get("fake_service_send").requires_credential == "FAKE_SERVICE_TOKEN"
         # The secret VALUE appears nowhere in the registry store or artifacts.

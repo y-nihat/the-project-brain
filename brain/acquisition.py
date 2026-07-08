@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 from pathlib import Path
 from typing import Awaitable, Callable, Optional
 
@@ -259,7 +260,7 @@ def _generic_verify(cap: Capability, sample_input: dict, sample_files: dict, man
     credentialed tool can be verified for real; values are never traced."""
     args = dict(sample_input or {})
     args.pop("files", None)  # reserved runtime arg, not an env input
-    env = dict(extra_env or {})
+    env = {}
     for key, val in args.items():
         if key in cap.env_map:
             if isinstance(val, str):
@@ -268,6 +269,9 @@ def _generic_verify(cap: Capability, sample_input: dict, sample_files: dict, man
                 env[cap.env_map[key]] = str(val)
             else:
                 env[cap.env_map[key]] = json.dumps(val)
+    # Session secrets LAST so the real credential always wins over any
+    # placeholder a sample_input smuggled in under the same env var.
+    env.update(extra_env or {})
     input_files = {
         name: (content.encode("utf-8") if isinstance(content, str) else bytes(content))
         for name, content in (sample_files or {}).items()
@@ -288,6 +292,7 @@ def _generic_verify(cap: Capability, sample_input: dict, sample_files: dict, man
             return (False, detail, res)
         detail = (
             f"exit={res.exit_code} timed_out={res.timed_out}; "
+            f"env vars provided: {sorted(env)}; "
             f"stderr (tail): {_error_tail(res.stderr, 1200)}; "
             f"stdout (tail): {_error_tail(res.stdout, 400)}"
         )
@@ -299,8 +304,9 @@ def _generic_verify(cap: Capability, sample_input: dict, sample_files: dict, man
         data = json.loads(out.splitlines()[-1])
     except Exception as e:  # noqa: BLE001
         return (False, f"last stdout line is not JSON ({e}): {_error_tail(out, 400)!r}", res)
-    if isinstance(data, dict) and set(data.keys()) == {"error"}:
-        return (False, f"tool reported error: {data['error']}", res)
+    if isinstance(data, dict) and "error" in data:
+        return (False, f"tool reported error: {str(data['error'])[:400]} "
+                       f"(env vars provided: {sorted(env)})", res)
     return (True, f"ok: {str(data)[:120]}", res)
 
 
@@ -337,18 +343,24 @@ async def _author_capability(
             rc = sub.get("requires_credential")
             secret_env: dict[str, str] = {}
             if rc:
-                rc = str(rc).strip()
-                approved = broker.request(
-                    action=f"build capability '{need_key}', which needs {rc}",
-                    reason="the tool fundamentally requires a credential/account/paid service (no free path)",
-                    requirements=[rc],
-                )
-                if not approved:
-                    raise AcquisitionError(f"approval denied: '{need_key}' needs {rc}")
-                secret = broker.collect_secret(rc, purpose=f"capability '{need_key}' ({description[:80]})")
-                if not secret:
-                    raise AcquisitionError(f"'{need_key}' needs {rc}, but no value was provided")
-                secret_env[rc] = secret
+                # Canonical env-var name: developers drift between spellings
+                # across attempts ("telegram_bot_token" vs TELEGRAM_BOT_TOKEN),
+                # which double-prompted the user. One name, one ask, cached.
+                rc = re.sub(r"\W+", "_", str(rc).strip()).upper().strip("_")
+                if rc in broker.secrets:
+                    secret_env[rc] = broker.secrets[rc]
+                else:
+                    approved = broker.request(
+                        action=f"build capability '{need_key}', which needs {rc}",
+                        reason="the tool fundamentally requires a credential/account/paid service (no free path)",
+                        requirements=[rc],
+                    )
+                    if not approved:
+                        raise AcquisitionError(f"approval denied: '{need_key}' needs {rc}")
+                    secret = broker.collect_secret(rc, purpose=f"capability '{need_key}' ({description[:80]})")
+                    if not secret:
+                        raise AcquisitionError(f"'{need_key}' needs {rc}, but no value was provided")
+                    secret_env[rc] = secret
 
             cap = _capability_from_submission(need_key, description, sub)
             cap.requires_credential = rc or None
@@ -526,8 +538,14 @@ _DEVELOPER_SYSTEM = (
     "(2048 MB / 2 CPU / 300 s). Memory is a HARD cap with no swap: exceeding it means the kernel "
     "KILLS the process with no traceback. Model-loading libraries (torch, transformers) need "
     "1024+ MB — declare it.\n"
-    "  * requires_credential: set to a short string ONLY IF the tool fundamentally needs an API "
-    "key/account/paid service (no free path); otherwise null.\n\n"
+    "  * requires_credential: ONLY IF the tool fundamentally needs an API key/account/paid "
+    "service (no free path), set this to the UPPERCASE ENV VAR NAME of the credential "
+    "(e.g. TELEGRAM_BOT_TOKEN); otherwise null. The engine collects the REAL value from the "
+    "human and injects it as that exact environment variable at BOTH verify time and run time, "
+    "so: your program MUST read the credential from exactly that env var; do NOT declare the "
+    "credential as a tool argument in input_schema/env_map; and NEVER put a credential value "
+    "(real or placeholder) in sample_input — verification runs with the real injected value, "
+    "and a placeholder will make it fail (e.g. 401).\n\n"
     "Sandbox facts (respect these — they are why tools fail):\n"
     "  * The image BUILD always has internet access; at RUNTIME the container has internet ONLY if "
     "you set network=\"bridge\".\n"
