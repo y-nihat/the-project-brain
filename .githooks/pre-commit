@@ -1,0 +1,18 @@
+#!/bin/sh
+# Refuse to commit anything secret-shaped. Mirrors brain/observability/redact.py:
+# the runtime masks secrets in outputs; this guard keeps them out of the repo.
+# The .githooks directory itself is excluded (these patterns live here).
+
+PATTERNS='sk-ant-[A-Za-z0-9_-]\{8,\}\|sk-[A-Za-z0-9]\{20,\}\|AKIA[0-9A-Z]\{16\}\|ghp_[A-Za-z0-9]\{20,\}\|gho_[A-Za-z0-9]\{20,\}\|xox[baprs]-[A-Za-z0-9-]\{10,\}\|eyJ[A-Za-z0-9_-]\{10,\}\.eyJ\|-----BEGIN [A-Z ]*PRIVATE KEY-----'
+
+hits=$(git diff --cached --diff-filter=ACM -U0 -- . ':(exclude).githooks/*' \
+       | grep '^+' | grep -n "$PATTERNS")
+
+if [ -n "$hits" ]; then
+    echo "COMMIT BLOCKED: staged changes contain secret-shaped strings:" >&2
+    echo "$hits" | head -5 | cut -c1-80 >&2
+    echo "Remove the secret (use the brain's hidden secret prompt instead)." >&2
+    echo "If this is a FAKE fixture, reshape it so it does not match real formats." >&2
+    exit 1
+fi
+exit 0
