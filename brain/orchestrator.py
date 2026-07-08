@@ -190,8 +190,12 @@ class Orchestrator:
         failure_note: Optional[str] = None
         for stage in stages:
             try:
-                with self.tracer.span("stage", stage.id, pattern=stage.pattern):
+                with self.tracer.span("stage", stage.id, pattern=stage.pattern) as sp:
                     out = await self._run_stage(stage, stages, outputs, objective, history, workspace)
+                    # Surface the stage's result in the live view: mid-run output
+                    # meant for the user (a how-to, a warning) must not be
+                    # invisible until the run ends.
+                    sp.set(output_head=(out or "")[:700])
             except Exception as e:  # noqa: BLE001
                 # Best-effort delivery: a completed draft must never be vaporized
                 # by a later stage's death. With nothing completed, fail loudly.

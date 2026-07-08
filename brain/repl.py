@@ -39,7 +39,12 @@ def format_event(record: dict) -> Optional[str]:
     if kind == "stage":
         if phase == "start":
             return f"  ▶ stage {name} [{data.get('pattern', 'single')}]"
-        return f"  ■ stage {name} done{dur_s}"
+        line = f"  ■ stage {name} done{dur_s}"
+        head = (data.get("output_head") or "").strip()
+        if head:
+            body = "\n".join(f"  │ {ln}" for ln in head.splitlines()[:14])
+            line += f"\n{body}\n  └─ (full output: outputs/{name}.md)"
+        return line
     if kind == "map.fanout":
         return (f"     ⑃ fan-out: {data.get('items')} items → {data.get('workers')} workers "
                 f"(≤{data.get('shard_size')} items each)")

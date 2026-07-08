@@ -33,6 +33,16 @@ def test_format_event_renders_key_moments():
     assert "stage survey [map]" in format_event(
         {"kind": "stage", "name": "survey", "phase": "start", "data": {"pattern": "map"}}
     )
+    # A completed stage streams the head of its output — mid-run text meant for
+    # the user (a how-to, a warning) must not hide in a file until the end.
+    done = format_event(
+        {"kind": "stage", "name": "collect_token", "phase": "end", "duration_ms": 1000,
+         "data": {"pattern": "single",
+                  "output_head": "How to get your token:\n1. Open Telegram\n2. Talk to @BotFather"}}
+    )
+    assert "stage collect_token done" in done
+    assert "@BotFather" in done and "│" in done
+    assert "outputs/collect_token.md" in done
     assert "agent ▸ Researcher" in format_event(
         {"kind": "agent.created", "name": "r", "data": {"role": "Researcher", "capabilities": ["web_search"]}}
     )
