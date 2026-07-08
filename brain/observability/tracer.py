@@ -182,6 +182,9 @@ class Tracer:
 
     # -- run lifecycle ---------------------------------------------------- #
     def start_run(self, objective: str, *, model: Optional[str] = None) -> "Run":
+        from .redact import scrub
+
+        objective = scrub(objective)  # objectives are stored forever; mask secret shapes
         run_id = _run_id(objective)
         with self._lock, self._conn:
             self._conn.execute(
@@ -228,6 +231,9 @@ class Tracer:
 
     # -- low-level writes ------------------------------------------------- #
     def _insert(self, run_id: str, *, kind: str, name: str, status: str, parent_id: Optional[str], data: dict) -> str:
+        from .redact import scrub
+
+        data = scrub(data or {})  # nothing secret-shaped ever reaches disk/stream
         eid = _new_id("ev")
         ts = _utcnow()
         with self._lock, self._conn:
@@ -246,6 +252,10 @@ class Tracer:
 
     def _update(self, eid: str, *, status: str, duration_ms: int, data: dict, error: Optional[str],
                 kind: str = "", name: str = "") -> None:
+        from .redact import scrub
+
+        data = scrub(data or {})
+        error = scrub(error) if error else error
         with self._lock, self._conn:
             self._conn.execute(
                 "UPDATE events SET status=?, duration_ms=?, data_json=?, error=? WHERE event_id=?",
@@ -326,6 +336,9 @@ class Run:
         return p
 
     def finish(self, status: str = "succeeded", outcome: Optional[str] = None) -> None:
+        from .redact import scrub
+
+        outcome = scrub(outcome) if outcome else outcome
         conn = self._t._conn
         with self._t._lock, conn:
             agg = conn.execute(

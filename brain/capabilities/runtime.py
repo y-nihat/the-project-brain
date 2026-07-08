@@ -158,7 +158,11 @@ def build_caps_server(
                 rclass, count = health_mod.OK, len(produced)  # producing files is a real result
             _observe(monitor, tracer, cap.name, rclass, count)
 
-            text = result.stdout.strip() or "(no stdout)"
+            # A buggy tool may echo its own credential; nothing secret-shaped
+            # leaves the sandbox boundary toward agents, traces, or files.
+            from ..observability.redact import scrub_text
+
+            text = scrub_text(result.stdout.strip()) or "(no stdout)"
             if produced:
                 text += ("\n\nProduced files (pass these paths as `files` to a downstream tool): "
                          + json.dumps(produced))
