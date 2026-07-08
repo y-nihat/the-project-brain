@@ -132,6 +132,7 @@ class Orchestrator:
         use_builder: bool = True,
         tracer=None,
         session_runner=None,
+        supervisor=None,
     ):
         self.session = session
         self.manager = manager
@@ -148,6 +149,8 @@ class Orchestrator:
         self.tracer = tracer or NullTracer()
         # Test seam: run an agent session; defaults to observability.trace_query.
         self._session_runner = session_runner
+        # Executive judgment (None => no supervision; the session wires one in).
+        self.supervisor = supervisor
         self._sessions = 0
 
     # ------------------------------------------------------------------ #
@@ -185,6 +188,7 @@ class Orchestrator:
         self._outputs = outputs
         self._run_ctx = (objective, history, workspace)
         self._questions_answered = 0
+        self._sup_redone: set[str] = set()
 
         last_done: Optional[str] = None
         failure_note: Optional[str] = None
@@ -210,6 +214,24 @@ class Orchestrator:
             outputs[stage.id] = out
             self.blackboard.put(f"output:{stage.id}", out)
             last_done = stage.id
+
+            # Executive check: does what just happened still serve the objective?
+            if self.supervisor is not None and len(stages) > 1:
+                d = await self.supervisor.consult(
+                    "stage_completed",
+                    self._digest(just_completed=(stage.id, out)),
+                    allowed=("proceed", "inform_user", "redo_stage"))
+                if d.action == "inform_user" and self.broker is not None:
+                    self.broker.inform(d.message)
+                elif d.action == "redo_stage" and stage.id not in self._sup_redone:
+                    redo = self._redo.get(stage.id)
+                    if redo is not None:
+                        self._sup_redone.add(stage.id)
+                        self.tracer.event("supervisor.redo", stage.id, status="info",
+                                          guidance=d.guidance[:300], reason=d.reason)
+                        out = await redo(d.guidance, out)
+                        outputs[stage.id] = out
+                        self.blackboard.put(f"output:{stage.id}", out)
 
         answer = outputs.get(last_done, "") if last_done else "No stages were produced."
         if failure_note:
@@ -486,6 +508,37 @@ class Orchestrator:
         return (draft + f"\n\n[engine note] review flagged unresolved issues after "
                         f"{stage.rounds} round(s); see outputs/{stage.id}.r*.md for the critique.")
 
+    def _digest(self, pending: Optional[str] = None,
+                just_completed: Optional[tuple] = None) -> str:
+        """Compact run-state summary for the supervisor: what a person glancing
+        at the situation would want to know before judging it."""
+        objective, _history, _workspace = self._run_ctx
+        lines = [f"OBJECTIVE (the user's own words): {objective}", "", "PLAN:"]
+        for s in self._stages_by_id.values():
+            status = "done" if s.id in self._outputs else "not yet run"
+            lines.append(f"- {s.id} [{s.pattern}] ({status}): {s.goal[:140]}")
+        if self._outputs:
+            lines.append("")
+            lines.append("COMPLETED STAGE OUTPUTS (heads — already streamed to the user's terminal):")
+            for k, v in list(self._outputs.items())[-4:]:
+                lines.append(f"[{k}]: {(v or '')[:400]}")
+        if just_completed is not None:
+            sid, out = just_completed
+            lines.append(f"\nJUST COMPLETED — stage '{sid}', fuller output:\n{(out or '')[:1200]}")
+        if pending:
+            lines.append(f"\nPENDING USER INTERACTION (about to happen in the terminal): {pending}")
+        return "\n".join(lines)
+
+    async def _consult_interaction(self, pending: str) -> None:
+        """Executive check before asking the user for anything: are they
+        equipped to answer? If not, show them what they need first."""
+        if self.supervisor is None:
+            return
+        d = await self.supervisor.consult("pre_interaction", self._digest(pending=pending),
+                                          allowed=("proceed", "inform_user"))
+        if d.action == "inform_user" and self.broker is not None:
+            self.broker.inform(d.message)
+
     def _evidence_capabilities(self, draft_stage: Optional[StageSpec]) -> list[str]:
         """Tools an evidence courier may use: whatever the draft's own evidence
         stages used (e.g. the map workers' fetch tool)."""
@@ -608,6 +661,11 @@ class Orchestrator:
                     # A reused credentialed tool still needs its secret THIS session.
                     if cap.requires_credential and cap.requires_credential not in (
                             getattr(self.broker, "secrets", {}) or {}):
+                        await self._consult_interaction(
+                            f"approval + hidden prompt for credential {cap.requires_credential}, "
+                            f"needed to reuse the tool '{cap.name}' ({cap.description[:100]}); "
+                            f"stored retrieval instructions: "
+                            f"{'yes' if cap.credential_help else 'NO — none on file'}")
                         granted = self.broker is not None and self.broker.request(
                             action=f"reuse capability '{cap.name}', which needs {cap.requires_credential}",
                             reason="the tool requires a credential; its value is held per session only",
@@ -633,6 +691,7 @@ class Orchestrator:
                         description=f"{spec.role}: {spec.goal}",
                         model=self.model,
                         tracer=self.tracer,
+                        pre_interaction=self._consult_interaction,
                     )
                     caps[cap.name] = cap
         return caps

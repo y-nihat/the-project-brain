@@ -144,8 +144,12 @@ async def acquire(
     model: Optional[str] = None,
     max_attempts: int = 3,
     tracer=None,
+    pre_interaction=None,
 ) -> Capability:
-    """Acquire the capability for ``need_key`` (recipe if known, else author it)."""
+    """Acquire the capability for ``need_key`` (recipe if known, else author it).
+
+    ``pre_interaction`` (async str -> None) is consulted before any user-facing
+    ask, so the supervisor can equip the user first."""
     tracer = tracer or NullTracer()
     recipe = _RECIPES.get(need_key)
     if recipe is not None:
@@ -156,6 +160,7 @@ async def acquire(
     return await _author_capability(
         need_key, description or need_key, manager=manager, registry=registry, broker=broker,
         model=model, developer=developer, max_attempts=max_attempts, tracer=tracer,
+        pre_interaction=pre_interaction,
     )
 
 
@@ -312,7 +317,7 @@ def _generic_verify(cap: Capability, sample_input: dict, sample_files: dict, man
 
 async def _author_capability(
     need_key, description, *, manager, registry, broker, model, developer, max_attempts, tracer,
-    seed: Optional[dict] = None, repair_reason: Optional[str] = None,
+    seed: Optional[dict] = None, repair_reason: Optional[str] = None, pre_interaction=None,
 ) -> Capability:
     dev = developer or make_developer_agent(model, tracer)
     mode = "repair" if seed else "author"
@@ -350,6 +355,11 @@ async def _author_capability(
                 if rc in broker.secrets:
                     secret_env[rc] = broker.secrets[rc]
                 else:
+                    if pre_interaction is not None:
+                        await pre_interaction(
+                            f"approval + hidden prompt for credential {rc}, needed to build the "
+                            f"tool '{need_key}' ({description[:100]}); author-provided retrieval "
+                            f"instructions: {'yes' if sub.get('credential_help') else 'NO — none'}")
                     approved = broker.request(
                         action=f"build capability '{need_key}', which needs {rc}",
                         reason="the tool fundamentally requires a credential/account/paid service (no free path)",

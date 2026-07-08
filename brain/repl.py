@@ -115,6 +115,16 @@ def format_event(record: dict) -> Optional[str]:
         return f"  ⚠ approval needed: {data.get('action')}"
     if kind == "approval.resolved":
         return f"  ⚠ approval {status}"
+    if kind == "supervisor.consult":
+        if data.get("action") == "proceed":
+            return None  # silent when nothing needs doing
+        return f"  🧭 supervisor [{name}]: {data.get('action')} — {str(data.get('reason', ''))[:80]}"
+    if kind == "supervisor.redo":
+        return f"  🧭 supervisor sent {name} back: {str(data.get('guidance', ''))[:80]}"
+    if kind == "supervisor.error":
+        return None  # fail-open is silent; the trace has it
+    if kind == "user.informed":
+        return None  # the broker already printed the message itself
     if kind == "secret.requested":
         return f"  🔑 secret needed: {name} — {str(data.get('purpose', ''))[:70]}"
     if kind == "secret.provided":

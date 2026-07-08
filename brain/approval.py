@@ -86,6 +86,16 @@ class ApprovalBroker:
         if not self.request(action, reason, requirements):
             raise ApprovalDenied(action)
 
+    def inform(self, text: str) -> None:
+        """Show the user something NOW (used by the supervisor when an upcoming
+        interaction needs context first). Traced by length/preview only."""
+        text = (text or "").strip()
+        if not text:
+            return
+        self.tracer.event("user.informed", "supervisor", status="info",
+                          chars=len(text), preview=text[:200])
+        self._output("\n  ℹ  " + "\n  ".join(text.splitlines()))
+
     def collect_secret(self, name: str, purpose: str,
                        help_text: Optional[str] = None) -> Optional[str]:
         """Interactively collect a credential VALUE (e.g. an API key).

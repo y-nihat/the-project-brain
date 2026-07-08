@@ -106,11 +106,14 @@ class BrainSession:
         known = {c.name: c.description for c in self.registry.all()}
         planner = Planner(model=config.model_for("planner"), known_capabilities=known,
                           tracer=self.tracer)
+        from .supervisor import Supervisor
+
         orchestrator = Orchestrator(
             session=session_id, manager=manager, ledger=self.ledger, registry=self.registry,
             blackboard=blackboard, broker=self.broker, planner=planner,
             resolver=Resolver(self.registry), model=config.model_for("orchestrator"),
             use_builder=True, tracer=self.tracer,
+            supervisor=Supervisor(model=config.model_for("supervisor"), tracer=self.tracer),
         )
         try:
             try:
