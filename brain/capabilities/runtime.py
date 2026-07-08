@@ -163,6 +163,15 @@ def build_caps_server(
             from ..observability.redact import scrub_text
 
             text = scrub_text(result.stdout.strip()) or "(no stdout)"
+            # Provenance header: state where this result came from so a
+            # downstream agent can never mistake a tool-derived transformation
+            # (or a fixture) for user-provided evidence.
+            if file_refs:
+                origin = f"derived by '{cap.name}' from input file(s): {list(file_refs)}"
+            else:
+                origin = (f"produced by '{cap.name}' from arguments only (NO input file was "
+                          "read — do not treat this as content extracted from a user document)")
+            text = f"[provenance] {origin}\n\n{text}"
             if produced:
                 text += ("\n\nProduced files (pass these paths as `files` to a downstream tool): "
                          + json.dumps(produced))

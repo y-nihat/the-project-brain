@@ -100,6 +100,14 @@ def agent_system_prompt(spec: AgentSpec, allowed_tools: list[str],
         "fabricate. When finished, output your result clearly and concisely; cite source "
         "URLs if you used web search."
     )
+    lines.append(
+        "EVIDENCE BOUNDARY: tool results carry a [provenance] line stating their origin. "
+        "User-provided files are the factual authority; a tool result marked as produced "
+        "'from arguments only (NO input file was read)' is NOT content from the user's "
+        "document — never fold it into a synthesis of that document. Keep sources distinct: "
+        "do not present derived, fixture, or inferred material as if it came from the user's "
+        "evidence, and flag anything you could not ground in a real source."
+    )
     return "\n".join(lines)
 
 
