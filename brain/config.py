@@ -48,8 +48,9 @@ BRAIN_MODEL_FAST = os.environ.get("BRAIN_MODEL_FAST") or None
 
 
 def model_for(role: str):
-    """Pick the model tier for an engine role: 'worker' -> fast, else strong."""
-    if role == "worker":
+    """Pick the model tier for an engine role: high-frequency, small-context
+    roles ('worker', 'supervisor') -> fast; judgment-heavy roles -> strong."""
+    if role in ("worker", "supervisor"):
         return BRAIN_MODEL_FAST or BRAIN_MODEL
     return BRAIN_MODEL_STRONG or BRAIN_MODEL
 
@@ -116,6 +117,11 @@ MAP_RETRY_FAILED_SHARDS = int(os.environ.get("MAP_RETRY_FAILED_SHARDS", "1"))
 TEAM_MAX_QUESTIONS = int(os.environ.get("TEAM_MAX_QUESTIONS", "3"))       # per session
 # The reviewer may demand missing evidence once; a courier session fetches it.
 REVIEW_EVIDENCE_FETCHES = int(os.environ.get("REVIEW_EVIDENCE_FETCHES", "1"))
+
+# Executive supervision: an LLM judgment consulted at decision moments
+# (pre-user-interaction, stage completions). Fail-open, budget-capped.
+SUPERVISOR_ENABLED = os.environ.get("SUPERVISOR_ENABLED", "1").lower() not in ("0", "false", "no")
+SUPERVISOR_MAX_CALLS = int(os.environ.get("SUPERVISOR_MAX_CALLS", "12"))
 
 # Reflection loop: watch a trusted tool's live health and repair it if it degrades.
 CAPABILITY_CALL_BUDGET = int(os.environ.get("CAPABILITY_CALL_BUDGET", "25"))          # per (agent, capability)
