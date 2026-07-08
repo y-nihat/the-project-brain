@@ -83,6 +83,11 @@ class StageSpec:
 class Plan:
     objective: str
     stages: list[StageSpec]
+    # Objective-derived success contract: checkable criteria compiled from the
+    # user's request (e.g. "exactly 3 sections", "claims traceable to the source
+    # file", "final answer accurately describes the artifact"). Generated per
+    # objective — never a fixed template — and used by review/supervision.
+    success_criteria: list[str] = field(default_factory=list)
 
 
 # Resolver decision kinds.

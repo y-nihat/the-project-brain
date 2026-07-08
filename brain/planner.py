@@ -30,6 +30,9 @@ _SYSTEM = (
     "a `reduce` stage that consolidates the workers' notes into one deliverable.\n"
     "- Deliverable whose factual accuracy matters (claims, numbers, citations) => append a "
     "`review` stage that verifies the draft against the gathered evidence.\n"
+    "- The more the information is TRANSFORMED before delivery (e.g. source -> extracted text -> "
+    "analysis -> distilled points -> visual artifact), the more distortion can accumulate and the "
+    "more a `review` stage is warranted — scale review to that risk, not to task size.\n"
     "\n"
     "Stage fields: `id` (short slug), `pattern`, `role`, `goal` (one sentence), "
     "`capabilities`, `depends_on` (stage ids), plus for map: `shard_size` (items per "
@@ -72,6 +75,12 @@ _SYSTEM = (
     "embed_and_search). Do NOT reuse an existing key whose description does not fit, and "
     "avoid vague umbrella names like 'code_execution'. The system will build any new "
     "capability you name.\n"
+    "Also compile `success_criteria`: a short list of CHECKABLE conditions the finished work "
+    "must meet, derived from THIS objective's explicit demands — counts ('exactly 3 sections'), "
+    "formats ('self-contained HTML'), fidelity ('every claim traceable to the provided file'), "
+    "constraints ('under 40 words'), and self-consistency ('the final answer accurately "
+    "describes the artifact produced'). Derive them from the request; never emit a fixed "
+    "template. A reviewer will check the deliverable against them.\n"
     "You MUST call `emit_plan` exactly once with the full workflow and must NOT answer in prose."
 )
 
@@ -95,7 +104,8 @@ _PLAN_SCHEMA = {
                 },
                 "required": ["id", "pattern", "role", "goal"],
             },
-        }
+        },
+        "success_criteria": {"type": "array", "items": {"type": "string"}},
     },
     "required": ["stages"],
 }
@@ -159,14 +169,17 @@ class Planner:
             # Fallback: keep the system robust if the model didn't emit a workflow.
             stages = [StageSpec(id="researcher", pattern="single", role="researcher",
                                 goal=objective, capabilities=["web_search"])]
-        return Plan(objective=objective, stages=stages)
+        criteria = [str(c) for c in (captured.get("success_criteria") or []) if str(c).strip()]
+        return Plan(objective=objective, stages=stages, success_criteria=criteria)
 
 
 class StubPlanner:
     """Deterministic planner for tests; returns the workflow it was given."""
 
-    def __init__(self, stages: list[StageSpec]):
+    def __init__(self, stages: list[StageSpec], success_criteria: Optional[list[str]] = None):
         self._stages = stages
+        self._criteria = success_criteria or []
 
     async def plan(self, objective: str, history: Optional[str] = None) -> Plan:
-        return Plan(objective=objective, stages=list(self._stages))
+        return Plan(objective=objective, stages=list(self._stages),
+                    success_criteria=list(self._criteria))
