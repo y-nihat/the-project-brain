@@ -78,6 +78,50 @@ def test_secret_value_never_traced(tmp_path):
     assert b"API_KEY" in everything            # the NAME is traced
 
 
+def test_hidden_entry_confirms_with_masked_receipt(monkeypatch):
+    """Blind input gets a masked echo-back: a bad paste is caught at the prompt,
+    not as a cryptic API failure later."""
+    import getpass
+
+    entries = iter(["tok-badpaste-000000", "tok-goodpaste-11111"])
+    monkeypatch.setattr(getpass, "getpass", lambda _p: next(entries))
+    answers = iter(["n", "y"])            # reject the first receipt, accept the second
+    shown: list[str] = []
+
+    b = ApprovalBroker(input_fn=lambda p: (shown.append(p), next(answers))[1],
+                       output_fn=lambda _s: None)
+    assert b.collect_secret("API_KEY", "x") == "tok-goodpaste-11111"
+    receipts = [p for p in shown if "characters" in p]
+    assert len(receipts) == 2                      # one masked receipt per entry
+    assert "19 characters" in receipts[0] and "tok-…" in receipts[0]
+    assert "tok-badpaste-000000" not in "".join(receipts)   # never the full value
+
+
+def test_hidden_entry_show_escape_switches_to_visible(monkeypatch):
+    import getpass
+
+    monkeypatch.setattr(getpass, "getpass", lambda _p: "show")
+    prompts: list[str] = []
+
+    def visible_input(p: str) -> str:
+        prompts.append(p)
+        return "y" if "use this" in p else "visible-token-123"
+
+    b = ApprovalBroker(input_fn=visible_input, output_fn=lambda _s: None)
+    assert b.collect_secret("API_KEY", "x") == "visible-token-123"
+    assert any("VISIBLE" in p for p in prompts)
+
+
+def test_agent_prompt_announces_ready_credentials():
+    from brain.factory import agent_system_prompt
+    from brain.models import AgentSpec
+
+    spec = AgentSpec(id="v", role="Verifier", goal="verify the bot")
+    p = agent_system_prompt(spec, [], ready_credentials=["call_telegram_getme_api"])
+    assert "ALREADY collected" in p and "call_telegram_getme_api" in p
+    assert "do NOT ask the user" in p
+
+
 # --- registry persistence ----------------------------------------------------- #
 def test_registry_persists_requires_credential(tmp_path):
     reg = Registry(tmp_path / "r.db", tmp_path / "store")
