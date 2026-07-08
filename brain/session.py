@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import os
 import urllib.request
+from pathlib import Path
 from dataclasses import dataclass, field
 from typing import Callable, Optional
 
@@ -96,7 +97,7 @@ class BrainSession:
     def add_listener(self, fn) -> None:
         self.tracer.add_listener(fn)
 
-    async def run_objective(self, objective: str) -> RunSummary:
+    async def run_objective(self, objective: str, files: Optional[list[str]] = None) -> RunSummary:
         # Secrets must enter via the hidden gate prompt — objectives are stored
         # forever (trace DB, run folders, history). Catch the mistake BEFORE
         # anything is recorded.
@@ -119,10 +120,32 @@ class BrainSession:
                     containers=0, leaks=0, used_history=False, seeded_from=None,
                     capabilities=[c.name for c in self.registry.all()])
 
+        # User-provided files: @mentions in the objective plus explicitly
+        # attached paths. The engine delivers them into the run workspace and
+        # states the facts; HOW to read/verify each format is the brain's job.
+        from . import files as files_mod
+
+        objective, mentioned = files_mod.parse_mentions(objective)
+        attach_paths = list(dict.fromkeys(mentioned + list(files or [])))
+
         hist_text, seed_run = history_mod.history_block(config.DB_PATH, config.RUNS_DIR, objective)
 
         run = self.tracer.start_run(objective, model=config.BRAIN_MODEL)
         session_id = run.run_id
+        if attach_paths:
+            try:
+                workspace = Path(config.RUNS_DIR) / session_id / "workspace"
+                manifest = files_mod.materialize(attach_paths, workspace)
+            except ValueError as e:
+                run.finish("refused", outcome=str(e))
+                return RunSummary(
+                    run_id=session_id, status="refused", answer=f"Objective not run: {e}",
+                    containers=0, leaks=0, used_history=False, seeded_from=None,
+                    capabilities=[c.name for c in self.registry.all()])
+            self.tracer.event("files.attached", session_id, status="info",
+                              files=[m["path"] for m in manifest],
+                              total_bytes=sum(m["bytes"] for m in manifest))
+            objective += files_mod.manifest_note(manifest)
         blackboard = Blackboard(config.DB_PATH, session_id)
         manager = SandboxManager(session_id, self.ledger, tracer=self.tracer)
         known = {c.name: c.description for c in self.registry.all()}
