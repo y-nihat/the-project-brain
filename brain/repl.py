@@ -45,6 +45,9 @@ def format_event(record: dict) -> Optional[str]:
             body = "\n".join(f"  │ {ln}" for ln in head.splitlines()[:14])
             line += f"\n{body}\n  └─ (full output: outputs/{name}.md)"
         return line
+    if kind == "plan.criteria":
+        crit = data.get("criteria") or []
+        return f"  ✓ success criteria ({len(crit)}): " + " · ".join(str(c)[:50] for c in crit[:4])
     if kind == "map.fanout":
         return (f"     ⑃ fan-out: {data.get('items')} items → {data.get('workers')} workers "
                 f"(≤{data.get('shard_size')} items each)")
@@ -164,7 +167,8 @@ async def _heartbeat(state: dict, stall_limit: float) -> None:
         quiet = now - state["ts"]
         if quiet >= 25 and now - last_print >= 25:
             print(f"  … still working — {int(quiet)}s since last activity "
-                  f"(last: {state['label']}; stall watchdog at {int(stall_limit)}s)", flush=True)
+                  f"(last: {state['label']}; agent sessions abort after {int(stall_limit)}s of "
+                  "true silence — long quiet here can be builds or generation)", flush=True)
             last_print = now
 
 

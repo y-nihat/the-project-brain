@@ -130,7 +130,8 @@ class BrainSession:
 
         hist_text, seed_run = history_mod.history_block(config.DB_PATH, config.RUNS_DIR, objective)
 
-        run = self.tracer.start_run(objective, model=config.BRAIN_MODEL)
+        run = self.tracer.start_run(
+            objective, model=(config.model_for("orchestrator") or "sdk-default"))
         session_id = run.run_id
         if attach_paths:
             try:

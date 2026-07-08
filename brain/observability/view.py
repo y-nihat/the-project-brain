@@ -80,12 +80,12 @@ def _summary(kind: str, data: dict) -> str:
     if kind == "capability.promote":
         return f"source={g('source')} code={g('code_path')} snapshot={g('artifact_path')}"
     if kind == "plan.created":
-        agents = data.get("agents") or []
-        return f"{len(agents)} agent(s): " + "; ".join(
-            f"{a.get('id')}({a.get('role')})"
+        stages = data.get("stages") or data.get("agents") or []
+        return f"{len(stages)} stage(s): " + "; ".join(
+            f"{a.get('id')}[{a.get('pattern', 'single')}]({a.get('role')})"
             + (f"[{','.join(a.get('capabilities') or [])}]" if a.get("capabilities") else "")
             + (f"<-{','.join(a.get('depends_on') or [])}" if a.get("depends_on") else "")
-            for a in agents if isinstance(a, dict)
+            for a in stages if isinstance(a, dict)
         )
     if kind == "agent.created":
         caps = data.get("capabilities") or []

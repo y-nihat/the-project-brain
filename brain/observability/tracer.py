@@ -511,10 +511,14 @@ def _maybe_capture_result(sp, message) -> None:
         cost = getattr(message, "cost_usd", None)
     tin = tout = None
     if isinstance(usage, dict):
-        tin = usage.get("input_tokens")
+        # True input volume includes prompt-cache reads/writes; without them the
+        # count is implausibly tiny (observed: 52 in vs 173k out on a real run).
+        tin = sum(usage.get(k) or 0 for k in
+                  ("input_tokens", "cache_read_input_tokens", "cache_creation_input_tokens")) or None
         tout = usage.get("output_tokens")
     elif usage is not None:
-        tin = getattr(usage, "input_tokens", None)
+        tin = sum(getattr(usage, k, 0) or 0 for k in
+                  ("input_tokens", "cache_read_input_tokens", "cache_creation_input_tokens")) or None
         tout = getattr(usage, "output_tokens", None)
     updates = {}
     if tin is not None:
