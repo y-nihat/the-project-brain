@@ -254,6 +254,55 @@ def _capability_from_submission(need_key: str, description: str, sub: dict) -> C
     )
 
 
+def _declares_inputs(cap: Capability, sub: dict) -> bool:
+    """True when the tool's contract says it consumes something: env-mapped
+    arguments, a `files` argument, or sample files used to verify it."""
+    schema_props = (cap.input_schema or {}).get("properties") or {}
+    return bool(cap.env_map) or "files" in schema_props or bool(sub.get("sample_files"))
+
+
+# A no-input result longer than this (or any produced file) is substantive
+# content invented from nothing — the fabrication signature. Below it, an
+# empty/degenerate result (e.g. {"echo": ""}) is honest, not fabricated.
+_FABRICATION_MIN_CHARS = 400
+
+
+def _no_input_probe(cap: Capability, sub: dict, manager, extra_env: Optional[dict]):
+    """Run the tool with NO inputs. For a tool that declares inputs, producing
+    SUBSTANTIVE content (a large payload or output files) from nothing is the
+    fabrication signature (generic: readers, API clients, DB tools). An empty
+    or error result is honest and passes. Pure generators (no declared inputs)
+    are exempt — producing from nothing IS their contract.
+
+    Biased to precision: a false positive would block a legitimate tool and
+    stall the self-authoring loop, so we only flag clear substantive
+    fabrication; the developer contract, provenance labels, and review stage
+    are the backstops for subtler cases."""
+    if not _declares_inputs(cap, sub):
+        return True, "ok (tool declares no inputs; probe not applicable)"
+    pol = policy.for_capability(cap.memory_mb, cap.cpus, cap.timeout_seconds, cap.network)
+    res = manager.run_ephemeral(
+        cap.image_tag, cap.command, policy=pol, capability=cap.name,
+        environment=dict(extra_env or {}), input_files=None, capture_output_files=True,
+    )
+    out = (res.stdout or "").strip()
+    payload_error = False
+    if out:
+        try:
+            data = json.loads(out.splitlines()[-1])
+            payload_error = isinstance(data, dict) and "error" in data
+        except Exception:  # noqa: BLE001
+            pass
+    substantive = bool(getattr(res, "output_files", None)) or len(out) >= _FABRICATION_MIN_CHARS
+    if res.ok and not payload_error and substantive:
+        return (False,
+                "FABRICATION PROBE FAILED: the tool declares inputs but produced SUBSTANTIVE "
+                "content (large payload or output files) when given NONE — it invents substitute "
+                'evidence. It must return {"error": "..."} and exit non-zero when its input '
+                f"preconditions are unmet. Probe stdout head: {out[:200]!r}")
+    return True, "ok (no substantive content fabricated without input)"
+
+
 def _generic_verify(cap: Capability, sample_input: dict, sample_files: dict, manager,
                     extra_env: Optional[dict] = None):
     """Generic acceptance: run the tool on a sample input (plus optional sample
@@ -402,6 +451,13 @@ async def _author_capability(
                     _generic_verify, cap, sub.get("sample_input") or {},
                     sub.get("sample_files") or {}, manager, secret_env or None,
                 )
+                if ok:
+                    # Fabrication probe: a tool that DECLARES inputs but still
+                    # "succeeds" with none is inventing evidence (the exact
+                    # defect behind the sample_claude.pdf confabulation) — a
+                    # consolidation-blocking failure, fed back for repair.
+                    ok, detail = await asyncio.to_thread(
+                        _no_input_probe, cap, sub, manager, secret_env or None)
                 vsp.set(passed=ok, detail=detail, source="author")
                 if not ok:
                     vsp.status = "failed"
@@ -564,6 +620,13 @@ _DEVELOPER_SYSTEM = (
     "a HUMAN follows to obtain that credential (where to register, which console/menu/command, "
     "what the value looks like). The engine shows this to the user BEFORE prompting for the "
     "value. Write it for the end user, not for developers.\n\n"
+    "EVIDENCE BOUNDARY (hard rule): a tool must NEVER fabricate, mock, or substitute evidence "
+    "when its input preconditions are not met — no sample/placeholder documents, no synthetic "
+    "fallback data, no invented API responses. If the expected input is missing or incompatible, "
+    'print {"error": "<what was expected vs received>"} and exit non-zero; the brain will repair, '
+    "choose another tool, or replan. A tool that invents its own input poisons every downstream "
+    "conclusion. Likewise, when interpolating UNTRUSTED content into structured output (HTML, "
+    "SQL, shell, markup), apply contextual escaping — content boundaries are part of correctness.\n"
     "Tools run NON-INTERACTIVELY in an isolated sandbox: they can never prompt, ask, or wait "
     "for the user (no stdin, no UI). NEVER author a tool whose job is to collect input, "
     "credentials, or confirmation from a human — declare requires_credential instead and the "
