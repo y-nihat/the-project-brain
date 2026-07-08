@@ -7,6 +7,26 @@ and behavior are still expected to change between releases.
 
 ## [Unreleased]
 
+### Epistemic-architecture hardening (from the 2026-07-08 MVP review)
+- **No fabricated evidence** (#1): generated capabilities must fail legibly when
+  input preconditions are unmet; a no-input probe blocks promotion of any
+  input-declaring tool that invents substantive content from nothing.
+- **Provenance** (#2): every tool result is labeled with the input it derived
+  from (or "no input read"); agents are barred from folding derived/fixture/
+  inferred material into a synthesis of user-provided evidence.
+- **Objective-derived success criteria** (#3): the planner compiles checkable
+  criteria from each request, carried as first-class plan data.
+- **Metacognitive review** (#4): reviewers and the supervisor judge the actually
+  produced artifact (observed file heads) against the criteria, not the agent's
+  self-description.
+- **Risk-scaled review** (#5): deeper transformation chains warrant a review stage.
+- **Safe consolidation** (#6): the fabrication probe gates promotion.
+- **Telemetry integrity** (#7): real model id, prompt-cache token accounting,
+  correct stage rendering, honest watchdog wording.
+- **Content boundaries** (#8): the developer contract requires contextual
+  escaping of untrusted content interpolated into structured output.
+- **Fresh-clone fix**: launch scripts pass `--env-file .env` so a clean clone runs.
+
 ## [0.1.0] — 2026-07-08
 
 First tagged release. The core loop is built and verified end-to-end:
