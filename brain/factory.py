@@ -109,6 +109,14 @@ def agent_system_prompt(spec: AgentSpec, allowed_tools: list[str],
         "do not present derived, fixture, or inferred material as if it came from the user's "
         "evidence, and flag anything you could not ground in a real source."
     )
+    lines.append(
+        "SOURCE ANCHORING: when working from a provided document, anchor on what the SOURCE "
+        "actually contains — its real title and its recurring terms. Do NOT import background "
+        "associations you happen to know about the subject or its publisher: if a concept "
+        "(a name, a framework, a value) does not appear in the extracted source, it is not a "
+        "central theme, no matter how strongly you associate it with the topic. Extract what "
+        "IS there; separate direct observations from your own inferences."
+    )
     return "\n".join(lines)
 
 

@@ -117,16 +117,44 @@ def _batch_notes(notes: dict[str, str], limit: int) -> list[dict[str, str]]:
     return batches
 
 
-_TRUNCATION_RE = re.compile(r"[A-Za-z,;:]\s*$")  # a body line ending mid-word/clause
+def _truncation_confidence(frag: str) -> Optional[str]:
+    """High-confidence visible-text truncation, or None.
+
+    Flags a fragment cut mid-word/mid-clause: a 1-2 char trailing stub
+    ('Trust s'), a 'label: value' value cut short ('Source: analy'), or a
+    ≥3-word phrase ending in a lowercase word with no terminal punctuation
+    ('reactive trigge', '…and handle'). A phrase ending in a complete word or
+    acronym ('…Safety-First AI') is NOT flagged — the reported false positive.
+    Headings/titles are excluded by the caller."""
+    f = frag.strip()
+    if not f or f[-1] in ".!?)]\"'”’:":       # terminal punctuation -> complete
+        return None
+    words = f.split()
+    if len(words) < 2:
+        return None
+    last = words[-1]
+    if last.isupper():                        # complete acronym ("AI", "HTML")
+        return None
+    if len(last) <= 2 and last.isalpha() and last.islower():
+        return "definite"                     # "Trust s"
+    if re.search(r"[:\-]\s+[a-z]{2,8}$", f):  # "Source: analy"
+        return "definite"
+    if last.islower() and len(words) >= 3:    # "reactive trigge", "…and handle"
+        return "definite"
+    return None
 
 
-def artifact_issues(workspace: Path) -> list[str]:
-    """Generic structured-output hygiene (#16): scan produced text artifacts for
-    incomplete fragments (raw truncation) — a fragment the producer never saw."""
+def artifact_issues(workspace: Path, *, definite_only: bool = False) -> list[str]:
+    """Generic structured-output hygiene (#16, refined): scan produced text
+    artifacts for truncated visible fragments. Headings/titles are excluded (a
+    complete title is not truncation — the reported false positive). With
+    ``definite_only``, return just the high-confidence defects that should drive
+    automatic repair."""
     root = Path(workspace)
     issues: list[str] = []
     if not root.is_dir():
         return issues
+    heading = re.compile(r"<(h[1-6]|title)[^>]*>.*?</\1>", re.IGNORECASE | re.DOTALL)
     for p in sorted(root.rglob("*")):
         if not p.is_file() or (p.relative_to(root).parts[:1] in (("prior",), ("input",))):
             continue
@@ -134,13 +162,41 @@ def artifact_issues(workspace: Path) -> list[str]:
             text = p.read_text(errors="strict")
         except (UnicodeDecodeError, OSError):
             continue
-        # Visible-text fragments: a sentence/line cut off mid-clause with no
-        # terminal punctuation (catches "The shield is not a", "with guardrail").
-        for frag in re.findall(r">([^<>]{12,})<", text):  # tag-delimited visible text
-            f = frag.strip()
-            if f and _TRUNCATION_RE.search(f) and not f.endswith((",",)) and len(f.split()) >= 3:
-                issues.append(f"{p.name}: possible truncated text — “…{f[-50:]}”")
+        body = heading.sub(" ", text)
+        for frag in re.findall(r">([^<>]{12,})<", body):
+            conf = _truncation_confidence(frag)
+            if conf and (conf == "definite" or not definite_only):
+                issues.append(f"{p.name} [{conf}]: truncated text — “…{frag.strip()[-45:]}”")
     return issues[:12]
+
+
+def _source_evidence(workspace: Path, limit: int = 6000) -> str:
+    """The run's ACTUAL source evidence: user inputs plus reader-tool extraction
+    outputs (not the artifact, not analysis prose). Review must trace claims to
+    THIS, so a theme hallucinated in an intermediate analysis but absent from the
+    source is caught (the ebook confabulation)."""
+    root = Path(workspace)
+    if not root.is_dir():
+        return ""
+    parts: list[str] = []
+    used = 0
+    for sub in ("input", "read_pdf", "read_file", "fetch_page_text"):
+        d = root / sub
+        if not d.is_dir():
+            continue
+        for p in sorted(d.rglob("*")):
+            if not p.is_file():
+                continue
+            try:
+                head = p.read_text(errors="strict")[:limit]
+            except (UnicodeDecodeError, OSError):
+                continue
+            chunk = f"[source: {p.relative_to(root)}]\n{head}\n"
+            if used + len(chunk) > limit:
+                break
+            parts.append(chunk)
+            used += len(chunk)
+    return "\n".join(parts)
 
 
 def _observed_artifacts(workspace: Path, limit: int = 1500) -> str:
@@ -243,6 +299,7 @@ class Orchestrator:
         self._stages_by_id = {s.id: s for s in stages}
         self._stage_notes: dict[str, dict[str, str]] = {}
         self._redo: dict[str, Callable[[str], Awaitable[str]]] = {}
+        self._stage_caps: dict[str, dict] = {}  # stage id -> caps it used (for quarantine)
         outputs: dict[str, str] = {}
         # Team-channel context: completed outputs + what a follow-up needs.
         self._outputs = outputs
@@ -315,28 +372,42 @@ class Orchestrator:
         if failure_note:
             answer = (answer + "\n\n" + failure_note).strip()
 
-        # Mechanical artifact repair (#19): engine-detected defects (truncation
-        # etc.) are deterministic fixes — send them straight back to the stage
-        # that can redo, on a budget SEPARATE from semantic review rounds.
+        # Mechanical artifact repair (#19): high-confidence defects are
+        # deterministic fixes — send them back to the generating stage on a
+        # budget SEPARATE from semantic review rounds. If they PERSIST after the
+        # budget, the generator itself is broken: quarantine the capabilities
+        # that stage used so the next run re-authors them (#E: repair the
+        # procedure, not just rerun it).
         for attempt in range(1, config.ARTIFACT_REPAIRS + 1):
-            issues = artifact_issues(workspace)
-            if not issues:
+            defects = artifact_issues(workspace, definite_only=True)
+            if not defects:
                 break
             redo_id = next((sid for sid in reversed(list(outputs))
                             if sid in self._redo), None)
             if redo_id is None:
                 break
             self.tracer.event("artifact.repair", redo_id, status="info",
-                              attempt=attempt, issues=issues[:6])
+                              attempt=attempt, issues=defects[:6])
             fixed = await self._redo[redo_id](
                 "MECHANICAL DEFECTS detected in the produced artifact — fix EXACTLY these "
                 "(complete every truncated fragment with real content; use sentence-aware "
                 "compression, never raw character slicing):\n"
-                + "\n".join(f"- {i}" for i in issues), outputs[redo_id])
+                + "\n".join(f"- {i}" for i in defects), outputs[redo_id])
             outputs[redo_id] = fixed
             self.blackboard.put(f"output:{redo_id}", fixed)
             if redo_id == last_done:
                 answer = fixed if not failure_note else (fixed + "\n\n" + failure_note).strip()
+        else:
+            # Budget exhausted with defects still present: the generator is at
+            # fault. Quarantine its tools so procedural memory self-heals.
+            if artifact_issues(workspace, definite_only=True) and self.registry is not None:
+                redo_id = next((sid for sid in reversed(list(outputs))
+                                if sid in self._redo), None)
+                for name in self._stage_caps.get(redo_id, {}):
+                    self.registry.quarantine(
+                        name, "repeatedly produced truncated artifact output")
+                    self.tracer.event("capability.quarantined", name, status="failed",
+                                      reason="artifact truncation persisted after repair")
 
         # Objective-success classification (#17/#20): operational completion is
         # NOT objective success, and the reason names the failing DIMENSION.
@@ -357,7 +428,7 @@ class Orchestrator:
         failing DIMENSION named precisely (#17/#20): grounding, artifact
         completeness, and stage completion are independent facts — 'grounded
         but truncated' must not read as a grounding failure."""
-        issues = artifact_issues(workspace)
+        issues = artifact_issues(workspace, definite_only=True)  # only true-positive defects gate
         dims = {
             "stage_completion": "failed" if had_failure else "ok",
             "grounding": ("approved" if self._review_approved
@@ -404,6 +475,7 @@ class Orchestrator:
         spec = AgentSpec(id=stage.id, role=stage.role, goal=stage.goal,
                          capabilities=stage.capabilities, depends_on=stage.depends_on)
         caps = await self._acquire_caps(spec)
+        self._stage_caps[stage.id] = dict(caps)
         upstream = {d: outputs[d] for d in stage.depends_on if d in outputs}
         task_context = workflow.manifest_instruction() if workflow.feeds_a_map(stage.id, stages) else None
         out = await self._run_agent_with_reflection(
@@ -599,27 +671,34 @@ class Orchestrator:
                                  capabilities=stage.capabilities, depends_on=stage.depends_on)
                 caps = await self._acquire_caps(spec)
                 observed = _observed_artifacts(workspace)
+                source = _source_evidence(workspace)
                 _art_issues = artifact_issues(workspace)
                 ctx = (
                     "DRAFT under review:\n---\n" + draft + "\n---\n\n"
-                    + ("EVIDENCE (the notes the draft must be supported by):\n"
+                    + (f"ORIGINAL SOURCE EVIDENCE (the user's actual inputs / raw extraction — the "
+                       f"ground truth every claim must ultimately trace to):\n{source}\n\n"
+                       if source else "")
+                    + ("UPSTREAM ANALYSIS (an intermediate transformation — do NOT treat this as "
+                       "ground truth; it may itself contain unsupported claims):\n"
                        + _notes_block(evidence, limit) + "\n\n" if evidence else "")
                     + (f"OBSERVED ARTIFACT FILES actually produced this run (judge THESE, not the "
                        f"draft's self-description of them):\n{observed}\n\n" if observed else "")
                     + criteria_block
                     + (f"ARTIFACT DEFECTS the engine already detected (must be fixed):\n"
                        f"{chr(10).join('- ' + i for i in _art_issues)}\n\n" if _art_issues else "")
-                    + "\nCheck every load-bearing claim in the draft against the evidence, and verify "
-                      "the observed artifact matches what the draft claims about it (counts, length, "
-                      "described features must actually be present). SOURCE IDENTITY: confirm the "
-                      "deliverable's stated subject/title/entities match the ACTUAL source evidence — "
-                      "if the draft describes a different document than the evidence shows (a renamed "
-                      "source, imported unrelated topics), that is a fabrication and REVISE. Content "
-                      "marked NON-EVIDENCE or from ignored/unconsumed inputs must not appear as source "
-                      "claims. Unsupported claims, numbers without a source, or claims resting on weak/"
-                      "promotional sources must be flagged. APPROVE when the load-bearing claims are "
-                      "supported, the source identity is consistent, and the criteria are met — style "
-                      "preferences and minor wording are NOT grounds for revision. "
+                    + "\nTRACE THE EVIDENCE CHAIN: artifact claim -> upstream analysis -> ORIGINAL "
+                      "SOURCE EVIDENCE. A claim that appears in the analysis but is NOT supported by "
+                      "the original source evidence is UNSUPPORTED even though an upstream stage "
+                      "asserted it — flag it and REVISE. Verify the observed artifact matches what "
+                      "the draft claims about it (counts, length, described features must actually be "
+                      "present). SOURCE IDENTITY: the deliverable's subject/title/central themes must "
+                      "match the ACTUAL source (check the source's real title and recurring terms); a "
+                      "renamed source or themes/keywords absent from the source evidence (e.g. safety "
+                      "framing imported from background knowledge) are fabrication -> REVISE. Content "
+                      "marked NON-EVIDENCE or from ignored inputs must not appear as source claims. "
+                      "APPROVE only when load-bearing claims trace to the ORIGINAL SOURCE, the source "
+                      "identity is consistent, and the criteria are met — style is NOT grounds for "
+                      "revision. "
                       "Your FIRST line must be exactly one of: 'VERDICT: approved' — "
                       "'VERDICT: revise' (problems fixable from the existing evidence) — "
                       "'VERDICT: needs-evidence' (a load-bearing claim can only be settled by fetching "
