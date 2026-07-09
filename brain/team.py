@@ -95,9 +95,10 @@ def build_team_server(channel: TeamChannel):
         return {"content": [{"type": "text", "text": text}]}
 
     @tool("progress_update",
-          "Announce what you are doing right now, in one short action-oriented line "
-          "(e.g. 'drafting the parser', 'validating output against criteria'). Call at "
-          "milestones during long work so the user sees progress.",
+          "Announce the ACTION you are doing right now, in one short line (e.g. 'drafting the "
+          "parser', 'writing corrected file; next: artifact inspection'). Report the current "
+          "action, NOT a conclusion you have not verified (never 'all defects fixed' before "
+          "the check runs). Call at milestones during long work.",
           {"type": "object", "properties": {"status": {"type": "string"}},
            "required": ["status"]})
     async def progress_update(args):
