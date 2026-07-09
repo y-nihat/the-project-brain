@@ -232,21 +232,52 @@ def test_transformation_depth():
 
 
 # --- #16 artifact hygiene -------------------------------------------------------- #
-def test_artifact_issues_flags_truncated_visible_text(tmp_path):
+def test_artifact_issues_flags_real_truncation(tmp_path):
     ws = tmp_path / "workspace" / "write_file"
     ws.mkdir(parents=True)
+    # The exact reported fragments (definite), a complete title (must NOT flag),
+    # and a clean sentence.
     (ws / "deck.html").write_text(
-        "<h1>Title</h1><p>The shield is not a</p><p>A complete sentence here.</p>")
+        '<title>Claude — Composable, Safety-First AI</title>'
+        '<p>Three pill tags: Trust s</p>'
+        '<p>event-driven coordination (reactive trigger). Source: analy</p>'
+        '<p>A complete, well-formed sentence.</p>')
     issues = artifact_issues(tmp_path / "workspace")
-    assert any("truncated" in i for i in issues)
-    assert any("shield is not a" in i for i in issues)
+    text = " ".join(issues)
+    assert "Trust s" in text and "Source: analy" in text
+    assert "Safety-First AI" not in text           # complete title -> no false positive
+    definite = artifact_issues(tmp_path / "workspace", definite_only=True)
+    assert definite and all("[definite]" in i for i in definite)
 
 
 def test_artifact_issues_clean_output(tmp_path):
     ws = tmp_path / "workspace" / "write_file"
     ws.mkdir(parents=True)
-    (ws / "deck.html").write_text("<h1>Title</h1><p>A complete, well-formed sentence.</p>")
+    (ws / "deck.html").write_text(
+        "<h1>Composable AI</h1><p>A complete, well-formed sentence.</p>")
     assert artifact_issues(tmp_path / "workspace") == []
+
+
+def test_truncation_confidence_tiers():
+    from brain.orchestrator import _truncation_confidence
+    assert _truncation_confidence("Three pill tags: Trust s") == "definite"
+    assert _truncation_confidence("footer note: Source: analy") == "definite"
+    assert _truncation_confidence("event-driven coordination (reactive trigge") == "definite"
+    assert _truncation_confidence("agents reason dynamically and handle") == "definite"
+    assert _truncation_confidence("Claude — Composable, Safety-First AI") is None  # complete
+    assert _truncation_confidence("A complete sentence here.") is None
+
+
+def test_source_evidence_reads_extraction_not_artifact(tmp_path):
+    from brain.orchestrator import _source_evidence
+    ws = tmp_path / "workspace"
+    (ws / "read_pdf").mkdir(parents=True)
+    (ws / "read_pdf" / "report.txt").write_text("Title: Building Effective AI Agents. architecture.")
+    (ws / "write_file").mkdir(parents=True)
+    (ws / "write_file" / "deck.html").write_text("<h1>WHO IS CLAUDE</h1>")
+    ev = _source_evidence(ws)
+    assert "Building Effective AI Agents" in ev        # extraction IS source evidence
+    assert "WHO IS CLAUDE" not in ev                   # the artifact is NOT
 
 
 # --- #15 general-contract consolidation ------------------------------------------ #
