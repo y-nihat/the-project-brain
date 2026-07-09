@@ -137,7 +137,10 @@ class Planner:
 
         @tool("emit_plan", "Emit the staged workflow as structured data.", _PLAN_SCHEMA)
         async def emit_plan(args):
-            captured["stages"] = args.get("stages", [])
+            # Capture EVERYTHING the model emitted — cherry-picking keys here is
+            # how success_criteria got silently dropped (#12): emitted by the
+            # model, discarded by the engine, review ran criteria-blind.
+            captured.update(args or {})
             return {"content": [{"type": "text", "text": "plan recorded"}]}
 
         known_str = (

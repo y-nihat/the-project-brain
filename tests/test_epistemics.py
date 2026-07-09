@@ -92,6 +92,60 @@ def test_declares_inputs_detection():
         _cap(input_schema={"type": "object", "properties": {}}, env_map={}), {})
 
 
+# --- #9 immune system: revalidation + quarantine --------------------------------- #
+def test_revalidation_quarantines_legacy_fabricator(tmp_path):
+    from brain.registry import Registry
+    from brain.resolver import Resolver
+
+    reg = Registry(tmp_path / "r.db", tmp_path / "store")
+    fabricator = _cap(name="legacy_reader", verified=True)      # no validation stamp
+    reg.add(fabricator)
+    fake_doc = json.dumps({"content": "substantive invented analysis " * 30})
+    mgr = _FakeManager(fake_doc)
+    mgr.ensure_image = lambda tag: None
+    mgr.build_image = lambda *a, **k: None
+
+    ok, reason = acquisition.revalidate_capability(reg.get("legacy_reader"), mgr, reg)
+    assert not ok and "PROBE FAILED" in reason
+    reg.quarantine("legacy_reader", reason)
+    # Quarantined memory is never reused: the resolver forces re-authoring.
+    assert Resolver(reg).resolve("legacy_reader").kind == "create"
+    reg.close()
+
+
+def test_revalidation_stamps_honest_tool(tmp_path):
+    from brain.registry import Registry
+
+    reg = Registry(tmp_path / "r.db", tmp_path / "store")
+    honest = _cap(name="honest_reader", verified=True)
+    reg.add(honest)
+    mgr = _FakeManager('{"error": "no input supplied"}')        # fails legibly
+    mgr.ensure_image = lambda tag: None
+
+    ok, reason = acquisition.revalidate_capability(reg.get("honest_reader"), mgr, reg)
+    assert ok
+    reg.stamp_validated("honest_reader", config.ENGINE_VERSION)
+    got = reg.get("honest_reader")
+    assert got.validated_engine == config.ENGINE_VERSION and not got.quarantined
+    reg.close()
+
+
+# --- #12 regression: the REAL capture path keeps everything emitted -------------- #
+def test_plan_capture_keeps_all_emitted_keys():
+    # Mirrors the emit_plan handler's contract: captured.update(args) — the bug
+    # was cherry-picking 'stages' and silently dropping success_criteria.
+    captured: dict = {}
+    captured.update({"stages": [{"id": "s", "pattern": "single", "role": "r", "goal": "g"}],
+                     "success_criteria": ["claims traceable to the attached file"]})
+    assert captured.get("success_criteria") == ["claims traceable to the attached file"]
+    import inspect
+
+    from brain import planner as planner_mod
+    src = inspect.getsource(planner_mod)
+    assert 'captured["stages"] =' not in src   # the exact bug shape must not return
+    assert "captured.update(args" in src
+
+
 # --- #3 success criteria threading ---------------------------------------------- #
 def test_plan_carries_success_criteria():
     p = asyncio.run(StubPlanner(
