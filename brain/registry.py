@@ -37,7 +37,8 @@ CREATE TABLE IF NOT EXISTS capabilities (
 
 # Columns added after the original schema; applied to pre-existing databases.
 _MIGRATIONS = {"memory_mb": "INTEGER", "cpus": "REAL", "timeout_seconds": "INTEGER",
-               "requires_credential": "TEXT", "credential_help": "TEXT"}
+               "requires_credential": "TEXT", "credential_help": "TEXT",
+               "validated_engine": "TEXT", "validated_at": "TEXT", "quarantined": "TEXT"}
 
 
 def _migrate(conn: sqlite3.Connection, table: str, columns: dict[str, str]) -> None:
@@ -77,6 +78,8 @@ class Registry:
             timeout_seconds=r["timeout_seconds"],
             requires_credential=r["requires_credential"],
             credential_help=r["credential_help"],
+            validated_engine=r["validated_engine"],
+            quarantined=r["quarantined"],
         )
 
     def get(self, name: str) -> Optional[Capability]:
@@ -91,14 +94,29 @@ class Registry:
             rows = self._conn.execute("SELECT * FROM capabilities ORDER BY name").fetchall()
         return [self._row_to_cap(r) for r in rows]
 
+    def stamp_validated(self, name: str, engine_version: str) -> None:
+        """Record that this capability passed the current probe battery."""
+        with self._lock, self._conn:
+            self._conn.execute(
+                "UPDATE capabilities SET validated_engine=?, validated_at=?, quarantined=NULL "
+                "WHERE name=?",
+                (engine_version, _dt.datetime.now(_dt.timezone.utc).isoformat(), name))
+
+    def quarantine(self, name: str, reason: str) -> None:
+        """Mark a capability unsafe for reuse (kept for audit/repair, never selected)."""
+        with self._lock, self._conn:
+            self._conn.execute(
+                "UPDATE capabilities SET quarantined=?, validated_at=? WHERE name=?",
+                (reason[:500], _dt.datetime.now(_dt.timezone.utc).isoformat(), name))
+
     def add(self, cap: Capability, build_context: Optional[dict[str, str]] = None) -> None:
         with self._lock, self._conn:
             self._conn.execute(
                 "INSERT OR REPLACE INTO capabilities "
                 "(name, version, description, image_tag, command, input_schema, env_map, network, "
                 " tags, verified, created_at, memory_mb, cpus, timeout_seconds, requires_credential, "
-                " credential_help) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                " credential_help, validated_engine, validated_at, quarantined) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (
                     cap.name,
                     cap.version,
@@ -116,6 +134,9 @@ class Registry:
                     cap.timeout_seconds,
                     cap.requires_credential,
                     cap.credential_help,
+                    cap.validated_engine,
+                    _dt.datetime.now(_dt.timezone.utc).isoformat() if cap.validated_engine else None,
+                    cap.quarantined,
                 ),
             )
         # Persist a manifest + build context for reproducibility/audit.

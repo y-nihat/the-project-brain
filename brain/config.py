@@ -23,8 +23,10 @@ DB_PATH = DATA_DIR / "brain.db"
 CAPABILITIES_STORE = DATA_DIR / "capabilities"   # promoted reusable tools (an output, not engine)
 RUNS_DIR = DATA_DIR / "runs"          # per-run trace exports + created-tool artifacts
 
-# Engine version stamped onto every traced run (for reproducibility/regression).
-ENGINE_VERSION = "0.1.0"
+# Engine version stamped onto every traced run (for reproducibility/regression)
+# AND onto capability validation stamps: bumping it marks all promoted
+# capabilities stale, forcing revalidation against the current probe battery.
+ENGINE_VERSION = "0.2.0"
 
 # Load .env from the project root if present (no-op when missing).
 load_dotenv(PROJECT_ROOT / ".env")

@@ -32,6 +32,11 @@ class Capability:
     # tool's author. The engine shows this BEFORE prompting for the value — the
     # asker must deliver the help, whatever the plan shape.
     credential_help: Optional[str] = None
+    # Procedural-memory immune system (#9): which engine version last validated
+    # this capability against the probe battery, and why it was quarantined (a
+    # quarantined capability is never reused; the brain re-authors instead).
+    validated_engine: Optional[str] = None
+    quarantined: Optional[str] = None
 
 
 @dataclass

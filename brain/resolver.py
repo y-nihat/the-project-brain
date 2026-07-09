@@ -19,6 +19,6 @@ class Resolver:
         if not capability_need:
             return Decision(kind=NOOP, capability_need=None)
         cap = self.registry.get(capability_need)
-        if cap is not None and cap.verified:
+        if cap is not None and cap.verified and not cap.quarantined:
             return Decision(kind=REUSE, capability_need=capability_need, capability=cap)
         return Decision(kind=CREATE, capability_need=capability_need)

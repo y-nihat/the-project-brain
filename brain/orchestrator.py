@@ -28,7 +28,8 @@ from . import config, factory, workflow
 from .acquisition import acquire, make_builder_agent
 from .acquisition import repair_capability as acquire_repair
 from .capabilities.runtime import build_caps_server
-from .models import CREATE, MAP, REDUCE, REUSE, REVIEW, AgentSpec, Capability, StageSpec
+from .models import (CREATE, MAP, REDUCE, REUSE, REVIEW, AgentSpec, Capability,
+                     Decision, StageSpec)
 from .team import TEAM_TOOLS, TeamChannel, build_team_server
 
 _VERDICT_RE = re.compile(r"VERDICT:\s*(approved|revise|needs-evidence)", re.IGNORECASE)
@@ -699,6 +700,25 @@ class Orchestrator:
         for need in spec.capabilities:
             with self.tracer.span("resolve", need, agent=spec.id):
                 decision = self.resolver.resolve(need)
+                if decision.kind == REUSE and decision.capability is not None:
+                    cap = decision.capability
+                    # Immune system (#9): memory promoted under an older engine
+                    # must pass the CURRENT probe battery before it is trusted.
+                    if (cap.validated_engine != config.ENGINE_VERSION
+                            and self.manager is not None and self.registry is not None):
+                        from .acquisition import revalidate_capability
+                        with self.tracer.span("capability.revalidate", cap.name,
+                                              stamped=cap.validated_engine or "never"):
+                            ok, reason = await asyncio.to_thread(
+                                revalidate_capability, cap, self.manager, self.registry)
+                        if ok:
+                            self.registry.stamp_validated(cap.name, config.ENGINE_VERSION)
+                        else:
+                            self.registry.quarantine(cap.name, reason)
+                            self.tracer.event("capability.quarantined", cap.name,
+                                              status="failed", reason=reason[:300])
+                            # Re-author under the current contract instead.
+                            decision = Decision(kind=CREATE, capability_need=need)
                 if decision.kind == REUSE and decision.capability is not None:
                     cap = decision.capability
                     # A reused credentialed tool still needs its secret THIS session.

@@ -135,6 +135,10 @@ def format_event(record: dict) -> Optional[str]:
     if kind == "secret.provided":
         return (f"  🔑 {name} provided (held in memory for this session only)"
                 if status == "granted" else f"  🔑 {name} NOT provided")
+    if kind == "capability.revalidate" and phase == "start":
+        return f"     🧪 revalidating remembered tool {name} (stamped: {data.get('stamped')})"
+    if kind == "capability.quarantined":
+        return f"     ☣ {name} QUARANTINED: {str(data.get('reason', ''))[:80]} — re-authoring"
     if kind == "capability.unavailable":
         return f"     ⛔ tool {name} unavailable this session (needs {data.get('needs')})"
     if kind == "agent.tool_call":

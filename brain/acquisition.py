@@ -19,7 +19,7 @@ import re
 from pathlib import Path
 from typing import Awaitable, Callable, Optional
 
-from . import factory
+from . import config, factory
 from .models import Capability
 from .observability import NullTracer, trace_query
 from .sandbox import policy
@@ -303,6 +303,58 @@ def _no_input_probe(cap: Capability, sub: dict, manager, extra_env: Optional[dic
     return True, "ok (no substantive content fabricated without input)"
 
 
+def _irrelevant_input_probe(cap: Capability, manager, extra_env: Optional[dict]):
+    """Feed a file-consuming tool an irrelevant text file. Substantive output
+    from content the tool cannot possibly have parsed = fabrication."""
+    if "files" not in ((cap.input_schema or {}).get("properties") or {}):
+        return True, "ok (tool does not consume files; probe not applicable)"
+    pol = policy.for_capability(cap.memory_mb, cap.cpus, cap.timeout_seconds, cap.network)
+    res = manager.run_ephemeral(
+        cap.image_tag, cap.command, policy=pol, capability=cap.name,
+        environment=dict(extra_env or {}),
+        input_files={"__probe__.txt": b"engine probe: deliberately irrelevant input"},
+        capture_output_files=True,
+    )
+    out = (res.stdout or "").strip()
+    payload_error = False
+    if out:
+        try:
+            payload_error = isinstance(json.loads(out.splitlines()[-1]), dict) and \
+                "error" in json.loads(out.splitlines()[-1])
+        except Exception:  # noqa: BLE001
+            pass
+    substantive = bool(getattr(res, "output_files", None)) or len(out) >= _FABRICATION_MIN_CHARS
+    if res.ok and not payload_error and substantive:
+        return (False, "IRRELEVANT-INPUT PROBE FAILED: substantive output from an input the "
+                       f"tool cannot have parsed — it substitutes evidence. Head: {out[:200]!r}")
+    return True, "ok (irrelevant input handled honestly)"
+
+
+def revalidate_capability(cap: Capability, manager, registry) -> tuple[bool, str]:
+    """Procedural-memory immune check (#9): run the CURRENT probe battery
+    against an already-promoted capability before it is reused. Rebuilds the
+    image from the stored build context if it is missing. Returns (ok, reason)."""
+    try:
+        try:
+            manager.ensure_image(cap.image_tag)
+        except Exception:  # noqa: BLE001 — image gone: rebuild from stored context
+            bc_dir = Path(registry.store_dir) / cap.name / "build"
+            if not bc_dir.is_dir():
+                return False, "image missing and no stored build context to rebuild from"
+            manager.build_image(cap.image_tag,
+                                {p.name: p.read_text() for p in bc_dir.iterdir() if p.is_file()})
+        sub_like = {"sample_files": {}}
+        ok, reason = _no_input_probe(cap, sub_like, manager, None)
+        if not ok:
+            return False, reason
+        ok, reason = _irrelevant_input_probe(cap, manager, None)
+        if not ok:
+            return False, reason
+        return True, "passed current probe battery"
+    except Exception as e:  # noqa: BLE001 — cannot validate => not safe to reuse
+        return False, f"revalidation errored: {type(e).__name__}: {str(e)[:200]}"
+
+
 def _generic_verify(cap: Capability, sample_input: dict, sample_files: dict, manager,
                     extra_env: Optional[dict] = None):
     """Generic acceptance: run the tool on a sample input (plus optional sample
@@ -467,6 +519,7 @@ async def _author_capability(
 
             if ok:
                 cap.verified = True
+                cap.validated_engine = config.ENGINE_VERSION  # passed the current battery
                 promoted_dir = tracer.artifact_path(cap.name, "promoted")
                 _write_context(promoted_dir, build_context)
                 with tracer.span("capability.promote", cap.name) as psp:
