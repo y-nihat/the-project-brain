@@ -136,6 +136,52 @@ def normalize_stages(raw: list) -> tuple[list[StageSpec], list[str]]:
     return stages, warnings
 
 
+def append_review_if_needed(stages: list[StageSpec], *, has_user_evidence: bool
+                            ) -> tuple[list[StageSpec], bool]:
+    """Risk-scaled review (#13), enforced structurally rather than by rubric hope.
+
+    A grounding review is appended (if the plan lacks one) when the run transforms
+    USER EVIDENCE into a synthesized deliverable — the exact shape that produced
+    the ebook confabulation (a user file distorted through extraction→synthesis),
+    regardless of stage count — or when the transformation chain is very deep.
+    Returns (stages, appended)."""
+    if any(s.pattern == REVIEW for s in stages):
+        return stages, False
+    deep = _transformation_depth(stages) >= config.REVIEW_DEPTH_THRESHOLD
+    if not (has_user_evidence or deep):
+        return stages, False
+    ordered = topo_order(stages)
+    if not ordered:
+        return stages, False
+    stages = list(stages) + [StageSpec(
+        id="review", pattern=REVIEW, role="Grounding reviewer",
+        goal="Verify the deliverable is grounded in the source evidence and meets the "
+             "objective's success criteria; flag any claim not traceable to real inputs "
+             "and any source-identity mismatch.",
+        depends_on=[ordered[-1].id], rounds=2)]
+    return stages, True
+
+
+def _transformation_depth(stages: list[StageSpec]) -> int:
+    """Longest dependency chain — how many times information is transformed from
+    source to deliverable. Each hop is a lossy step that can distort meaning."""
+    by_id = {s.id: s for s in stages}
+    memo: dict[str, int] = {}
+
+    def depth(sid: str, seen: frozenset) -> int:
+        if sid in memo:
+            return memo[sid]
+        s = by_id.get(sid)
+        if s is None or sid in seen:
+            return 0
+        deps = [d for d in s.depends_on if d in by_id]
+        d = 1 + (max((depth(dep, seen | {sid}) for dep in deps), default=0))
+        memo[sid] = d
+        return d
+
+    return max((depth(s.id, frozenset()) for s in stages), default=0)
+
+
 def topo_order(stages: list[StageSpec]) -> list[StageSpec]:
     """Dependency order (tolerant DFS; ignores cycles rather than failing)."""
     by_id = {s.id: s for s in stages}

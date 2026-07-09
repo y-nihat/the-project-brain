@@ -147,3 +147,7 @@ RUN_MAX_AGENT_SESSIONS = int(os.environ.get("RUN_MAX_AGENT_SESSIONS", "40"))    
 REVIEW_MAX_ROUNDS = int(os.environ.get("REVIEW_MAX_ROUNDS", "2"))                 # critique/fix cycles
 # Above this, a reduce consolidates hierarchically (batches, then a final merge).
 REDUCE_MAX_INPUT_CHARS = int(os.environ.get("REDUCE_MAX_INPUT_CHARS", "100000"))
+# Longest dependency chain at/above which the engine appends a review stage even
+# without user evidence — very deep synthesis chains accumulate distortion (#13).
+# (The primary trigger is user-evidence transformation, not depth.)
+REVIEW_DEPTH_THRESHOLD = int(os.environ.get("REVIEW_DEPTH_THRESHOLD", "4"))

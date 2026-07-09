@@ -117,6 +117,32 @@ def _batch_notes(notes: dict[str, str], limit: int) -> list[dict[str, str]]:
     return batches
 
 
+_TRUNCATION_RE = re.compile(r"[A-Za-z,;:]\s*$")  # a body line ending mid-word/clause
+
+
+def artifact_issues(workspace: Path) -> list[str]:
+    """Generic structured-output hygiene (#16): scan produced text artifacts for
+    incomplete fragments (raw truncation) — a fragment the producer never saw."""
+    root = Path(workspace)
+    issues: list[str] = []
+    if not root.is_dir():
+        return issues
+    for p in sorted(root.rglob("*")):
+        if not p.is_file() or (p.relative_to(root).parts[:1] in (("prior",), ("input",))):
+            continue
+        try:
+            text = p.read_text(errors="strict")
+        except (UnicodeDecodeError, OSError):
+            continue
+        # Visible-text fragments: a sentence/line cut off mid-clause with no
+        # terminal punctuation (catches "The shield is not a", "with guardrail").
+        for frag in re.findall(r">([^<>]{12,})<", text):  # tag-delimited visible text
+            f = frag.strip()
+            if f and _TRUNCATION_RE.search(f) and not f.endswith((",",)) and len(f.split()) >= 3:
+                issues.append(f"{p.name}: possible truncated text — “…{f[-50:]}”")
+    return issues[:12]
+
+
 def _observed_artifacts(workspace: Path, limit: int = 1500) -> str:
     """Read the HEADS of files the run actually produced, so a reviewer/supervisor
     judges the real artifact rather than an agent's description of it. Generic
@@ -170,6 +196,7 @@ class Orchestrator:
         from .observability import NullTracer
 
         self.tracer = tracer or NullTracer()
+        self.classification = "succeeded"  # objective-success class (#17)
         # Test seam: run an agent session; defaults to observability.trace_query.
         self._session_runner = session_runner
         # Executive judgment (None => no supervision; the session wires one in).
@@ -184,15 +211,25 @@ class Orchestrator:
         with self.tracer.span("plan", "planner"):
             plan = await self.planner.plan(objective, history=history)
         self.blackboard.put("objective", objective)
-        stages = workflow.topo_order(plan.stages)
-        roster = [_stage_dict(s) for s in stages]
-        self.blackboard.put("plan", roster)
-        self.tracer.event("plan.created", "plan", status="info", stages=roster)
 
         # Shared per-run workspace so file-producing tools can hand files to
         # file-consuming tools across agents.
         workspace = Path(config.RUNS_DIR) / self.session / "workspace"
         workspace.mkdir(parents=True, exist_ok=True)
+
+        # Risk-scaled review (#13): if the user provided evidence (attached files)
+        # or the chain is very deep, guarantee a grounding review stage.
+        has_user_evidence = (workspace / "input").is_dir() and \
+            any((workspace / "input").iterdir())
+        planned, appended = workflow.append_review_if_needed(
+            plan.stages, has_user_evidence=has_user_evidence)
+        if appended:
+            self.tracer.event("review.appended", "plan", status="info",
+                              reason="user evidence transformed" if has_user_evidence else "deep chain")
+        stages = workflow.topo_order(planned)
+        roster = [_stage_dict(s) for s in stages]
+        self.blackboard.put("plan", roster)
+        self.tracer.event("plan.created", "plan", status="info", stages=roster)
 
         # Cross-run continuity: make the most relevant prior run's files
         # available to this run's file tools.
@@ -215,6 +252,14 @@ class Orchestrator:
         self._criteria = list(getattr(plan, "success_criteria", []) or [])
         if self._criteria:
             self.tracer.event("plan.criteria", "plan", status="info", criteria=self._criteria)
+        # Objective-success classification signals (#17): a run is high-risk when
+        # it transforms user evidence or runs a very deep chain — such a run must
+        # be grounding-reviewed before it can read "succeeded".
+        self._high_risk = has_user_evidence or \
+            workflow._transformation_depth(stages) >= config.REVIEW_DEPTH_THRESHOLD
+        self._review_ran = False
+        self._review_approved = False
+        self._blocked = False
 
         last_done: Optional[str] = None
         failure_note: Optional[str] = None
@@ -262,11 +307,37 @@ class Orchestrator:
         answer = outputs.get(last_done, "") if last_done else "No stages were produced."
         if failure_note:
             answer = (answer + "\n\n" + failure_note).strip()
+
+        # Objective-success classification (#17): operational completion is NOT
+        # objective success. A polished but ungrounded artifact must not read
+        # "succeeded".
+        self.classification, reason = self._classify(bool(failure_note), workspace)
+        self.tracer.event("run.classification", "run", status="info",
+                          classification=self.classification, reason=reason)
+        if self.classification != "succeeded":
+            answer = (f"[result: {self.classification.upper()}] {reason}\n\n" + answer).strip()
+
         self.blackboard.put("answer", answer)
         answer_dir = Path(config.RUNS_DIR) / self.session / "outputs"
         answer_dir.mkdir(parents=True, exist_ok=True)
         (answer_dir / "ANSWER.md").write_text(answer or "")
         return answer or "(no answer produced)"
+
+    def _classify(self, had_failure: bool, workspace: Path) -> tuple[str, str]:
+        """Map the run to succeeded | partial | unverified | blocked (#17)."""
+        if self._blocked:
+            return "blocked", "the run hit an obstacle it could not resolve; see the answer."
+        issues = artifact_issues(workspace)
+        if had_failure:
+            return "partial", "a stage failed; the last completed result was delivered as-is."
+        if self._high_risk and not (self._review_ran and self._review_approved):
+            why = ("its grounding review did not approve" if self._review_ran
+                   else "a required grounding review did not run")
+            return "unverified", (f"this deep-transformation task was not verified as grounded "
+                                  f"in the source ({why}); treat the result as unverified.")
+        if issues:
+            return "partial", f"the artifact has unresolved defects: {'; '.join(issues[:3])}"
+        return "succeeded", "grounded and criteria-consistent."
 
     # ------------------------------------------------------------------ #
     # stage dispatch
@@ -472,6 +543,7 @@ class Orchestrator:
         limit = config.REDUCE_MAX_INPUT_CHARS
         verdict = "revise"
         couriers_left = config.REVIEW_EVIDENCE_FETCHES
+        self._review_ran = True
         criteria_block = (
             "\n\nSUCCESS CRITERIA (compiled from the user's objective — check the deliverable "
             "against EACH; an unmet criterion is grounds to revise):\n"
@@ -482,6 +554,7 @@ class Orchestrator:
                                  capabilities=stage.capabilities, depends_on=stage.depends_on)
                 caps = await self._acquire_caps(spec)
                 observed = _observed_artifacts(workspace)
+                _art_issues = artifact_issues(workspace)
                 ctx = (
                     "DRAFT under review:\n---\n" + draft + "\n---\n\n"
                     + ("EVIDENCE (the notes the draft must be supported by):\n"
@@ -489,12 +562,19 @@ class Orchestrator:
                     + (f"OBSERVED ARTIFACT FILES actually produced this run (judge THESE, not the "
                        f"draft's self-description of them):\n{observed}\n\n" if observed else "")
                     + criteria_block
+                    + (f"ARTIFACT DEFECTS the engine already detected (must be fixed):\n"
+                       f"{chr(10).join('- ' + i for i in _art_issues)}\n\n" if _art_issues else "")
                     + "\nCheck every load-bearing claim in the draft against the evidence, and verify "
                       "the observed artifact matches what the draft claims about it (counts, length, "
-                      "described features must actually be present). Unsupported claims, numbers "
-                      "without a source, or claims resting on weak/promotional sources must be "
-                      "flagged. APPROVE when the load-bearing claims are supported and the criteria "
-                      "are met — style preferences and minor wording are NOT grounds for revision. "
+                      "described features must actually be present). SOURCE IDENTITY: confirm the "
+                      "deliverable's stated subject/title/entities match the ACTUAL source evidence — "
+                      "if the draft describes a different document than the evidence shows (a renamed "
+                      "source, imported unrelated topics), that is a fabrication and REVISE. Content "
+                      "marked NON-EVIDENCE or from ignored/unconsumed inputs must not appear as source "
+                      "claims. Unsupported claims, numbers without a source, or claims resting on weak/"
+                      "promotional sources must be flagged. APPROVE when the load-bearing claims are "
+                      "supported, the source identity is consistent, and the criteria are met — style "
+                      "preferences and minor wording are NOT grounds for revision. "
                       "Your FIRST line must be exactly one of: 'VERDICT: approved' — "
                       "'VERDICT: revise' (problems fixable from the existing evidence) — "
                       "'VERDICT: needs-evidence' (a load-bearing claim can only be settled by fetching "
@@ -508,6 +588,7 @@ class Orchestrator:
                 self.tracer.event("review.verdict", stage.id, status="info",
                                   round=rnd, verdict=verdict, parsed=bool(m))
                 if verdict == "approved":
+                    self._review_approved = True
                     return draft
 
                 extra = ""

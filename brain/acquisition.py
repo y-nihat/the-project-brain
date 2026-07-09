@@ -255,6 +255,21 @@ def _capability_from_submission(need_key: str, description: str, sub: dict) -> C
     )
 
 
+_PATH_RESIDUE = re.compile(r"\b(?:input|workspace|prior|/work)[\w./-]*", re.IGNORECASE)
+_FILENAME_RESIDUE = re.compile(r"\b[\w-]+\.(?:pdf|md|txt|csv|json|html?|docx?|xlsx?|png|jpe?g)\b",
+                               re.IGNORECASE)
+
+
+def generalize_description(desc: str) -> str:
+    """Consolidation hygiene (#15): a promoted capability is reusable procedural
+    memory, so its description must be a GENERAL contract, not the originating
+    task. Strip task-specific path/filename residue that would mislead reuse."""
+    d = _PATH_RESIDUE.sub("a provided file", desc or "")
+    d = _FILENAME_RESIDUE.sub("a provided file", d)
+    d = re.sub(r"\s{2,}", " ", d).strip()
+    return d[:500]
+
+
 def _declares_inputs(cap: Capability, sub: dict) -> bool:
     """True when the tool's contract says it consumes something: env-mapped
     arguments, a `files` argument, or sample files used to verify it."""
@@ -527,6 +542,7 @@ async def _author_capability(
             if ok:
                 cap.verified = True
                 cap.validated_engine = config.ENGINE_VERSION  # passed the current battery
+                cap.description = generalize_description(cap.description)  # #15: general contract
                 promoted_dir = tracer.artifact_path(cap.name, "promoted")
                 _write_context(promoted_dir, build_context)
                 with tracer.span("capability.promote", cap.name) as psp:
