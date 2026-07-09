@@ -136,6 +136,36 @@ def test_session_cap_stops_new_sessions(tmp_path, monkeypatch):
     assert "cap" in answer or "not run" in answer
 
 
+def test_user_evidence_run_unapproved_review_classifies_unverified(tmp_path, monkeypatch):
+    """User provided a file; the engine forces a grounding review; the review
+    never approves -> the run ends 'unverified', not 'succeeded' (#13 + #17)."""
+    monkeypatch.setattr(config, "RUNS_DIR", tmp_path / "runs")
+    # Simulate an attached user file so the engine appends a grounding review.
+    inp = tmp_path / "runs" / "wf-cls" / "workspace" / "input"
+    inp.mkdir(parents=True)
+    (inp / "source.pdf").write_bytes(b"%PDF user evidence")
+
+    async def runner(tracer, name, prompt, options):
+        if name.startswith("review.r"):
+            return "VERDICT: revise\n1. the deliverable renames the source document."
+        if name.endswith(".fix"):
+            return "still wrong"
+        return f"out({name})"
+
+    stages = [StageSpec(id="read", pattern="single", role="R", goal="read the file"),
+              StageSpec(id="present", pattern="single", role="P", goal="deck", depends_on=["read"])]
+    bb = Blackboard(tmp_path / "b.db", "wf-cls")
+    orch = Orchestrator(session="wf-cls", manager=None, ledger=None, registry=None,
+                        blackboard=bb, broker=None, planner=StubPlanner(stages),
+                        resolver=None, session_runner=runner, supervisor=None)
+    try:
+        answer = asyncio.run(orch.run("summarize @input/source.pdf as a deck"))
+    finally:
+        bb.close()
+    assert orch.classification == "unverified"
+    assert "UNVERIFIED" in answer
+
+
 def test_review_failure_delivers_draft_unverified(tmp_path, monkeypatch):
     """The reviewer dying must not cost the user the draft."""
     monkeypatch.setattr(config, "RUNS_DIR", tmp_path / "runs")
@@ -152,7 +182,7 @@ def test_review_failure_delivers_draft_unverified(tmp_path, monkeypatch):
         answer = asyncio.run(orch.run("study"))
     finally:
         bb.close()
-    assert answer.startswith("DRAFT v1")
+    assert "DRAFT v1" in answer
     assert "UNVERIFIED" in answer
 
 

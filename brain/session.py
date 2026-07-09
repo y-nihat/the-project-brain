@@ -164,7 +164,9 @@ class BrainSession:
         try:
             try:
                 answer = await orchestrator.run(objective, history=hist_text, seed_run=seed_run)
-                status = "succeeded"
+                # Objective-success class (#17) — operational completion is not
+                # the same as meeting the objective.
+                status = orchestrator.classification
             except asyncio.CancelledError:
                 # User interrupt: record the truth, reap (via finally), re-raise.
                 run.finish("aborted", outcome="(cancelled by user)")

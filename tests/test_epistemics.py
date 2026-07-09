@@ -10,7 +10,7 @@ from types import SimpleNamespace
 
 from brain import acquisition, config
 from brain.models import Capability, StageSpec
-from brain.orchestrator import _observed_artifacts
+from brain.orchestrator import _observed_artifacts, artifact_issues
 from brain.planner import StubPlanner
 
 
@@ -190,6 +190,71 @@ def test_plan_capture_keeps_all_emitted_keys():
     src = inspect.getsource(planner_mod)
     assert 'captured["stages"] =' not in src   # the exact bug shape must not return
     assert "captured.update(args" in src
+
+
+# --- #13 engine-appended grounding review ---------------------------------------- #
+def test_user_evidence_forces_a_review_even_in_a_2_stage_plan():
+    # The exact ebook shape: read -> present, no review, user file attached.
+    from brain import workflow
+    from brain.models import StageSpec
+    stages = [StageSpec(id="read", pattern="single", role="r", goal="read the file"),
+              StageSpec(id="present", pattern="single", role="r", goal="deck", depends_on=["read"])]
+    out, appended = workflow.append_review_if_needed(stages, has_user_evidence=True)
+    assert appended and any(s.pattern == "review" for s in out)
+    assert out[-1].depends_on == ["present"]
+
+
+def test_no_user_evidence_shallow_chain_gets_no_review():
+    from brain import workflow
+    from brain.models import StageSpec
+    stages = [StageSpec(id="a", pattern="single", role="r", goal="g"),
+              StageSpec(id="b", pattern="single", role="r", goal="g", depends_on=["a"])]
+    out, appended = workflow.append_review_if_needed(stages, has_user_evidence=False)
+    assert not appended and not any(s.pattern == "review" for s in out)
+
+
+def test_existing_review_is_not_duplicated():
+    from brain import workflow
+    from brain.models import StageSpec
+    stages = [StageSpec(id="a", pattern="single", role="r", goal="g"),
+              StageSpec(id="chk", pattern="review", role="c", goal="v", depends_on=["a"])]
+    out, appended = workflow.append_review_if_needed(stages, has_user_evidence=True)
+    assert not appended and sum(s.pattern == "review" for s in out) == 1
+
+
+def test_transformation_depth():
+    from brain import workflow
+    from brain.models import StageSpec
+    chain = [StageSpec(id="a", pattern="single", role="r", goal="g"),
+             StageSpec(id="b", pattern="single", role="r", goal="g", depends_on=["a"]),
+             StageSpec(id="c", pattern="single", role="r", goal="g", depends_on=["b"])]
+    assert workflow._transformation_depth(chain) == 3
+
+
+# --- #16 artifact hygiene -------------------------------------------------------- #
+def test_artifact_issues_flags_truncated_visible_text(tmp_path):
+    ws = tmp_path / "workspace" / "write_file"
+    ws.mkdir(parents=True)
+    (ws / "deck.html").write_text(
+        "<h1>Title</h1><p>The shield is not a</p><p>A complete sentence here.</p>")
+    issues = artifact_issues(tmp_path / "workspace")
+    assert any("truncated" in i for i in issues)
+    assert any("shield is not a" in i for i in issues)
+
+
+def test_artifact_issues_clean_output(tmp_path):
+    ws = tmp_path / "workspace" / "write_file"
+    ws.mkdir(parents=True)
+    (ws / "deck.html").write_text("<h1>Title</h1><p>A complete, well-formed sentence.</p>")
+    assert artifact_issues(tmp_path / "workspace") == []
+
+
+# --- #15 general-contract consolidation ------------------------------------------ #
+def test_generalize_description_strips_task_residue():
+    d = acquisition.generalize_description(
+        "Read input/claude-ebook.pdf and analyze it; write to workspace/out/deck.html")
+    assert "claude-ebook.pdf" not in d and "input/" not in d and "workspace/out" not in d
+    assert "a provided file" in d
 
 
 # --- #3 success criteria threading ---------------------------------------------- #
