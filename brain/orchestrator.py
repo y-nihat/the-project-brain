@@ -285,6 +285,13 @@ class Orchestrator:
             outputs[stage.id] = out
             self.blackboard.put(f"output:{stage.id}", out)
             last_done = stage.id
+            # Stable aggregate output per stage (#24): map digests and review
+            # verdicts otherwise only exist as per-worker/per-round files, and
+            # the live view's "full output: outputs/<stage>.md" pointer dangles.
+            agg = Path(config.RUNS_DIR) / self.session / "outputs" / f"{stage.id}.md"
+            if not agg.exists():
+                agg.parent.mkdir(parents=True, exist_ok=True)
+                agg.write_text(f"# {stage.id} [{stage.pattern}] — aggregate output\n\n{out or ''}")
 
             # Executive check: does what just happened still serve the objective?
             if self.supervisor is not None and len(stages) > 1:
@@ -308,9 +315,31 @@ class Orchestrator:
         if failure_note:
             answer = (answer + "\n\n" + failure_note).strip()
 
-        # Objective-success classification (#17): operational completion is NOT
-        # objective success. A polished but ungrounded artifact must not read
-        # "succeeded".
+        # Mechanical artifact repair (#19): engine-detected defects (truncation
+        # etc.) are deterministic fixes — send them straight back to the stage
+        # that can redo, on a budget SEPARATE from semantic review rounds.
+        for attempt in range(1, config.ARTIFACT_REPAIRS + 1):
+            issues = artifact_issues(workspace)
+            if not issues:
+                break
+            redo_id = next((sid for sid in reversed(list(outputs))
+                            if sid in self._redo), None)
+            if redo_id is None:
+                break
+            self.tracer.event("artifact.repair", redo_id, status="info",
+                              attempt=attempt, issues=issues[:6])
+            fixed = await self._redo[redo_id](
+                "MECHANICAL DEFECTS detected in the produced artifact — fix EXACTLY these "
+                "(complete every truncated fragment with real content; use sentence-aware "
+                "compression, never raw character slicing):\n"
+                + "\n".join(f"- {i}" for i in issues), outputs[redo_id])
+            outputs[redo_id] = fixed
+            self.blackboard.put(f"output:{redo_id}", fixed)
+            if redo_id == last_done:
+                answer = fixed if not failure_note else (fixed + "\n\n" + failure_note).strip()
+
+        # Objective-success classification (#17/#20): operational completion is
+        # NOT objective success, and the reason names the failing DIMENSION.
         self.classification, reason = self._classify(bool(failure_note), workspace)
         self.tracer.event("run.classification", "run", status="info",
                           classification=self.classification, reason=reason)
@@ -324,19 +353,35 @@ class Orchestrator:
         return answer or "(no answer produced)"
 
     def _classify(self, had_failure: bool, workspace: Path) -> tuple[str, str]:
-        """Map the run to succeeded | partial | unverified | blocked (#17)."""
+        """Map the run to succeeded | partial | unverified | blocked, with the
+        failing DIMENSION named precisely (#17/#20): grounding, artifact
+        completeness, and stage completion are independent facts — 'grounded
+        but truncated' must not read as a grounding failure."""
+        issues = artifact_issues(workspace)
+        dims = {
+            "stage_completion": "failed" if had_failure else "ok",
+            "grounding": ("approved" if self._review_approved
+                          else "not-approved" if self._review_ran
+                          else "not-required" if not self._high_risk else "missing"),
+            "artifact": "defective" if issues else "ok",
+        }
+        self.tracer.event("run.dimensions", "run", status="info", **dims,
+                          artifact_issues=issues[:6])
         if self._blocked:
             return "blocked", "the run hit an obstacle it could not resolve; see the answer."
-        issues = artifact_issues(workspace)
         if had_failure:
             return "partial", "a stage failed; the last completed result was delivered as-is."
-        if self._high_risk and not (self._review_ran and self._review_approved):
-            why = ("its grounding review did not approve" if self._review_ran
-                   else "a required grounding review did not run")
-            return "unverified", (f"this deep-transformation task was not verified as grounded "
-                                  f"in the source ({why}); treat the result as unverified.")
+        grounded = dims["grounding"] in ("approved", "not-required")
+        if not grounded:
+            why = ("its grounding review did not approve the content"
+                   if self._review_ran else "a required grounding review did not run")
+            tail = ("; the artifact ALSO has unresolved mechanical defects: "
+                    + "; ".join(issues[:2])) if issues else ""
+            return "unverified", f"unverified_grounding — {why}{tail}."
         if issues:
-            return "partial", f"the artifact has unresolved defects: {'; '.join(issues[:3])}"
+            return "partial", ("grounded_but_artifact_defective — the content is grounded, but "
+                               "the artifact has unresolved mechanical defects: "
+                               + "; ".join(issues[:3]))
         return "succeeded", "grounded and criteria-consistent."
 
     # ------------------------------------------------------------------ #
