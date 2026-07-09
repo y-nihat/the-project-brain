@@ -15,6 +15,15 @@ def test_parse_mentions_rewrites_to_workspace_names():
     assert "@" not in clean
 
 
+def test_parse_mentions_strips_sentence_punctuation():
+    # The exact live failure: "@x.pdf, summarize" swallowed the comma.
+    clean, paths = files.parse_mentions(
+        "Analyze @data/inbox/claude-ebook.pdf, summarize it (see @notes.md).")
+    assert paths == ["data/inbox/claude-ebook.pdf", "notes.md"]
+    assert "input/claude-ebook.pdf," in clean          # punctuation stays in the sentence
+    assert "input/notes.md)." in clean
+
+
 def test_parse_mentions_no_mentions_is_identity():
     text = "summarize the report in two sentences"
     assert files.parse_mentions(text) == (text, [])

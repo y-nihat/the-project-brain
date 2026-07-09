@@ -24,8 +24,18 @@ def parse_mentions(text: str) -> tuple[str, list[str]]:
 
     def _sub(m: re.Match) -> str:
         p = m.group(1) or m.group(2)
+        trailer = ""
+        if m.group(2):
+            # Mentions live inside sentences: "@x.pdf, summarize" — trailing
+            # sentence punctuation is not part of the path. (Quoted mentions
+            # take their content verbatim.)
+            stripped = p.rstrip(".,;:!?)]}'\"")
+            trailer = p[len(stripped):]
+            p = stripped
+        if not p:
+            return m.group(0)  # bare '@,' etc. — not a mention
         paths.append(p)
-        return f"input/{Path(p).name}"
+        return f"input/{Path(p).name}{trailer}"
 
     return _MENTION.sub(_sub, text), paths
 
