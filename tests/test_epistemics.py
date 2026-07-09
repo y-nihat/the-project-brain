@@ -92,6 +92,52 @@ def test_declares_inputs_detection():
         _cap(input_schema={"type": "object", "properties": {}}, env_map={}), {})
 
 
+# --- #11 applicability + #10 observation-based provenance ------------------------ #
+def test_incompatible_refs_blocks_wrong_types():
+    from brain.capabilities.runtime import incompatible_refs
+    assert incompatible_refs(["input/x.md", "input/y.pdf"], [".pdf"]) == ["input/x.md"]
+    assert incompatible_refs(["a.PDF"], ["pdf"]) == []          # case/dot tolerant
+    assert incompatible_refs(["a.md"], []) == []                # no declaration => no gate
+    assert incompatible_refs(None, [".pdf"]) == []
+
+
+def test_provenance_reports_actual_consumption():
+    from brain.capabilities.runtime import provenance_line
+    # Consumed vs routed-but-ignored (the sample_claude.pdf laundering case).
+    line = provenance_line("read_pdf", ["read_pdf/report.md"],
+                           {"consumed_inputs": [], "generated": True})
+    assert "consumed NO input files" in line and "NOT derived from user evidence" in line
+    assert "NON-EVIDENCE" in line
+    line2 = provenance_line("read_pdf", ["input/a.pdf", "notes.md"],
+                            {"consumed_inputs": ["a.pdf"]})
+    assert "consumed input(s): ['a.pdf']" in line2
+    assert "NOT consumed" in line2 and "notes.md" in line2
+    # Legacy tool that reports nothing -> derivation explicitly unverified.
+    line3 = provenance_line("old_tool", ["input/a.pdf"], {"data": 1})
+    assert "UNVERIFIED" in line3
+
+
+def test_verify_requires_consumed_inputs_for_file_tools():
+    mgr = _CapturingManager('{"combined": "AB"}')               # no consumed_inputs
+    cap = _cap(name="combiner")
+    ok, detail, _ = acquisition._generic_verify(cap, {}, {"a.txt": "A"}, mgr, None)
+    assert not ok and "consumed_inputs" in detail
+    mgr2 = _CapturingManager('{"combined": "AB", "consumed_inputs": ["a.txt"]}')
+    ok2, _, _ = acquisition._generic_verify(cap, {}, {"a.txt": "A"}, mgr2, None)
+    assert ok2
+
+
+class _CapturingManager:
+    def __init__(self, stdout):
+        self.stdout = stdout
+
+    def run_ephemeral(self, image, command, *, policy, capability, environment=None,
+                      input_files=None, capture_output_files=False):
+        return SimpleNamespace(ok=True, oom=False, exit_code=0, timed_out=False,
+                               stdout=self.stdout, stderr="", output_files={},
+                               error_note=None)
+
+
 # --- #9 immune system: revalidation + quarantine --------------------------------- #
 def test_revalidation_quarantines_legacy_fabricator(tmp_path):
     from brain.registry import Registry

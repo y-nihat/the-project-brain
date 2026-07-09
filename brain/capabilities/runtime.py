@@ -41,6 +41,46 @@ def _observe(monitor, tracer, cap_name: str, result_class: str, count: int) -> N
         tracer.event("tool.result", cap_name, status=result_class, result=result_class, count=count)
 
 
+def incompatible_refs(file_refs, accepts: list[str]) -> list[str]:
+    """Files whose type the capability does not declare it can process (#11)."""
+    if not file_refs or not accepts:
+        return []
+    ok = tuple(e.lower() if e.startswith(".") else "." + e.lower() for e in accepts)
+    return [str(r) for r in file_refs if not str(r).lower().endswith(ok)]
+
+
+def provenance_line(cap_name: str, file_refs, meta) -> str:
+    """Provenance from what the tool REPORTS it observed (#10), not routing.
+
+    Tools' output contract includes `consumed_inputs` (files actually read) and
+    optionally `generated`/`generated_fixtures`. Routed-but-unconsumed files are
+    flagged; unreported consumption is marked unverified rather than trusted."""
+    meta = meta if isinstance(meta, dict) else {}
+    generated = bool(meta.get("generated") or meta.get("generated_fixtures"))
+    routed = [str(r) for r in (file_refs or [])]
+    consumed = meta.get("consumed_inputs")
+    if isinstance(consumed, list):
+        consumed = [str(c) for c in consumed]
+        ignored = [r for r in routed if not any(c in r or r in c for c in consumed)]
+        parts = []
+        if consumed:
+            parts.append(f"derived by '{cap_name}' from consumed input(s): {consumed}")
+        else:
+            parts.append(f"'{cap_name}' consumed NO input files — result is NOT derived "
+                         "from user evidence")
+        if ignored:
+            parts.append(f"routed but NOT consumed (result is NOT derived from these): {ignored}")
+        if generated:
+            parts.append("contains GENERATED/FIXTURE content — NON-EVIDENCE, never present it "
+                         "as coming from a user document")
+        return "; ".join(parts)
+    if routed:
+        return (f"routed input(s) {routed} to '{cap_name}', but the tool did not report "
+                "consumed_inputs — treat any 'derived from these files' assumption as UNVERIFIED")
+    return (f"produced by '{cap_name}' from arguments only (NO input file was read — do not "
+            "treat this as content extracted from a user document)")
+
+
 def _save_outputs(workspace: Path, cap_name: str, output_files: dict) -> list[str]:
     """Write a tool's captured /work/out files into the run workspace.
 
@@ -95,6 +135,18 @@ def build_caps_server(
 
             args = dict(args)
             file_refs = args.pop("files", None)  # reserved: workspace paths to attach
+
+            # Applicability before execution (#11): an incompatible input never
+            # reaches the tool, so it never gets the chance to substitute one.
+            bad = incompatible_refs(file_refs, cap.accepts)
+            if bad:
+                return {
+                    "content": [{"type": "text", "text": (
+                        f"incompatible input for '{cap.name}': {bad} — this tool accepts "
+                        f"{cap.accepts}. It was NOT run. Use/author a tool fit for that "
+                        "input type, or replan; do not retry with the same input.")}],
+                    "is_error": True,
+                }
 
             env = {cap.env_map[k]: _env_value(v) for k, v in args.items() if k in cap.env_map}
 
@@ -163,15 +215,14 @@ def build_caps_server(
             from ..observability.redact import scrub_text
 
             text = scrub_text(result.stdout.strip()) or "(no stdout)"
-            # Provenance header: state where this result came from so a
-            # downstream agent can never mistake a tool-derived transformation
-            # (or a fixture) for user-provided evidence.
-            if file_refs:
-                origin = f"derived by '{cap.name}' from input file(s): {list(file_refs)}"
-            else:
-                origin = (f"produced by '{cap.name}' from arguments only (NO input file was "
-                          "read — do not treat this as content extracted from a user document)")
-            text = f"[provenance] {origin}\n\n{text}"
+            # Provenance from ACTUAL observation (#10): what the tool reports it
+            # consumed/generated, with routed-but-ignored inputs flagged.
+            meta = None
+            try:
+                meta = json.loads(result.stdout.strip().splitlines()[-1])
+            except Exception:  # noqa: BLE001
+                pass
+            text = f"[provenance] {provenance_line(cap.name, file_refs, meta)}\n\n{text}"
             if produced:
                 text += ("\n\nProduced files (pass these paths as `files` to a downstream tool): "
                          + json.dumps(produced))

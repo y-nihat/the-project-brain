@@ -37,6 +37,10 @@ class Capability:
     # quarantined capability is never reused; the brain re-authors instead).
     validated_engine: Optional[str] = None
     quarantined: Optional[str] = None
+    # Applicability contract (#11): file extensions this tool can actually
+    # process. The engine refuses to execute it on anything else — a tool never
+    # gets the CHANCE to substitute a stimulus for an incompatible input.
+    accepts: list[str] = field(default_factory=list)
 
 
 @dataclass

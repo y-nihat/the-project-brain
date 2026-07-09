@@ -150,9 +150,11 @@ def test_author_file_consuming_tool(tmp_path):
     broker = ApprovalBroker(auto="deny")
 
     program = (
-        "import json, glob\n"
-        "parts = [open(p).read() for p in sorted(glob.glob('/work/in/*'))]\n"
-        "print(json.dumps({'combined': '|'.join(parts)}))\n"
+        "import json, glob, os\n"
+        "files = sorted(glob.glob('/work/in/*'))\n"
+        "parts = [open(p).read() for p in files]\n"
+        "print(json.dumps({'combined': '|'.join(parts), "
+        "'consumed_inputs': [os.path.basename(p) for p in files]}))\n"
     )
     dockerfile = "FROM python:3.12-slim\nWORKDIR /app\nCOPY tool.py /app/tool.py\n"
 

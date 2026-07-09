@@ -38,7 +38,8 @@ CREATE TABLE IF NOT EXISTS capabilities (
 # Columns added after the original schema; applied to pre-existing databases.
 _MIGRATIONS = {"memory_mb": "INTEGER", "cpus": "REAL", "timeout_seconds": "INTEGER",
                "requires_credential": "TEXT", "credential_help": "TEXT",
-               "validated_engine": "TEXT", "validated_at": "TEXT", "quarantined": "TEXT"}
+               "validated_engine": "TEXT", "validated_at": "TEXT", "quarantined": "TEXT",
+               "accepts": "TEXT"}
 
 
 def _migrate(conn: sqlite3.Connection, table: str, columns: dict[str, str]) -> None:
@@ -80,6 +81,7 @@ class Registry:
             credential_help=r["credential_help"],
             validated_engine=r["validated_engine"],
             quarantined=r["quarantined"],
+            accepts=json.loads(r["accepts"]) if r["accepts"] else [],
         )
 
     def get(self, name: str) -> Optional[Capability]:
@@ -115,8 +117,8 @@ class Registry:
                 "INSERT OR REPLACE INTO capabilities "
                 "(name, version, description, image_tag, command, input_schema, env_map, network, "
                 " tags, verified, created_at, memory_mb, cpus, timeout_seconds, requires_credential, "
-                " credential_help, validated_engine, validated_at, quarantined) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                " credential_help, validated_engine, validated_at, quarantined, accepts) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (
                     cap.name,
                     cap.version,
@@ -137,6 +139,7 @@ class Registry:
                     cap.validated_engine,
                     _dt.datetime.now(_dt.timezone.utc).isoformat() if cap.validated_engine else None,
                     cap.quarantined,
+                    json.dumps(cap.accepts) if cap.accepts else None,
                 ),
             )
         # Persist a manifest + build context for reproducibility/audit.

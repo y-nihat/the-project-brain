@@ -251,6 +251,7 @@ def _capability_from_submission(need_key: str, description: str, sub: dict) -> C
         memory_mb=_num("memory_mb", int),
         cpus=_num("cpus", float),
         timeout_seconds=_num("timeout_seconds", int),
+        accepts=[str(a) for a in (sub.get("accepts") or [])],
     )
 
 
@@ -413,6 +414,12 @@ def _generic_verify(cap: Capability, sample_input: dict, sample_files: dict, man
     if isinstance(data, dict) and "error" in data:
         return (False, f"tool reported error: {str(data['error'])[:400]} "
                        f"(env vars provided: {sorted(env)})", res)
+    # Observation-reporting contract (#10): a file-consuming tool must state
+    # what it actually read, or downstream provenance is unverifiable.
+    if input_files and isinstance(data, dict) and "consumed_inputs" not in data:
+        return (False, "output JSON must include `consumed_inputs`: the list of input "
+                       "filenames the tool actually read (empty list if none). Provenance "
+                       "depends on this being reported truthfully.", res)
     return (True, f"ok: {str(data)[:120]}", res)
 
 
@@ -673,6 +680,13 @@ _DEVELOPER_SYSTEM = (
     "a HUMAN follows to obtain that credential (where to register, which console/menu/command, "
     "what the value looks like). The engine shows this to the user BEFORE prompting for the "
     "value. Write it for the end user, not for developers.\n\n"
+    "APPLICABILITY + OBSERVATION REPORTING (hard rules): if your tool consumes files, declare "
+    "`accepts` — the list of file extensions it can genuinely process (e.g. [\".pdf\"]); the "
+    "engine refuses to run it on anything else, so declare honestly and narrowly. Your final "
+    "JSON object MUST include `consumed_inputs`: the list of input filenames the tool actually "
+    "read to produce this result (empty list if none). If any part of the output is generated "
+    "rather than extracted from inputs, include `generated: true`. Downstream provenance depends "
+    "on these being truthful.\n"
     "EVIDENCE BOUNDARY (hard rule): a tool must NEVER fabricate, mock, or substitute evidence "
     "when its input preconditions are not met — no sample/placeholder documents, no synthetic "
     "fallback data, no invented API responses. If the expected input is missing or incompatible, "
@@ -724,6 +738,7 @@ _SUBMIT_TOOL_SCHEMA = {
         },
         "requires_credential": {"type": ["string", "null"]},
         "credential_help": {"type": ["string", "null"]},
+        "accepts": {"type": "array", "items": {"type": "string"}},
     },
     "required": ["program", "dockerfile", "command", "input_schema", "env_map", "network", "sample_input"],
 }
