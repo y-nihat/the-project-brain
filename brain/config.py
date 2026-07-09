@@ -26,7 +26,23 @@ RUNS_DIR = DATA_DIR / "runs"          # per-run trace exports + created-tool art
 # Engine version stamped onto every traced run (for reproducibility/regression)
 # AND onto capability validation stamps: bumping it marks all promoted
 # capabilities stale, forcing revalidation against the current probe battery.
-ENGINE_VERSION = "0.2.0"
+ENGINE_VERSION = "0.3.0"
+
+
+def _git_commit() -> str:
+    """Best-effort git commit for trace auditability (report: trace said 0.2.0
+    while the checkout was v0.2.2 — version constants alone are not enough)."""
+    try:
+        import subprocess
+
+        return subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"], cwd=PROJECT_ROOT,
+            capture_output=True, text=True, timeout=5).stdout.strip() or "unknown"
+    except Exception:  # noqa: BLE001
+        return "unknown"
+
+
+GIT_COMMIT = _git_commit()
 
 # Load .env from the project root if present (no-op when missing).
 load_dotenv(PROJECT_ROOT / ".env")

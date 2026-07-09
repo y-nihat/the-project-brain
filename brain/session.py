@@ -54,7 +54,8 @@ class BrainSession:
         self.output_fn = output_fn
         self.auto_export = auto_export
 
-        self.tracer = Tracer(config.DB_PATH, config.RUNS_DIR, engine_version=config.ENGINE_VERSION)
+        self.tracer = Tracer(config.DB_PATH, config.RUNS_DIR,
+                             engine_version=f"{config.ENGINE_VERSION}@{config.GIT_COMMIT}")
         self.ledger = Ledger(config.DB_PATH)
         self.registry = Registry(config.DB_PATH, config.CAPABILITIES_STORE)
         # Interactive gate: real prompts reach the human running the session.
