@@ -696,6 +696,14 @@ _DEVELOPER_SYSTEM = (
     "a HUMAN follows to obtain that credential (where to register, which console/menu/command, "
     "what the value looks like). The engine shows this to the user BEFORE prompting for the "
     "value. Write it for the end user, not for developers.\n\n"
+    "PERCEPTION BEFORE INTERPRETATION (extractor/reader tools): output TWO LAYERS — "
+    "`raw_observations` (verbatim evidence: the document title, section headings, short "
+    "page/section snippets, the most frequent meaningful terms) and, separately, any "
+    "`inferences` (themes/summaries you derived). Every theme must be traceable to observed "
+    "terms/snippets; NEVER seed output with domain keyword lists the source did not contain "
+    "(extract what IS there, not what you expect). Report extraction `limitations` honestly "
+    "(unparsed pages, garbled regions). Prefer exposing clean observations over ambitious "
+    "summarization — downstream agents do the interpreting.\n"
     "APPLICABILITY + OBSERVATION REPORTING (hard rules): if your tool consumes files, declare "
     "`accepts` — the list of file extensions it can genuinely process (e.g. [\".pdf\"]); the "
     "engine refuses to run it on anything else, so declare honestly and narrowly. Your final "
@@ -773,13 +781,27 @@ def make_developer_agent(model: Optional[str] = None, tracer=None) -> Developer:
             captured.update(args)
             return {"content": [{"type": "text", "text": "received"}]}
 
-        server = create_sdk_mcp_server(name="dev", version="1.0.0", tools=[submit_tool])
+        @tool("progress_update",
+              "Announce your current step in one short line (e.g. 'writing the parser', "
+              "'preparing the Dockerfile'). Call at milestones — authoring is long and "
+              "the user is watching a silent terminal otherwise.",
+              {"type": "object", "properties": {"status": {"type": "string"}},
+               "required": ["status"]})
+        async def progress_update(args):
+            tracer.event("agent.progress", f"developer:{need_key}", status="info",
+                         note=str(args.get("status", ""))[:200])
+            return {"content": [{"type": "text", "text": "noted — continue."}]}
+
+        server = create_sdk_mcp_server(name="dev", version="1.0.0",
+                                       tools=[submit_tool, progress_update])
         options = factory.locked_session(
-            system_prompt=_DEVELOPER_SYSTEM,
+            system_prompt=_DEVELOPER_SYSTEM
+            + "\nDuring long work, call progress_update at each milestone (approach chosen, "
+              "code written, Dockerfile ready, about to submit).",
             mcp_servers={"dev": server},
-            allowed_tools=["mcp__dev__submit_tool"],
+            allowed_tools=["mcp__dev__submit_tool", "mcp__dev__progress_update"],
             model=model,
-            max_turns=4,
+            max_turns=8,
         )
 
         task = (

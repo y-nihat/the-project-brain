@@ -73,6 +73,10 @@ def format_event(record: dict) -> Optional[str]:
         return f"     ⚠ reviewer died ({str(data.get('error', ''))[:60]}) — draft delivered UNVERIFIED"
     if kind == "team.question":
         return f"     🗨 {name} asks {data.get('to')}: {str(data.get('question', ''))[:70]}"
+    if kind == "agent.progress":
+        return f"     ⋯ {name}: {str(data.get('note', ''))[:90]}"
+    if kind == "artifact.repair":
+        return f"     🔧 mechanical repair (attempt {data.get('attempt')}): {len(data.get('issues') or [])} defect(s) → {name}"
     if kind == "team.blocker":
         return f"     ✋ {name} reports a blocker: {str(data.get('issue', ''))[:70]}"
     if kind == "agent.salvaged":
@@ -169,15 +173,20 @@ async def _heartbeat(state: dict, stall_limit: float) -> None:
     """Print a liveness line during silent stretches so 'thinking' is visibly
     different from 'stuck' (true stalls are killed by the session watchdog)."""
     last_print = 0.0
+    last_label = ""
     while True:
         await asyncio.sleep(5)
         now = time.monotonic()
         quiet = now - state["ts"]
-        if quiet >= 25 and now - last_print >= 25:
-            print(f"  … still working — {int(quiet)}s since last activity "
-                  f"(last: {state['label']}; agent sessions abort after {int(stall_limit)}s of "
-                  "true silence — long quiet here can be builds or generation)", flush=True)
+        # Suppress repetition (#23): same phase re-announces only at 60s+
+        # intervals; a phase CHANGE prints promptly.
+        interval = 25 if state["label"] != last_label else 60
+        if quiet >= 25 and now - last_print >= interval:
+            print(f"  … {state['label']} — quiet for {int(quiet)}s "
+                  f"(sessions abort after {int(stall_limit)}s of true silence; "
+                  "long quiet = builds or generation)", flush=True)
             last_print = now
+            last_label = state["label"]
 
 
 async def _repl() -> int:

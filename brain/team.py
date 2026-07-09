@@ -64,7 +64,8 @@ class TeamChannel:
                 "unresolved gaps will be reported honestly, do not fabricate around them.")
 
 
-TEAM_TOOLS = ["mcp__team__ask_upstream", "mcp__team__report_blocker"]
+TEAM_TOOLS = ["mcp__team__ask_upstream", "mcp__team__report_blocker",
+              "mcp__team__progress_update"]
 
 
 def build_team_server(channel: TeamChannel):
@@ -93,5 +94,16 @@ def build_team_server(channel: TeamChannel):
         text = channel.block(str(args.get("issue", "")), args.get("needed"))
         return {"content": [{"type": "text", "text": text}]}
 
+    @tool("progress_update",
+          "Announce what you are doing right now, in one short action-oriented line "
+          "(e.g. 'drafting the parser', 'validating output against criteria'). Call at "
+          "milestones during long work so the user sees progress.",
+          {"type": "object", "properties": {"status": {"type": "string"}},
+           "required": ["status"]})
+    async def progress_update(args):
+        note = str(args.get("status", ""))[:200]
+        channel.tracer.event("agent.progress", channel.agent_id, status="info", note=note)
+        return {"content": [{"type": "text", "text": "noted — continue."}]}
+
     return create_sdk_mcp_server(name="team", version="1.0.0",
-                                 tools=[ask_upstream, report_blocker])
+                                 tools=[ask_upstream, report_blocker, progress_update])

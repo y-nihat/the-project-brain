@@ -75,7 +75,8 @@ def agent_system_prompt(spec: AgentSpec, allowed_tools: list[str],
             + (", ".join(team_stages) if team_stages else "none yet")
             + f"; budget {config.TEAM_MAX_QUESTIONS} questions). If an item is impossible "
             "(unreachable source, missing input), report it with report_blocker and move on — "
-            "never guess or fabricate around an obstacle."
+            "never guess or fabricate around an obstacle. During long work, call "
+            "progress_update at milestones so the user sees what you are doing."
         )
     if allowed_tools:
         from . import config
