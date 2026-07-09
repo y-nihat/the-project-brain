@@ -55,6 +55,11 @@ def test_report_blocker_records_and_guides(tmp_path):
         bb.close()
 
 
+def test_team_tools_include_progress_update():
+    from brain.team import TEAM_TOOLS
+    assert "mcp__team__progress_update" in TEAM_TOOLS
+
+
 def test_system_prompt_mentions_team_channel():
     spec = AgentSpec(id="w", role="Analyst", goal="analyze")
     with_team = agent_system_prompt(spec, [], team_stages=["gather", "survey"])

@@ -307,6 +307,65 @@ def test_review_needs_evidence_dispatches_a_courier(tmp_path, monkeypatch):
     assert answer == "DRAFT v2"
 
 
+def test_mechanical_defect_triggers_artifact_repair(tmp_path, monkeypatch):
+    """Engine-detected truncation goes back to the generating stage on its own
+    budget (#19), and a grounded-but-truncated run that gets FIXED ends
+    'succeeded'; the classification names dimensions precisely (#20)."""
+    monkeypatch.setattr(config, "RUNS_DIR", tmp_path / "runs")
+    art = tmp_path / "runs" / "wf-rep" / "workspace" / "write_file"
+
+    async def runner(tracer, name, prompt, options):
+        if name == "make":
+            art.mkdir(parents=True, exist_ok=True)
+            (art / "deck.html").write_text("<p>event-driven coordination (reactive trigge</p>")
+            return "made the deck"
+        if name == "make.fix":
+            assert "reactive trigge" in prompt          # exact flagged string fed back
+            (art / "deck.html").write_text("<p>event-driven coordination, fully explained.</p>")
+            return "fixed the deck"
+        return f"out({name})"
+
+    stages = [StageSpec(id="draft", pattern="single", role="D", goal="draft"),
+              StageSpec(id="make", pattern="single", role="M", goal="make artifact",
+                        depends_on=["draft"])]
+    bb = Blackboard(tmp_path / "b.db", "wf-rep")
+    orch = Orchestrator(session="wf-rep", manager=None, ledger=None, registry=None,
+                        blackboard=bb, broker=None, planner=StubPlanner(stages),
+                        resolver=None, session_runner=runner, supervisor=None)
+    try:
+        answer = asyncio.run(orch.run("make a deck"))
+    finally:
+        bb.close()
+    assert answer == "fixed the deck"                   # repaired output delivered
+    assert orch.classification == "succeeded"           # defect resolved -> clean
+    # Aggregate stage outputs exist for every stage (#24).
+    assert (tmp_path / "runs" / "wf-rep" / "outputs" / "draft.md").exists()
+    assert (tmp_path / "runs" / "wf-rep" / "outputs" / "make.md").exists()
+
+
+def test_unrepaired_defect_classifies_grounded_but_defective(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "RUNS_DIR", tmp_path / "runs")
+    monkeypatch.setattr(config, "ARTIFACT_REPAIRS", 1)
+    art = tmp_path / "runs" / "wf-rep2" / "workspace" / "write_file"
+
+    async def runner(tracer, name, prompt, options):
+        art.mkdir(parents=True, exist_ok=True)
+        (art / "deck.html").write_text("<p>the shield is not a</p>")   # never fixed
+        return f"out({name})"
+
+    stages = [StageSpec(id="make", pattern="single", role="M", goal="make artifact")]
+    bb = Blackboard(tmp_path / "b2.db", "wf-rep2")
+    orch = Orchestrator(session="wf-rep2", manager=None, ledger=None, registry=None,
+                        blackboard=bb, broker=None, planner=StubPlanner(stages),
+                        resolver=None, session_runner=runner, supervisor=None)
+    try:
+        answer = asyncio.run(orch.run("make a deck"))
+    finally:
+        bb.close()
+    assert orch.classification == "partial"
+    assert "grounded_but_artifact_defective" in answer  # precise sub-reason (#20)
+
+
 def test_reduce_batches_hierarchically(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "RUNS_DIR", tmp_path / "runs")
     monkeypatch.setattr(config, "REDUCE_MAX_INPUT_CHARS", 200)  # force batching
