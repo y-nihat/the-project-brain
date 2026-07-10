@@ -136,6 +136,24 @@ def build_caps_server(
             args = dict(args)
             file_refs = args.pop("files", None)  # reserved: workspace paths to attach
 
+            # Caller errors are not tool failures: a nonexistent path never
+            # reaches the container, is answered with the ACTUAL available
+            # files, and does not count against the tool's health (agents were
+            # observed burning ~10 calls guessing paths a tool misreported).
+            if file_refs and ws is not None:
+                missing = [str(r) for r in file_refs if not (ws / str(r)).is_file()]
+                if missing:
+                    available = sorted(
+                        str(p.relative_to(ws)) for p in ws.rglob("*")
+                        if p.is_file() and p.relative_to(ws).parts[0] != "prior")[:40]
+                    return {
+                        "content": [{"type": "text", "text": (
+                            f"file(s) not found in the workspace: {missing}. The tool was NOT "
+                            f"run. Files that actually exist: {available}. Use these exact "
+                            "workspace-relative paths.")}],
+                        "is_error": True,
+                    }
+
             # Applicability before execution (#11): an incompatible input never
             # reaches the tool, so it never gets the chance to substitute one.
             bad = incompatible_refs(file_refs, cap.accepts)
