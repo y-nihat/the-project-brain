@@ -411,6 +411,24 @@ def test_reader_dirs_legacy_fallback_uses_accepts(tmp_path):
     reg.close()
 
 
+def test_reader_dirs_never_empty_when_file_grounded_output_exists(tmp_path):
+    """An extractor that under-declares itself 'derived' must not silence the
+    whole evidence surface (observed live: locate_evidence searched 0 files and
+    review lost its ground truth). With no observation-role capability, file-
+    consuming caps still count as the evidence surface — but validators and
+    artifact producers never do."""
+    from brain.orchestrator import Orchestrator
+    from brain.registry import Registry
+
+    reg = Registry(tmp_path / "r.db", tmp_path / "store")
+    reg.add(_cap(name="modest_extractor", verified=True, accepts=[".pdf"], emits="derived"))
+    reg.add(_cap(name="checker", verified=True, accepts=[".html"], emits="validation"))
+    reg.add(_cap(name="writer", verified=True, emits="artifact"))
+    dirs = Orchestrator._reader_dirs(SimpleNamespace(registry=reg))
+    assert dirs == ("modest_extractor",)
+    reg.close()
+
+
 # --- causal attribution: verbatim conduits + detector self-suspicion ------------- #
 def test_monitor_verbatim_exoneration_evidence():
     from brain.capabilities.health import HealthMonitor

@@ -1026,10 +1026,16 @@ class Orchestrator:
             return ()
         try:
             caps = self.registry.all()
-            typed = [c for c in caps if c.emits]
-            if typed:
-                return tuple(c.name for c in typed if c.emits == "observation")
-            return tuple(c.name for c in caps if c.accepts)  # legacy fallback
+            obs = [c.name for c in caps if c.emits == "observation"]
+            if obs:
+                return tuple(obs)
+            # No declared perception layer. An EMPTY evidence surface is the
+            # worst state (review goes blind — observed when an extractor
+            # misdeclared itself 'derived'), so fall back to file-consuming
+            # capabilities whose output still originates from the user's
+            # inputs; validators and artifact producers stay excluded.
+            return tuple(c.name for c in caps
+                         if c.accepts and c.emits not in ("validation", "artifact"))
         except Exception:  # noqa: BLE001
             return ()
 
