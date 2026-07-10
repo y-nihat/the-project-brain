@@ -41,6 +41,13 @@ class Capability:
     # process. The engine refuses to execute it on anything else — a tool never
     # gets the CHANCE to substitute a stimulus for an incompatible input.
     accepts: list[str] = field(default_factory=list)
+    # Epistemic output role, DECLARED by the tool's contract — never inferred
+    # from its name or inputs: "observation" (verbatim extraction from given
+    # inputs), "derived" (interpretation/synthesis), "artifact" (a produced
+    # deliverable), or "validation" (a check result). Only "observation"
+    # output may be treated as original source evidence downstream — consuming
+    # a file does NOT imply producing source evidence (validators do too).
+    emits: str = ""
 
 
 @dataclass

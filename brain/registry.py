@@ -39,7 +39,7 @@ CREATE TABLE IF NOT EXISTS capabilities (
 _MIGRATIONS = {"memory_mb": "INTEGER", "cpus": "REAL", "timeout_seconds": "INTEGER",
                "requires_credential": "TEXT", "credential_help": "TEXT",
                "validated_engine": "TEXT", "validated_at": "TEXT", "quarantined": "TEXT",
-               "accepts": "TEXT"}
+               "accepts": "TEXT", "emits": "TEXT"}
 
 
 def _migrate(conn: sqlite3.Connection, table: str, columns: dict[str, str]) -> None:
@@ -82,6 +82,7 @@ class Registry:
             validated_engine=r["validated_engine"],
             quarantined=r["quarantined"],
             accepts=json.loads(r["accepts"]) if r["accepts"] else [],
+            emits=r["emits"] or "",
         )
 
     def get(self, name: str) -> Optional[Capability]:
@@ -103,6 +104,7 @@ class Registry:
                 "UPDATE capabilities SET validated_engine=?, validated_at=?, quarantined=NULL "
                 "WHERE name=?",
                 (engine_version, _dt.datetime.now(_dt.timezone.utc).isoformat(), name))
+        self._sync_manifest(name, validated_engine=engine_version, quarantined=None)
 
     def quarantine(self, name: str, reason: str) -> None:
         """Mark a capability unsafe for reuse (kept for audit/repair, never selected)."""
@@ -110,6 +112,21 @@ class Registry:
             self._conn.execute(
                 "UPDATE capabilities SET quarantined=?, validated_at=? WHERE name=?",
                 (reason[:500], _dt.datetime.now(_dt.timezone.utc).isoformat(), name))
+        self._sync_manifest(name, quarantined=reason[:500])
+
+    def _sync_manifest(self, name: str, **fields) -> None:
+        """Keep the human-facing manifest in agreement with the database — the
+        two audit surfaces must never disagree about whether a capability is
+        trusted (observed: db said quarantined, manifest said null)."""
+        mf = self.store_dir / name / "manifest.json"
+        if not mf.is_file():
+            return
+        try:
+            data = json.loads(mf.read_text())
+            data.update(fields)
+            mf.write_text(json.dumps(data, indent=2))
+        except (OSError, ValueError):
+            pass  # the DB stays authoritative; a corrupt manifest must not break runs
 
     def add(self, cap: Capability, build_context: Optional[dict[str, str]] = None) -> None:
         with self._lock, self._conn:
@@ -117,8 +134,8 @@ class Registry:
                 "INSERT OR REPLACE INTO capabilities "
                 "(name, version, description, image_tag, command, input_schema, env_map, network, "
                 " tags, verified, created_at, memory_mb, cpus, timeout_seconds, requires_credential, "
-                " credential_help, validated_engine, validated_at, quarantined, accepts) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                " credential_help, validated_engine, validated_at, quarantined, accepts, emits) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (
                     cap.name,
                     cap.version,
@@ -140,6 +157,7 @@ class Registry:
                     _dt.datetime.now(_dt.timezone.utc).isoformat() if cap.validated_engine else None,
                     cap.quarantined,
                     json.dumps(cap.accepts) if cap.accepts else None,
+                    cap.emits or None,
                 ),
             )
         # Persist a manifest + build context for reproducibility/audit.

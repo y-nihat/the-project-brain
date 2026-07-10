@@ -252,6 +252,9 @@ def _capability_from_submission(need_key: str, description: str, sub: dict) -> C
         cpus=_num("cpus", float),
         timeout_seconds=_num("timeout_seconds", int),
         accepts=[str(a) for a in (sub.get("accepts") or [])],
+        # Undeclared output role defaults to "derived" — fail-CLOSED for
+        # evidence: derived output is never treated as original source.
+        emits=str(sub.get("emits") or "derived").strip().lower(),
     )
 
 
@@ -346,10 +349,37 @@ def _irrelevant_input_probe(cap: Capability, manager, extra_env: Optional[dict])
     return True, "ok (irrelevant input handled honestly)"
 
 
+# Bump when the probe battery itself changes behavior (the developer contract
+# is fingerprinted automatically; the probes are code, so they need a manual epoch).
+_PROBE_SUITE_VERSION = "2"
+
+
+def validation_epoch() -> str:
+    """The validation stamp a trusted capability must carry: engine version PLUS
+    a fingerprint of the authoring contract and probe suite. A contract change
+    (new rules for readers/writers) invalidates previously promoted capabilities
+    even when the release label does not move — the observed failure was a
+    biased reader staying 'validated' under a stale ENGINE_VERSION while newly
+    authored tools got the corrected contract."""
+    import hashlib
+    h = hashlib.sha256((_DEVELOPER_SYSTEM + _PROBE_SUITE_VERSION).encode()).hexdigest()[:10]
+    return f"{config.ENGINE_VERSION}+c{h}"
+
+
 def revalidate_capability(cap: Capability, manager, registry) -> tuple[bool, str]:
     """Procedural-memory immune check (#9): run the CURRENT probe battery
     against an already-promoted capability before it is reused. Rebuilds the
-    image from the stored build context if it is missing. Returns (ok, reason)."""
+    image from the stored build context if it is missing. Returns (ok, reason).
+
+    A capability whose declared contract predates the current one (a
+    file-consuming tool with no `emits` output-role declaration) is STALE by
+    construction — probes cannot verify semantics the contract never asked it
+    to declare, so it must be re-authored, not re-stamped."""
+    if not cap.emits and (cap.accepts or
+                          "files" in ((cap.input_schema or {}).get("properties") or {})):
+        return False, ("authored under an older capability contract: consumes files but "
+                       "declares no `emits` output role, so its output cannot be routed "
+                       "as evidence — re-author under the current contract")
     try:
         try:
             manager.ensure_image(cap.image_tag)
@@ -466,6 +496,16 @@ async def _author_capability(
                 last_detail = "developer produced no usable submission"
                 error = last_detail
                 continue
+            consumes_files = bool(sub.get("accepts")) or \
+                "files" in ((sub.get("input_schema") or {}).get("properties") or {})
+            if consumes_files and not sub.get("emits"):
+                last_detail = "file-consuming tool did not declare its output role"
+                error = ("Your submission is missing `emits`. A file-consuming tool MUST declare "
+                         "what its output IS: 'observation' (verbatim extraction), 'derived' "
+                         "(interpretation/summary), 'artifact' (produced deliverable), or "
+                         "'validation' (a check result). Resubmit with `emits` set honestly.")
+                previous = {"program": sub["program"], "dockerfile": sub["dockerfile"]}
+                continue
 
             # Free-first: escalate to the human ONLY if the tool needs a credential.
             rc = sub.get("requires_credential")
@@ -541,7 +581,7 @@ async def _author_capability(
 
             if ok:
                 cap.verified = True
-                cap.validated_engine = config.ENGINE_VERSION  # passed the current battery
+                cap.validated_engine = validation_epoch()  # passed the current battery+contract
                 cap.description = generalize_description(cap.description)  # #15: general contract
                 promoted_dir = tracer.artifact_path(cap.name, "promoted")
                 _write_context(promoted_dir, build_context)
@@ -717,6 +757,13 @@ _DEVELOPER_SYSTEM = (
     "read to produce this result (empty list if none). If any part of the output is generated "
     "rather than extracted from inputs, include `generated: true`. Downstream provenance depends "
     "on these being truthful.\n"
+    "OUTPUT ROLE (hard rule): declare `emits` — what your tool's output IS, epistemically: "
+    "'observation' (verbatim extraction from the given inputs: text, structure, measurements), "
+    "'derived' (interpretation, summary, synthesis), 'artifact' (a produced deliverable file), "
+    "or 'validation' (a check/verdict about something else). The engine routes evidence by this "
+    "declaration — ONLY 'observation' output is ever treated as original source evidence — so "
+    "declare honestly: a summarizing reader is 'derived', not 'observation'. A file-consuming "
+    "tool MUST declare this explicitly.\n"
     "EVIDENCE BOUNDARY (hard rule): a tool must NEVER fabricate, mock, or substitute evidence "
     "when its input preconditions are not met — no sample/placeholder documents, no synthetic "
     "fallback data, no invented API responses. If the expected input is missing or incompatible, "
@@ -769,6 +816,8 @@ _SUBMIT_TOOL_SCHEMA = {
         "requires_credential": {"type": ["string", "null"]},
         "credential_help": {"type": ["string", "null"]},
         "accepts": {"type": "array", "items": {"type": "string"}},
+        "emits": {"type": "string",
+                  "enum": ["observation", "derived", "artifact", "validation"]},
     },
     "required": ["program", "dockerfile", "command", "input_schema", "env_map", "network", "sample_input"],
 }

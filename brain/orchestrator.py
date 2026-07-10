@@ -888,13 +888,22 @@ class Orchestrator:
             self.broker.inform(d.message)
 
     def _reader_dirs(self) -> tuple:
-        """Workspace dirs written by reader-class capabilities — identified by
-        their declared contract (`accepts` => consumes files => its output is
-        extraction/source evidence), never by hardcoded tool names."""
+        """Workspace dirs whose files count as ORIGINAL SOURCE EVIDENCE —
+        identified by the capability's declared output role (`emits ==
+        "observation"`), never by name and never by what it consumes:
+        `accepts` only says a tool reads files, and validators, converters and
+        summarizers read files too — their output is derived, not source. A
+        registry predating output-role typing falls back to the accepts
+        heuristic until its capabilities are re-validated under the current
+        contract (which forces the declaration)."""
         if self.registry is None:
             return ()
         try:
-            return tuple(c.name for c in self.registry.all() if c.accepts)
+            caps = self.registry.all()
+            typed = [c for c in caps if c.emits]
+            if typed:
+                return tuple(c.name for c in typed if c.emits == "observation")
+            return tuple(c.name for c in caps if c.accepts)  # legacy fallback
         except Exception:  # noqa: BLE001
             return ()
 
@@ -1023,16 +1032,19 @@ class Orchestrator:
                 if decision.kind == REUSE and decision.capability is not None:
                     cap = decision.capability
                     # Immune system (#9): memory promoted under an older engine
-                    # must pass the CURRENT probe battery before it is trusted.
-                    if (cap.validated_engine != config.ENGINE_VERSION
+                    # OR an older authoring contract must pass the CURRENT
+                    # battery before it is trusted — the epoch fingerprints the
+                    # contract, so contract changes invalidate without a release.
+                    from .acquisition import revalidate_capability, validation_epoch
+                    epoch = validation_epoch()
+                    if (cap.validated_engine != epoch
                             and self.manager is not None and self.registry is not None):
-                        from .acquisition import revalidate_capability
                         with self.tracer.span("capability.revalidate", cap.name,
                                               stamped=cap.validated_engine or "never"):
                             ok, reason = await asyncio.to_thread(
                                 revalidate_capability, cap, self.manager, self.registry)
                         if ok:
-                            self.registry.stamp_validated(cap.name, config.ENGINE_VERSION)
+                            self.registry.stamp_validated(cap.name, epoch)
                         else:
                             self.registry.quarantine(cap.name, reason)
                             self.tracer.event("capability.quarantined", cap.name,
