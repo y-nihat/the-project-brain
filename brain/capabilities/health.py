@@ -65,6 +65,10 @@ class HealthMonitor:
 
     call_budget: int = field(default_factory=lambda: config.CAPABILITY_CALL_BUDGET)
     _stats: dict[str, _CapStat] = field(default_factory=dict)
+    # Causal attribution evidence: cap -> True while EVERY observed write matched
+    # the content it was given byte-for-byte. A verbatim conduit cannot have
+    # introduced a content defect, so it must never be blamed for one.
+    verbatim: dict[str, bool] = field(default_factory=dict)
 
     def _stat(self, cap: str) -> _CapStat:
         return self._stats.setdefault(cap, _CapStat())
@@ -83,6 +87,11 @@ class HealthMonitor:
             s.consecutive_empty = 0
         else:
             s.consecutive_empty = 0
+
+    def note_verbatim(self, cap: str, is_verbatim: bool) -> None:
+        """Record whether a write-producing call persisted its given content
+        exactly (one non-verbatim call clears the exoneration for good)."""
+        self.verbatim[cap] = self.verbatim.get(cap, True) and is_verbatim
 
     def unhealthy(self, cap: str) -> Optional[str]:
         """A human-readable reason the capability looks broken, or None."""

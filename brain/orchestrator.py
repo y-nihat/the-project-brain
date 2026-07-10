@@ -414,18 +414,35 @@ class Orchestrator:
         if failure_note:
             answer = (answer + "\n\n" + failure_note).strip()
 
-        # Persistent artifact defects at delivery mean the generating tool
-        # itself is broken: quarantine it so the next run re-authors under the
-        # current contract (repairs already ran inside the stage loop, BEFORE
-        # review — a post-review rewrite must never overwrite reviewed work).
-        if artifact_issues(workspace, definite_only=True) and self.registry is not None:
-            redo_id = next((sid for sid in reversed(list(outputs))
-                            if sid in self._redo), None)
-            for name in self._stage_caps.get(redo_id, {}):
-                self.registry.quarantine(
-                    name, "repeatedly produced defective artifact output")
-                self.tracer.event("capability.quarantined", name, status="failed",
-                                  reason="artifact defects persisted after repair")
+        # Persistent artifact defects at delivery: quarantine ONLY the tool the
+        # defect is causally attributable to. Attribution requires all three:
+        # the defective file lives in that capability's own output dir; the
+        # capability was NOT observed writing supplied content verbatim (a
+        # conduit cannot have introduced a content defect — blame belongs to
+        # the content's generator); and repair did not stall on an unchanged
+        # signature (an immovable finding indicts the DETECTOR, not the tool).
+        lingering = artifact_issues(workspace, definite_only=True)
+        if lingering and self.registry is not None:
+            if self._repair_stalled:
+                self.tracer.event("quarantine.skipped", "run", status="info",
+                                  reason="defect signature survived repair unchanged — "
+                                         "detector finding is suspect, no tool is blamed",
+                                  issues=lingering[:4])
+            else:
+                producers = {Path(d.split(" [", 1)[0]).parts[0]
+                             for d in lingering if "/" in d.split(" [", 1)[0]}
+                known = {n for caps in self._stage_caps.values() for n in caps}
+                for name in sorted(producers & known):
+                    if self._verbatim_caps.get(name):
+                        self.tracer.event("capability.exonerated", name, status="info",
+                                          reason="every observed write matched the supplied "
+                                                 "content byte-for-byte — the defect came "
+                                                 "from the content's generator, not this tool")
+                        continue
+                    self.registry.quarantine(
+                        name, "repeatedly produced defective artifact output")
+                    self.tracer.event("capability.quarantined", name, status="failed",
+                                      reason="artifact defects persisted after repair")
 
         # Objective-success classification (#17/#20): operational completion is
         # NOT objective success, and the reason names the failing DIMENSION.
@@ -966,6 +983,11 @@ class Orchestrator:
                                           task_context=task_context),
                 options,
             )
+
+            # Carry verbatim-conduit evidence to run level (quarantine happens
+            # at delivery, long after this attempt's monitor is gone).
+            for name, v in monitor.verbatim.items():
+                self._verbatim_caps[name] = self._verbatim_caps.get(name, True) and v
 
             # Reflect: did any tool this agent used degrade in practice?
             sick = [(name, reason) for name in caps if (reason := monitor.unhealthy(name))]

@@ -220,6 +220,17 @@ def build_caps_server(
             produced: list[str] = []
             if result.output_files and ws is not None:
                 produced = _save_outputs(ws, cap.name, result.output_files)
+                # Causal-attribution evidence: did this call persist supplied
+                # content EXACTLY? A write that matches its input byte-for-byte
+                # exonerates the tool from defects IN that content — those
+                # belong to whoever generated it.
+                if monitor is not None:
+                    supplied = [v.strip() for v in args.values()
+                                if isinstance(v, str) and len(v) >= 24]
+                    if supplied:
+                        monitor.note_verbatim(cap.name, all(
+                            data.decode("utf-8", errors="ignore").strip() in supplied
+                            for data in result.output_files.values()))
 
             # Observe what actually came back (ok / empty / error) — the silent
             # failure mode is exit 0 with no data.
