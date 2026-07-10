@@ -250,6 +250,25 @@ def test_artifact_issues_flags_real_truncation(tmp_path):
     assert definite and all("[definite]" in i for i in definite)
 
 
+def test_artifact_issues_ignores_css_js_and_flags_markup_leaks(tmp_path):
+    """CSS inside <style> is not visible text (the false positive that burned
+    repair cycles); raw markdown in RENDERED text and a path-as-title are
+    genuine defects (both observed in the delivered v0.3.0 artifact)."""
+    ws = tmp_path / "workspace" / "write_file"
+    ws.mkdir(parents=True)
+    (ws / "deck.html").write_text(
+        "<title>input/claude-ebook.pdf (30 pages, ~7,900 words)</title>"
+        "<style>.a{animation:x 4s linear infinite;transform-origin:720px 450px}</style>"
+        "<script>let x = {a: 1, b: 2}</script>"
+        "<p>**COMPOSABLE BY DESIGN** — animated dashed lines</p>"
+        "<p>A complete, well-formed sentence.</p>")
+    issues = artifact_issues(tmp_path / "workspace")
+    text = " ".join(issues)
+    assert "transform-origin" not in text          # CSS is not visible text
+    assert "raw markdown" in text                  # ** leaked into rendered copy
+    assert "file path" in text                     # <title> is a path, not a title
+
+
 def test_artifact_issues_clean_output(tmp_path):
     ws = tmp_path / "workspace" / "write_file"
     ws.mkdir(parents=True)

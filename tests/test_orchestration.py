@@ -321,6 +321,8 @@ def test_mechanical_defect_triggers_artifact_repair(tmp_path, monkeypatch):
             return "made the deck"
         if name == "make.fix":
             assert "reactive trigge" in prompt          # exact flagged string fed back
+            assert "CURRENT content" in prompt          # edits the REAL artifact, not blind
+            assert "MINIMAL" in prompt                  # targeted fix, no redesign
             (art / "deck.html").write_text("<p>event-driven coordination, fully explained.</p>")
             return "fixed the deck"
         return f"out({name})"
@@ -336,7 +338,9 @@ def test_mechanical_defect_triggers_artifact_repair(tmp_path, monkeypatch):
         answer = asyncio.run(orch.run("make a deck"))
     finally:
         bb.close()
-    assert answer == "fixed the deck"                   # repaired output delivered
+    assert answer.startswith("fixed the deck")          # repaired output delivered
+    assert "DELIVERABLE FILES" in answer                # engine lists real files
+    assert "deck.html" in answer
     assert orch.classification == "succeeded"           # defect resolved -> clean
     # Aggregate stage outputs exist for every stage (#24).
     assert (tmp_path / "runs" / "wf-rep" / "outputs" / "draft.md").exists()
