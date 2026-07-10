@@ -294,9 +294,11 @@ def test_source_evidence_reads_extraction_not_artifact(tmp_path):
     (ws / "read_pdf" / "report.txt").write_text("Title: Building Effective AI Agents. architecture.")
     (ws / "write_file").mkdir(parents=True)
     (ws / "write_file" / "deck.html").write_text("<h1>WHO IS CLAUDE</h1>")
-    ev = _source_evidence(ws)
+    # Reader dirs come from declared contracts (accepts), never hardcoded names.
+    ev = _source_evidence(ws, reader_dirs=("read_pdf",))
     assert "Building Effective AI Agents" in ev        # extraction IS source evidence
     assert "WHO IS CLAUDE" not in ev                   # the artifact is NOT
+    assert "Building" not in _source_evidence(ws)      # undeclared -> input/ only
 
 
 # --- #15 general-contract consolidation ------------------------------------------ #

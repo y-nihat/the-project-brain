@@ -186,17 +186,18 @@ def artifact_issues(workspace: Path, *, definite_only: bool = False) -> list[str
     return issues[:12]
 
 
-def _source_evidence(workspace: Path, limit: int = 6000) -> str:
-    """The run's ACTUAL source evidence: user inputs plus reader-tool extraction
-    outputs (not the artifact, not analysis prose). Review must trace claims to
-    THIS, so a theme hallucinated in an intermediate analysis but absent from the
-    source is caught (the ebook confabulation)."""
+def _source_evidence(workspace: Path, reader_dirs: tuple = (), limit: int = 6000) -> str:
+    """The run's ACTUAL source evidence: user inputs plus the outputs of
+    reader-class capabilities (identified by their declared contract — any tool
+    that declares `accepts` consumes files, so its output is extraction, not
+    synthesis). Review must trace claims to THIS, so a theme hallucinated in an
+    intermediate analysis but absent from the source is caught."""
     root = Path(workspace)
     if not root.is_dir():
         return ""
     parts: list[str] = []
     used = 0
-    for sub in ("input", "read_pdf", "read_file", "fetch_page_text"):
+    for sub in ("input", *reader_dirs):
         d = root / sub
         if not d.is_dir():
             continue
@@ -715,7 +716,7 @@ class Orchestrator:
                                  capabilities=stage.capabilities, depends_on=stage.depends_on)
                 caps = await self._acquire_caps(spec)
                 observed = _observed_artifacts(workspace)
-                source = _source_evidence(workspace)
+                source = _source_evidence(workspace, self._reader_dirs())
                 _art_issues = artifact_issues(workspace)
                 ctx = (
                     "DRAFT under review:\n---\n" + draft + "\n---\n\n"
@@ -831,6 +832,17 @@ class Orchestrator:
                                           allowed=("proceed", "inform_user"))
         if d.action == "inform_user" and self.broker is not None:
             self.broker.inform(d.message)
+
+    def _reader_dirs(self) -> tuple:
+        """Workspace dirs written by reader-class capabilities — identified by
+        their declared contract (`accepts` => consumes files => its output is
+        extraction/source evidence), never by hardcoded tool names."""
+        if self.registry is None:
+            return ()
+        try:
+            return tuple(c.name for c in self.registry.all() if c.accepts)
+        except Exception:  # noqa: BLE001
+            return ()
 
     def _evidence_capabilities(self, draft_stage: Optional[StageSpec]) -> list[str]:
         """Tools an evidence courier may use: whatever the draft's own evidence
