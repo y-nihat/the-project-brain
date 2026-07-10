@@ -5,7 +5,56 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
 [Semantic Versioning](https://semver.org/) — `0.x` while the core algorithm
 and behavior are still expected to change between releases.
 
-## [Unreleased]
+## [0.4.0] — 2026-07-10
+
+Grounding and attribution corrections from the v0.3.2 consumer review. The
+run could construct a good artifact from bad epistemic input, then reject it
+for the wrong mechanical reason — this release fixes both directions.
+
+### Fixed
+- **Evidence packet never empty**: budget-aware assembly (headers counted,
+  oversize extraction contributes a labeled partial chunk). Previously a first
+  file larger than the budget produced an EMPTY packet, so review ran without
+  ground truth exactly when the evidence was substantial.
+- **Detector confidence**: "definite" truncation now requires structural
+  evidence of a cut; unpunctuated lowercase captions ("How Claude works") are
+  at most a review-level suspicion — they no longer trigger rewrites,
+  a false `artifact=defective` dimension, or quarantine.
+- **Repair honesty**: the repair prompt embeds the artifact's whole content or
+  skips honestly (no silently clipped "CURRENT content"); an attempt that
+  leaves the defect signature unchanged stops the loop and marks the detector
+  suspect instead of re-running the same rewrite.
+- **Registry/manifest agreement**: quarantine and validation stamps are
+  mirrored into the human-facing manifest.
+
+### Added
+- **Typed output roles**: capabilities declare `emits` (observation | derived |
+  artifact | validation); ORIGINAL SOURCE EVIDENCE is routed by this
+  declaration only — consuming a file is not an epistemic role. Undeclared
+  output defaults to `derived` (fail-closed for evidence).
+- **Contract-fingerprint validation epoch**: validation stamps carry
+  ENGINE_VERSION plus a fingerprint of the authoring contract + probe suite,
+  so a contract change invalidates promoted capabilities without a release
+  bump; a file-consuming capability with no declared output role is stale by
+  construction and gets re-authored.
+- **Causal quarantine**: a capability is blamed for a delivery defect only if
+  the defective file lives in its own output directory, it was not observed
+  persisting supplied content verbatim (byte comparison at the runtime
+  boundary), and repair did not stall on an unchanged signature.
+- **Review verdict record**: `outputs/<review>.md` is written from the
+  reviewer's per-round verdicts, never the revised draft's self-description;
+  reviewers see artifact head AND tail; an empty evidence packet bars
+  approval; unknown load-bearing source facts route to `needs-evidence`.
+
+## [0.2.0 – 0.3.2] — 2026-07-09/10
+
+Tagged incrementally during consumer test cycles; see the annotated tags for
+details (`git tag -n9`): procedural-memory immune system, observation-based
+provenance, perception-first extraction, mechanical artifact repair,
+evidence-chain review, verbatim persistence contract, contract-based reader
+discovery.
+
+## [0.1.1] — 2026-07-09
 
 ### Epistemic-architecture hardening (from the 2026-07-08 MVP review)
 - **No fabricated evidence** (#1): generated capabilities must fail legibly when

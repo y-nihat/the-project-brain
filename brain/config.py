@@ -24,9 +24,12 @@ CAPABILITIES_STORE = DATA_DIR / "capabilities"   # promoted reusable tools (an o
 RUNS_DIR = DATA_DIR / "runs"          # per-run trace exports + created-tool artifacts
 
 # Engine version stamped onto every traced run (for reproducibility/regression)
-# AND onto capability validation stamps: bumping it marks all promoted
-# capabilities stale, forcing revalidation against the current probe battery.
-ENGINE_VERSION = "0.3.0"
+# AND onto capability validation stamps (as part of acquisition.validation_epoch(),
+# which also fingerprints the authoring contract + probe suite so a contract
+# change invalidates promoted capabilities even without a release bump).
+# KEEP IN LOCKSTEP WITH THE RELEASE TAG — a stale label here let a biased reader
+# skip revalidation for a whole release cycle.
+ENGINE_VERSION = "0.4.0"
 
 
 def _git_commit() -> str:
