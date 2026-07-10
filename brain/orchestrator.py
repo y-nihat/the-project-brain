@@ -118,17 +118,22 @@ def _batch_notes(notes: dict[str, str], limit: int) -> list[dict[str, str]]:
 
 
 def _truncation_confidence(frag: str) -> Optional[str]:
-    """High-confidence visible-text truncation, or None.
+    """Visible-text truncation confidence: 'definite', 'suspected', or None.
 
-    Flags a fragment cut mid-word/mid-clause: a 1-2 char trailing stub
-    ('Trust s'), a 'label: value' value cut short ('Source: analy'), or a
-    ≥3-word phrase ending in a lowercase word with no terminal punctuation
-    ('reactive trigge', '…and handle'). A phrase ending in a complete word or
-    acronym ('…Safety-First AI') is NOT flagged — the reported false positive.
-    Headings/titles are excluded by the caller."""
+    'definite' requires STRUCTURAL evidence of a cut — a 1-2 char trailing stub
+    ('Trust s'), a 'label: value' value cut short ('Source: analy'), a slashed
+    pair cut after the slash ('Violet/t'), or a bracket/quote opened but never
+    closed ('…(reactive trigge'). Only definite findings gate repair and
+    classification. A lowercase-ending phrase with no terminal punctuation is
+    merely 'suspected' — review context, never an automatic repair trigger:
+    ordinary captions ('How Claude works', 'Why it matters') look exactly like
+    that, and the false 'definite' burned two rewrites and quarantined a
+    healthy tool. Headings/titles are excluded by the caller."""
     f = frag.strip()
     if not f or f[-1] in ".!?)]\"'”’:":       # terminal punctuation -> complete
         return None
+    if re.search(r"\w{2,}/[A-Za-z]$", f):     # "Violet/t" — pair cut after the slash
+        return "definite"
     words = f.split()
     if len(words) < 2:
         return None
@@ -163,26 +168,30 @@ def artifact_issues(workspace: Path, *, definite_only: bool = False) -> list[str
     for p in sorted(root.rglob("*")):
         if not p.is_file() or (p.relative_to(root).parts[:1] in (("prior",), ("input",))):
             continue
-        try:
+        rel = p.relative_to(root)  # path names the PRODUCING capability's dir —
+        try:                       # defects must be attributable to their producer
             text = p.read_text(errors="strict")
         except (UnicodeDecodeError, OSError):
             continue
         # A rendered artifact whose <title> is a file path has no real title.
         t = re.search(r"<title[^>]*>([^<]*)</title>", text, re.IGNORECASE)
         if t and re.search(r"[\w-]+/[\w-]+|\.\w{2,4}\b", t.group(1)):
-            issues.append(f"{p.name} [definite]: <title> is a file path/metadata, not a "
+            issues.append(f"{rel} [definite]: <title> is a file path/metadata, not a "
                           f"title — “{t.group(1).strip()[:60]}”")
         body = heading.sub(" ", invisible.sub(" ", text))
         for frag in re.findall(r">([^<>]{12,})<", body):
             f = frag.strip()
             # Markup leaking into RENDERED text: markdown in HTML visible text.
             if re.search(r"\*\*[^*]+\*\*|(?:^|\s)##+\s", f):
-                issues.append(f"{p.name} [definite]: raw markdown in rendered text — "
+                issues.append(f"{rel} [definite]: raw markdown in rendered text — "
                               f"“{f[:45]}”")
                 continue
             conf = _truncation_confidence(f)
-            if conf and (conf == "definite" or not definite_only):
-                issues.append(f"{p.name} [{conf}]: truncated text — “…{f[-45:]}”")
+            if conf == "definite":
+                issues.append(f"{rel} [definite]: truncated text — “…{f[-45:]}”")
+            elif conf and not definite_only:
+                issues.append(f"{rel} [suspected]: possibly cut short (or just an "
+                              f"unpunctuated caption — judge in context) — “…{f[-45:]}”")
     return issues[:12]
 
 
@@ -275,6 +284,8 @@ class Orchestrator:
         # Executive judgment (None => no supervision; the session wires one in).
         self.supervisor = supervisor
         self._sessions = 0
+        self._repair_stalled = False
+        self._verbatim_caps: dict[str, bool] = {}
 
     # ------------------------------------------------------------------ #
     # run
@@ -334,6 +345,8 @@ class Orchestrator:
         self._review_ran = False
         self._review_approved = False
         self._blocked = False
+        self._repair_stalled = False    # unchanged defect signature -> detector suspect
+        self._verbatim_caps: dict[str, bool] = {}  # cap -> every observed write was verbatim
 
         last_done: Optional[str] = None
         failure_note: Optional[str] = None
@@ -441,21 +454,45 @@ class Orchestrator:
                                 out: str) -> str:
         """Bounded mechanical repair of engine-detected artifact defects,
         editing against the artifact's REAL current content (never a blind
-        regeneration from notes)."""
+        regeneration from notes). Two honesty guards: a file too large for the
+        prompt is never presented as a silently-clipped 'CURRENT content' (the
+        clip itself creates truncation), and an attempt that leaves the defect
+        signature UNCHANGED stops the loop — repeating it can only burn budget,
+        and an immovable finding means the DETECTOR is the suspect."""
+        prev: Optional[list[str]] = None
         for attempt in range(1, config.ARTIFACT_REPAIRS + 1):
             defects = artifact_issues(workspace, definite_only=True)
             if not defects:
                 break
+            if defects == prev:
+                self._repair_stalled = True
+                self.tracer.event("artifact.repair.stalled", stage_id, status="failed",
+                                  attempt=attempt, issues=defects[:6],
+                                  note="defect signature unchanged after repair — "
+                                       "detector finding is suspect; not retrying")
+                break
+            prev = defects
             # The current content of each defective file IS the base to edit.
             current: list[str] = []
             names = {d.split(" [", 1)[0] for d in defects}
             for p in sorted(Path(workspace).rglob("*")):
-                if p.is_file() and p.name in names:
+                if p.is_file() and str(p.relative_to(workspace)) in names:
                     try:
-                        current.append(f"=== {p.name} (CURRENT content) ===\n"
-                                       + p.read_text(errors="ignore")[:24000])
+                        text = p.read_text(errors="ignore")
                     except OSError:
-                        pass
+                        continue
+                    if len(text) > config.REPAIR_MAX_CONTENT_CHARS:
+                        # A clipped prefix labeled "CURRENT content" makes the
+                        # repairer re-emit a truncated file — skip, honestly.
+                        self.tracer.event("artifact.repair.skipped", stage_id,
+                                          status="info", file=p.name, size=len(text),
+                                          reason="file exceeds the repair prompt budget; "
+                                                 "left to review instead of clipping it")
+                        continue
+                    current.append(f"=== {p.relative_to(workspace)} "
+                                   f"(CURRENT content, complete) ===\n{text}")
+            if not current:
+                break
             self.tracer.event("artifact.repair", stage_id, status="info",
                               attempt=attempt, issues=defects[:6])
             out = await self._redo[stage_id](

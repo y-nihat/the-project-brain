@@ -166,6 +166,11 @@ REDUCE_MAX_INPUT_CHARS = int(os.environ.get("REDUCE_MAX_INPUT_CHARS", "100000"))
 # Bounded attempts to auto-repair MECHANICAL artifact defects (truncation etc.)
 # detected by the engine — separate budget from semantic review rounds (#19/#21).
 ARTIFACT_REPAIRS = int(os.environ.get("ARTIFACT_REPAIRS", "2"))
+# Largest artifact the repair prompt may embed WHOLE. A file over this is left
+# to review rather than silently clipped: a 24k-char prefix labeled "CURRENT
+# content" made the repairer re-emit a truncated file — the exact defect the
+# mechanism exists to fix.
+REPAIR_MAX_CONTENT_CHARS = int(os.environ.get("REPAIR_MAX_CONTENT_CHARS", "120000"))
 # Longest dependency chain at/above which the engine appends a review stage even
 # without user evidence — very deep synthesis chains accumulate distortion (#13).
 # (The primary trigger is user-evidence transformation, not depth.)
