@@ -154,7 +154,12 @@ def artifact_issues(workspace: Path, *, definite_only: bool = False) -> list[str
     issues: list[str] = []
     if not root.is_dir():
         return issues
-    heading = re.compile(r"<(h[1-6]|title)[^>]*>.*?</\1>", re.IGNORECASE | re.DOTALL)
+    heading = re.compile(r"<(h[1-6])[^>]*>.*?</\1>", re.IGNORECASE | re.DOTALL)
+    # CSS/JS/comments are NOT visible text — scanning them produced false
+    # "truncation" like 'transform-origin:720px 450px}' that burned repair
+    # cycles and regressed a reviewed artifact.
+    invisible = re.compile(r"<(style|script)[^>]*>.*?</\1>|<!--.*?-->",
+                           re.IGNORECASE | re.DOTALL)
     for p in sorted(root.rglob("*")):
         if not p.is_file() or (p.relative_to(root).parts[:1] in (("prior",), ("input",))):
             continue
@@ -162,11 +167,22 @@ def artifact_issues(workspace: Path, *, definite_only: bool = False) -> list[str
             text = p.read_text(errors="strict")
         except (UnicodeDecodeError, OSError):
             continue
-        body = heading.sub(" ", text)
+        # A rendered artifact whose <title> is a file path has no real title.
+        t = re.search(r"<title[^>]*>([^<]*)</title>", text, re.IGNORECASE)
+        if t and re.search(r"[\w-]+/[\w-]+|\.\w{2,4}\b", t.group(1)):
+            issues.append(f"{p.name} [definite]: <title> is a file path/metadata, not a "
+                          f"title — “{t.group(1).strip()[:60]}”")
+        body = heading.sub(" ", invisible.sub(" ", text))
         for frag in re.findall(r">([^<>]{12,})<", body):
-            conf = _truncation_confidence(frag)
+            f = frag.strip()
+            # Markup leaking into RENDERED text: markdown in HTML visible text.
+            if re.search(r"\*\*[^*]+\*\*|(?:^|\s)##+\s", f):
+                issues.append(f"{p.name} [definite]: raw markdown in rendered text — "
+                              f"“{f[:45]}”")
+                continue
+            conf = _truncation_confidence(f)
             if conf and (conf == "definite" or not definite_only):
-                issues.append(f"{p.name} [{conf}]: truncated text — “…{frag.strip()[-45:]}”")
+                issues.append(f"{p.name} [{conf}]: truncated text — “…{f[-45:]}”")
     return issues[:12]
 
 
@@ -350,6 +366,18 @@ class Orchestrator:
                 agg.parent.mkdir(parents=True, exist_ok=True)
                 agg.write_text(f"# {stage.id} [{stage.pattern}] — aggregate output\n\n{out or ''}")
 
+            # Mechanical artifact repair, IN the loop so a later review stage
+            # judges the REPAIRED artifact and nothing rewrites reviewed work.
+            # Repairs edit against the ACTUAL file content with minimal-change
+            # instructions — a blind regeneration was observed to regress a
+            # reviewed artifact back to hallucinated content.
+            if stage.id in self._redo:
+                out = await self._repair_artifacts(stage.id, outputs, workspace, out)
+                if outputs[stage.id] != out:
+                    outputs[stage.id] = out
+                    self.blackboard.put(f"output:{stage.id}", out)
+                last_done = stage.id
+
             # Executive check: does what just happened still serve the objective?
             if self.supervisor is not None and len(stages) > 1:
                 d = await self.supervisor.consult(
@@ -372,42 +400,18 @@ class Orchestrator:
         if failure_note:
             answer = (answer + "\n\n" + failure_note).strip()
 
-        # Mechanical artifact repair (#19): high-confidence defects are
-        # deterministic fixes — send them back to the generating stage on a
-        # budget SEPARATE from semantic review rounds. If they PERSIST after the
-        # budget, the generator itself is broken: quarantine the capabilities
-        # that stage used so the next run re-authors them (#E: repair the
-        # procedure, not just rerun it).
-        for attempt in range(1, config.ARTIFACT_REPAIRS + 1):
-            defects = artifact_issues(workspace, definite_only=True)
-            if not defects:
-                break
+        # Persistent artifact defects at delivery mean the generating tool
+        # itself is broken: quarantine it so the next run re-authors under the
+        # current contract (repairs already ran inside the stage loop, BEFORE
+        # review — a post-review rewrite must never overwrite reviewed work).
+        if artifact_issues(workspace, definite_only=True) and self.registry is not None:
             redo_id = next((sid for sid in reversed(list(outputs))
                             if sid in self._redo), None)
-            if redo_id is None:
-                break
-            self.tracer.event("artifact.repair", redo_id, status="info",
-                              attempt=attempt, issues=defects[:6])
-            fixed = await self._redo[redo_id](
-                "MECHANICAL DEFECTS detected in the produced artifact — fix EXACTLY these "
-                "(complete every truncated fragment with real content; use sentence-aware "
-                "compression, never raw character slicing):\n"
-                + "\n".join(f"- {i}" for i in defects), outputs[redo_id])
-            outputs[redo_id] = fixed
-            self.blackboard.put(f"output:{redo_id}", fixed)
-            if redo_id == last_done:
-                answer = fixed if not failure_note else (fixed + "\n\n" + failure_note).strip()
-        else:
-            # Budget exhausted with defects still present: the generator is at
-            # fault. Quarantine its tools so procedural memory self-heals.
-            if artifact_issues(workspace, definite_only=True) and self.registry is not None:
-                redo_id = next((sid for sid in reversed(list(outputs))
-                                if sid in self._redo), None)
-                for name in self._stage_caps.get(redo_id, {}):
-                    self.registry.quarantine(
-                        name, "repeatedly produced truncated artifact output")
-                    self.tracer.event("capability.quarantined", name, status="failed",
-                                      reason="artifact truncation persisted after repair")
+            for name in self._stage_caps.get(redo_id, {}):
+                self.registry.quarantine(
+                    name, "repeatedly produced defective artifact output")
+                self.tracer.event("capability.quarantined", name, status="failed",
+                                  reason="artifact defects persisted after repair")
 
         # Objective-success classification (#17/#20): operational completion is
         # NOT objective success, and the reason names the failing DIMENSION.
@@ -417,11 +421,51 @@ class Orchestrator:
         if self.classification != "succeeded":
             answer = (f"[result: {self.classification.upper()}] {reason}\n\n" + answer).strip()
 
+        # The deliverable is the FILES, not the producing agent's self-account:
+        # list them with observed facts so the answer cannot overclaim.
+        produced = [(p.relative_to(workspace), p.stat().st_size)
+                    for p in sorted(workspace.rglob("*"))
+                    if p.is_file() and p.relative_to(workspace).parts[0] not in ("prior", "input")]
+        if produced:
+            answer += ("\n\n---\nDELIVERABLE FILES (as actually produced this run):\n"
+                       + "\n".join(f"- workspace/{rel} ({size:,} bytes)" for rel, size in produced))
+
         self.blackboard.put("answer", answer)
         answer_dir = Path(config.RUNS_DIR) / self.session / "outputs"
         answer_dir.mkdir(parents=True, exist_ok=True)
         (answer_dir / "ANSWER.md").write_text(answer or "")
         return answer or "(no answer produced)"
+
+    async def _repair_artifacts(self, stage_id: str, outputs: dict, workspace: Path,
+                                out: str) -> str:
+        """Bounded mechanical repair of engine-detected artifact defects,
+        editing against the artifact's REAL current content (never a blind
+        regeneration from notes)."""
+        for attempt in range(1, config.ARTIFACT_REPAIRS + 1):
+            defects = artifact_issues(workspace, definite_only=True)
+            if not defects:
+                break
+            # The current content of each defective file IS the base to edit.
+            current: list[str] = []
+            names = {d.split(" [", 1)[0] for d in defects}
+            for p in sorted(Path(workspace).rglob("*")):
+                if p.is_file() and p.name in names:
+                    try:
+                        current.append(f"=== {p.name} (CURRENT content) ===\n"
+                                       + p.read_text(errors="ignore")[:24000])
+                    except OSError:
+                        pass
+            self.tracer.event("artifact.repair", stage_id, status="info",
+                              attempt=attempt, issues=defects[:6])
+            out = await self._redo[stage_id](
+                "MECHANICAL DEFECTS in the produced artifact. Make MINIMAL, TARGETED edits to "
+                "the CURRENT content below — fix ONLY the flagged defects (complete truncated "
+                "fragments with real content, remove raw markup from rendered text, give the "
+                "artifact a real title); do NOT redesign, restructure, or change anything "
+                "else. Re-emit the full corrected artifact.\n\nDEFECTS:\n"
+                + "\n".join(f"- {d}" for d in defects)
+                + "\n\n" + "\n\n".join(current), out)
+        return out
 
     def _classify(self, had_failure: bool, workspace: Path) -> tuple[str, str]:
         """Map the run to succeeded | partial | unverified | blocked, with the
