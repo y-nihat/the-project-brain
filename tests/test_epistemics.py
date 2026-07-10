@@ -480,6 +480,31 @@ def test_repair_embeds_complete_content_or_skips(tmp_path, monkeypatch):
     assert "guidance" not in seen                       # no clipped repair attempt ran
 
 
+def test_locate_evidence_settles_claims_by_direct_lookup(tmp_path):
+    """A reviewer adjudicates 'is this figure in the source?' by lookup, not by
+    asking the producing stage: a tool-less follow-up agent testified a verbatim
+    source figure ('90.2%') was 'possibly hallucinated', and a TRUE claim was
+    removed on that false testimony."""
+    from brain.orchestrator import _locate_evidence
+    ws = tmp_path / "workspace"
+    (ws / "read_doc").mkdir(parents=True)
+    (ws / "read_doc" / "extract.txt").write_text(
+        "multi-agent systems \noutperform single-agent systems by 90.2%. Also:\n"
+        "20 to 60 percent \nproductivity gains were reported.")
+    (ws / "write_out").mkdir(parents=True)
+    (ws / "write_out" / "deck.html").write_text("<p>93.7% invented figure</p>")
+
+    hit = _locate_evidence(ws, ("read_doc",), "90.2%")
+    assert hit.startswith("FOUND") and "extract.txt:2" in hit
+    # Matches across the evidence file's line wrapping.
+    assert _locate_evidence(ws, ("read_doc",), "20 to 60 percent productivity").startswith("FOUND")
+    # An absent figure gets an authoritative NOT FOUND — that IS the adjudication.
+    assert _locate_evidence(ws, ("read_doc",), "93.7%").startswith("NOT FOUND")
+    # Artifacts are never searched: a draft must not confirm itself.
+    assert "deck.html" not in _locate_evidence(ws, ("read_doc",), "93.7%")
+    assert "too short" in _locate_evidence(ws, ("read_doc",), "%")
+
+
 def test_review_record_is_the_aggregate_authority(tmp_path, monkeypatch):
     """outputs/<review>.md must carry the reviewer's verdicts — not the revised
     draft's self-description ('All reviewer defects resolved' while the final

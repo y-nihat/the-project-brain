@@ -198,6 +198,67 @@ def artifact_issues(workspace: Path, *, definite_only: bool = False) -> list[str
     return issues[:12]
 
 
+def _locate_evidence(workspace: Path, reader_dirs: tuple, query: str,
+                     context: int = 240, max_matches: int = 8) -> str:
+    """Deterministic claim lookup over the run's ORIGINAL evidence (user inputs
+    + observation-role extractions — never artifacts, which would let a draft
+    confirm itself). A reviewer must adjudicate 'is this number/quote in the
+    source?' by DIRECT LOOKUP, not by asking the stage that produced the draft:
+    a tool-less follow-up agent answers from its own prose memory and was
+    observed testifying a verbatim source figure was 'possibly hallucinated' —
+    a true claim got removed on false testimony."""
+    q = " ".join(str(query or "").split())
+    if len(q) < 3:
+        return "query too short — give the exact number/phrase/quote to locate."
+    root = Path(workspace)
+    hits: list[str] = []
+    searched = 0
+    for sub in ("input", *reader_dirs):
+        d = root / sub
+        if not d.is_dir():
+            continue
+        for p in sorted(d.rglob("*")):
+            if not p.is_file() or len(hits) >= max_matches:
+                continue
+            try:
+                raw = p.read_text(errors="strict")
+            except (UnicodeDecodeError, OSError):
+                continue
+            searched += 1
+            # Evidence files wrap mid-sentence (PDF extraction), so match on
+            # whitespace-collapsed text and map back for line numbers.
+            flat, positions = [], []
+            last_ws = True
+            for i, ch in enumerate(raw):
+                if ch.isspace():
+                    if not last_ws:
+                        flat.append(" ")
+                        positions.append(i)
+                    last_ws = True
+                else:
+                    flat.append(ch)
+                    positions.append(i)
+                    last_ws = False
+            flat_s = "".join(flat).lower()
+            start = 0
+            while len(hits) < max_matches:
+                j = flat_s.find(q.lower(), start)
+                if j < 0:
+                    break
+                orig = positions[j]
+                line = raw.count("\n", 0, orig) + 1
+                lo, hi = max(0, j - context), min(len(flat_s), j + len(q) + context)
+                snippet = "".join(flat[lo:hi]).strip()
+                hits.append(f"[{p.relative_to(root)}:{line}] …{snippet}…")
+                start = j + max(1, len(q))
+    if not hits:
+        return (f"NOT FOUND: {q!r} does not occur in any evidence file "
+                f"(searched {searched} file(s) under input/ and "
+                f"{list(reader_dirs) or 'no extraction dirs'}). If a draft asserts it "
+                "as a source fact, it is unsupported.")
+    return f"FOUND {len(hits)} match(es) for {q!r}:\n" + "\n".join(hits)
+
+
 def _source_evidence(workspace: Path, reader_dirs: tuple = (), limit: int = 6000) -> str:
     """The run's ACTUAL source evidence: user inputs plus the outputs of
     reader-class capabilities (identified by their declared contract — any tool
@@ -786,6 +847,8 @@ class Orchestrator:
             "\n\nSUCCESS CRITERIA (compiled from the user's objective — check the deliverable "
             "against EACH; an unmet criterion is grounds to revise):\n"
             + "\n".join(f"- {c}" for c in self._criteria) if self._criteria else "")
+        evidence_server = {"evidence": self._evidence_server(workspace)}
+        evidence_tools = ["mcp__evidence__locate_evidence"]
         try:
             for rnd in range(1, max(1, stage.rounds) + 1):
                 spec = AgentSpec(id=f"{stage.id}.r{rnd}", role=stage.role, goal=stage.goal,
@@ -829,21 +892,26 @@ class Orchestrator:
                       "APPROVE only when load-bearing claims trace to the ORIGINAL SOURCE, the source "
                       "identity is consistent, and the criteria are met — style is NOT grounds for "
                       "revision. "
+                      "ADJUDICATE BY LOOKUP: before declaring any specific claim (a number, "
+                      "quotation, name, title) unverified or fabricated, call locate_evidence with "
+                      "the exact string — FOUND means grounded (cite the location); NOT FOUND after "
+                      "lookup means unsupported. Never settle a claim's presence by asking the stage "
+                      "that produced it: a follow-up agent answers from memory, not the files. "
                       "Your FIRST line must be exactly one of: 'VERDICT: approved' — "
                       "'VERDICT: revise' (problems fixable from the existing evidence) — "
                       "'VERDICT: needs-evidence' (a load-bearing claim can only be settled by fetching "
                       "a specific missing source; then list EXACTLY what to fetch). A load-bearing "
                       "source fact that is UNKNOWN from the evidence shown (e.g. the source's actual "
-                      "title/identity) is exactly the 'needs-evidence' case — never settle it by "
-                      "asking the stage under review to confirm its own claims. If revising, follow "
+                      "title/identity) is exactly the 'needs-evidence' case. If revising, follow "
                       "with a numbered list of specific, actionable fixes."
                 )
                 critique = await self._run_agent_with_reflection(
-                    spec, caps, objective, {}, history, workspace, task_context=ctx)
+                    spec, caps, objective, {}, history, workspace, task_context=ctx,
+                    extra_servers=evidence_server, extra_tools=evidence_tools)
                 m = _VERDICT_RE.search(critique or "")
                 verdict = m.group(1).lower() if m else "approved"
                 record.append({"round": rnd, "verdict": verdict,
-                               "critique": (critique or "").strip()[:1500]})
+                               "critique": (critique or "").strip()[:4000]})
                 self.tracer.event("review.verdict", stage.id, status="info",
                                   round=rnd, verdict=verdict, parsed=bool(m))
                 if verdict == "approved":
@@ -863,7 +931,8 @@ class Orchestrator:
                         fetched = await self._run_agent_with_reflection(
                             courier, await self._acquire_caps(courier), objective, {},
                             history, workspace,
-                            task_context="The reviewer needs this evidence:\n" + critique)
+                            task_context="The reviewer needs this evidence:\n" + critique,
+                            extra_servers=evidence_server, extra_tools=evidence_tools)
                     evidence[courier.id] = fetched
                     extra = "\n\nNEWLY FETCHED EVIDENCE (courier):\n" + fetched[:20000]
 
@@ -995,9 +1064,36 @@ class Orchestrator:
         return await self._run_agent_with_reflection(
             spec, {}, objective, {}, history, workspace, task_context=ctx, team=False)
 
+    def _evidence_server(self, workspace: Path):
+        """In-process MCP server giving verification-role agents deterministic,
+        engine-side claim lookup over the original evidence — cheap perception
+        (look it up) instead of social epistemology (ask a colleague's memory)."""
+        from claude_agent_sdk import create_sdk_mcp_server, tool
+
+        reader_dirs = self._reader_dirs()
+
+        @tool("locate_evidence",
+              "Search the run's ORIGINAL evidence (user inputs + raw extractions) for an "
+              "exact number/phrase/quote. Returns each match with file, line, and context, "
+              "or an authoritative NOT FOUND. Use it to settle any disputed claim by "
+              "direct lookup before calling it unverified or fabricated.",
+              {"type": "object", "properties": {"query": {"type": "string"}},
+               "required": ["query"]})
+        async def locate_evidence(args):
+            result = _locate_evidence(workspace, reader_dirs, args.get("query", ""))
+            self.tracer.event("review.lookup", "evidence", status="info",
+                              query=str(args.get("query", ""))[:120],
+                              found=result.startswith("FOUND"))
+            return {"content": [{"type": "text", "text": result}]}
+
+        return create_sdk_mcp_server(name="evidence", version="1.0.0",
+                                     tools=[locate_evidence])
+
     async def _run_agent_with_reflection(self, spec, caps, objective, upstream, history,
                                          workspace, task_context: Optional[str] = None,
-                                         model: Optional[str] = None, team: bool = True) -> str:
+                                         model: Optional[str] = None, team: bool = True,
+                                         extra_servers: Optional[dict] = None,
+                                         extra_tools: Optional[list] = None) -> str:
         """Run an agent; if a tool it relied on degrades at runtime, reflect —
         repair that tool and re-run the agent — bounded, then best-effort."""
         from .capabilities.health import HealthMonitor
@@ -1018,6 +1114,8 @@ class Orchestrator:
         allowed = [f"mcp__caps__{name}" for name in caps]
         if channel is not None:
             allowed = allowed + TEAM_TOOLS
+        if extra_tools:
+            allowed = allowed + list(extra_tools)
         session_secrets = getattr(self.broker, "secrets", {}) or {}
         ready = [c.name for c in caps.values()
                  if c.requires_credential and session_secrets.get(c.requires_credential)]
@@ -1036,6 +1134,8 @@ class Orchestrator:
                     secrets=getattr(self.broker, "secrets", None))
             if channel is not None:
                 servers["team"] = build_team_server(channel)
+            if extra_servers:
+                servers.update(extra_servers)
             options = factory.locked_session(
                 system_prompt=system_prompt,
                 mcp_servers=servers,

@@ -5,6 +5,19 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
 [Semantic Versioning](https://semver.org/) — `0.x` while the core algorithm
 and behavior are still expected to change between releases.
 
+## [0.4.1] — 2026-07-10
+
+### Added
+- **Deterministic claim lookup for reviewers** (`locate_evidence`): an
+  engine-side tool that searches the run's original evidence (user inputs +
+  observation-role extractions, never artifacts) for an exact number/phrase
+  and returns located context or an authoritative NOT FOUND. In the v0.4.0
+  validation run the reviewer settled "is 90.2% in the source?" by asking the
+  producing stage — a tool-less follow-up answering from prose memory — which
+  wrongly testified the verbatim source figure was "possibly hallucinated",
+  and a TRUE claim was removed. Disputed claims are now adjudicated by direct
+  lookup; upstream self-testimony is explicitly barred.
+
 ## [0.4.0] — 2026-07-10
 
 Grounding and attribution corrections from the v0.3.2 consumer review. The
