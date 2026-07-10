@@ -144,8 +144,11 @@ def _truncation_confidence(frag: str) -> Optional[str]:
         return "definite"                     # "Trust s"
     if re.search(r"[:\-]\s+[a-z]{2,8}$", f):  # "Source: analy"
         return "definite"
-    if last.islower() and len(words) >= 3:    # "reactive trigge", "…and handle"
-        return "definite"
+    if last[-1].isalpha() and last.islower() and any(
+            f.count(o) > f.count(c) for o, c in ("()", "[]", "{}", "“”")):
+        return "definite"                     # "…(reactive trigge" — structure left open
+    if last.islower() and len(words) >= 4:    # sentence-shaped, may just be a caption
+        return "suspected"
     return None
 
 
@@ -214,25 +217,37 @@ def _source_evidence(workspace: Path, reader_dirs: tuple = (), limit: int = 6000
             if not p.is_file():
                 continue
             try:
-                head = p.read_text(errors="strict")[:limit]
+                text = p.read_text(errors="strict")
             except (UnicodeDecodeError, OSError):
                 continue
-            chunk = f"[source: {p.relative_to(root)}]\n{head}\n"
-            if used + len(chunk) > limit:
-                break
-            parts.append(chunk)
-            used += len(chunk)
+            # Budget-aware assembly: the header counts INSIDE the budget and an
+            # oversize first file is included PARTIALLY, never skipped — the old
+            # break-on-overflow returned an EMPTY packet exactly when the
+            # extraction was substantial, so review ran with no ground truth.
+            header = f"[source: {p.relative_to(root)}]\n"
+            room = limit - used - len(header) - 1
+            if room < 200:
+                return "\n".join(parts)
+            body = text[:room]
+            if len(text) > room:
+                body += f"\n[…evidence continues: {len(text) - room:,} more chars in this file]"
+            parts.append(header + body + "\n")
+            used += len(header) + len(body) + 2
     return "\n".join(parts)
 
 
 def _observed_artifacts(workspace: Path, limit: int = 1500) -> str:
-    """Read the HEADS of files the run actually produced, so a reviewer/supervisor
-    judges the real artifact rather than an agent's description of it. Generic
-    across modalities — text is shown, binaries are noted by size."""
+    """Read the HEAD and TAIL of files the run actually produced, so a
+    reviewer/supervisor judges the real artifact rather than an agent's
+    description of it. The tail matters: 'is the file complete / properly
+    closed' is a fact the reviewer must be able to OBSERVE, not ask the
+    producing agent to confirm about its own work. Generic across modalities —
+    text is shown, binaries are noted by size."""
     root = Path(workspace)
     if not root.is_dir():
         return ""
     parts: list[str] = []
+    tail_len = max(200, limit // 4)
     for p in sorted(root.rglob("*")):
         if not p.is_file():
             continue
@@ -240,10 +255,16 @@ def _observed_artifacts(workspace: Path, limit: int = 1500) -> str:
         if rel.parts and rel.parts[0] in ("prior", "input"):
             continue  # prior-run seeds and user inputs are not THIS run's output
         try:
-            head = p.read_text(errors="strict")[:limit]
-            parts.append(f"[{rel}] ({p.stat().st_size} bytes):\n{head}")
+            text = p.read_text(errors="strict")
         except (UnicodeDecodeError, OSError):
             parts.append(f"[{rel}] ({p.stat().st_size} bytes, binary)")
+            continue
+        if len(text) <= limit + tail_len:
+            parts.append(f"[{rel}] ({p.stat().st_size} bytes, complete):\n{text}")
+        else:
+            parts.append(
+                f"[{rel}] ({p.stat().st_size} bytes; head and tail shown):\n{text[:limit]}"
+                f"\n[…{len(text) - limit - tail_len:,} chars omitted…]\n{text[-tail_len:]}")
     return "\n\n".join(parts)
 
 
@@ -760,6 +781,7 @@ class Orchestrator:
         verdict = "revise"
         couriers_left = config.REVIEW_EVIDENCE_FETCHES
         self._review_ran = True
+        record: list[dict] = []   # authoritative per-round verdict record
         criteria_block = (
             "\n\nSUCCESS CRITERIA (compiled from the user's objective — check the deliverable "
             "against EACH; an unmet criterion is grounds to revise):\n"
@@ -772,18 +794,27 @@ class Orchestrator:
                 observed = _observed_artifacts(workspace)
                 source = _source_evidence(workspace, self._reader_dirs())
                 _art_issues = artifact_issues(workspace)
+                inp = workspace / "input"
+                no_source = ("" if source or not (inp.is_dir() and any(inp.iterdir())) else
+                             "NO ORIGINAL SOURCE EVIDENCE could be assembled, although the user "
+                             "supplied input files. You cannot approve grounding you cannot see: "
+                             "your verdict MUST be 'needs-evidence' (name the extraction needed) "
+                             "or 'revise' — never 'approved'.\n\n")
                 ctx = (
                     "DRAFT under review:\n---\n" + draft + "\n---\n\n"
                     + (f"ORIGINAL SOURCE EVIDENCE (the user's actual inputs / raw extraction — the "
                        f"ground truth every claim must ultimately trace to):\n{source}\n\n"
                        if source else "")
+                    + no_source
                     + ("UPSTREAM ANALYSIS (an intermediate transformation — do NOT treat this as "
                        "ground truth; it may itself contain unsupported claims):\n"
                        + _notes_block(evidence, limit) + "\n\n" if evidence else "")
                     + (f"OBSERVED ARTIFACT FILES actually produced this run (judge THESE, not the "
                        f"draft's self-description of them):\n{observed}\n\n" if observed else "")
                     + criteria_block
-                    + (f"ARTIFACT DEFECTS the engine already detected (must be fixed):\n"
+                    + (f"ARTIFACT ISSUES the engine detected ([definite] must be fixed; "
+                       f"[suspected] is an unverified hint — judge it in context, an "
+                       f"unpunctuated caption is NOT a defect):\n"
                        f"{chr(10).join('- ' + i for i in _art_issues)}\n\n" if _art_issues else "")
                     + "\nTRACE THE EVIDENCE CHAIN: artifact claim -> upstream analysis -> ORIGINAL "
                       "SOURCE EVIDENCE. A claim that appears in the analysis but is NOT supported by "
@@ -801,17 +832,23 @@ class Orchestrator:
                       "Your FIRST line must be exactly one of: 'VERDICT: approved' — "
                       "'VERDICT: revise' (problems fixable from the existing evidence) — "
                       "'VERDICT: needs-evidence' (a load-bearing claim can only be settled by fetching "
-                      "a specific missing source; then list EXACTLY what to fetch). If revising, follow "
+                      "a specific missing source; then list EXACTLY what to fetch). A load-bearing "
+                      "source fact that is UNKNOWN from the evidence shown (e.g. the source's actual "
+                      "title/identity) is exactly the 'needs-evidence' case — never settle it by "
+                      "asking the stage under review to confirm its own claims. If revising, follow "
                       "with a numbered list of specific, actionable fixes."
                 )
                 critique = await self._run_agent_with_reflection(
                     spec, caps, objective, {}, history, workspace, task_context=ctx)
                 m = _VERDICT_RE.search(critique or "")
                 verdict = m.group(1).lower() if m else "approved"
+                record.append({"round": rnd, "verdict": verdict,
+                               "critique": (critique or "").strip()[:1500]})
                 self.tracer.event("review.verdict", stage.id, status="info",
                                   round=rnd, verdict=verdict, parsed=bool(m))
                 if verdict == "approved":
                     self._review_approved = True
+                    self._write_review_record(stage.id, record, "approved")
                     return draft
 
                 extra = ""
@@ -841,12 +878,32 @@ class Orchestrator:
             # unverified, honestly labeled.
             self.tracer.event("review.failed", stage.id, status="failed",
                               error=f"{type(e).__name__}: {str(e)[:300]}")
+            self._write_review_record(
+                stage.id, record, f"errored ({type(e).__name__}) — draft delivered UNVERIFIED")
             return (draft + f"\n\n[engine note] the verification stage failed "
                             f"({type(e).__name__}: {str(e)[:200]}); this draft is delivered UNVERIFIED.")
 
         self.tracer.event("review.exhausted", stage.id, status="failed", rounds=stage.rounds)
+        self._write_review_record(
+            stage.id, record,
+            f"{verdict} — rounds exhausted; the final round's critique was NOT applied "
+            "(a repair without a budgeted re-verification would ship unreviewed work)")
         return (draft + f"\n\n[engine note] review flagged unresolved issues after "
                         f"{stage.rounds} round(s); see outputs/{stage.id}.r*.md for the critique.")
+
+    def _write_review_record(self, stage_id: str, record: list[dict], final: str) -> None:
+        """The review stage's aggregate output is the REVIEWER'S verdict record —
+        never the revised draft's self-description (observed: outputs/review.md
+        claimed 'all defects resolved' while the final structured verdict was
+        'revise'; structured state and narration must not disagree)."""
+        agg = Path(config.RUNS_DIR) / self.session / "outputs" / f"{stage_id}.md"
+        agg.parent.mkdir(parents=True, exist_ok=True)
+        lines = [f"# {stage_id} [review] — verdict record (authoritative)", "",
+                 f"**FINAL: {final}**", ""]
+        for r in record:
+            lines += [f"## round {r['round']} — VERDICT: {r['verdict']}", "",
+                      r["critique"], ""]
+        agg.write_text("\n".join(lines))
 
     def _digest(self, pending: Optional[str] = None,
                 just_completed: Optional[tuple] = None) -> str:

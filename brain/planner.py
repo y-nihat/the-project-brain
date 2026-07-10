@@ -79,8 +79,10 @@ _SYSTEM = (
     "must meet, derived from THIS objective's explicit demands — counts ('exactly 3 sections'), "
     "formats ('self-contained HTML'), fidelity ('every claim traceable to the provided file'), "
     "constraints ('under 40 words'), and self-consistency ('the final answer accurately "
-    "describes the artifact produced'). Derive them from the request; never emit a fixed "
-    "template. A reviewer will check the deliverable against them.\n"
+    "describes the artifact produced'). Fidelity criteria must bind to the USER'S ORIGINAL "
+    "source/evidence, never to an intermediate stage's notes — 'traceable to the analysis' "
+    "permits a perfectly analysis-consistent fabrication. Derive them from the request; never "
+    "emit a fixed template. A reviewer will check the deliverable against them.\n"
     "You MUST call `emit_plan` exactly once with the full workflow and must NOT answer in prose."
 )
 
