@@ -1,5 +1,30 @@
 # Contributing & Git workflow
 
+## Architectural invariant — the core loop (read this first)
+
+The brain's core loop is fixed and every change must preserve it:
+
+> **analyze the incoming task → break it down into steps → identify the
+> requirements → generate the agents and tools needed to fulfill them →
+> execute.**
+
+Concretely: the planner derives the workflow and success criteria from the
+objective (never from a template); each stage declares what it needs; the
+resolver reuses or the brain authors the capabilities; agents are synthesized
+per stage; execution runs under supervision and review.
+
+Two rules follow:
+
+1. **No scenario-specific changes.** An engine change must be statable as a
+   sentence with no task, topic, or tool NAME in it. Tools are identified by
+   their declared contracts (e.g. `accepts`, `requires_credential`), never by
+   name. A fix derived from a failing task must address the general failure
+   class, not the task.
+2. **No fixed pipelines.** Never hardcode a stage sequence, a predefined agent
+   role, or a task-shaped branch into the engine. Safety/quality machinery
+   (validation, provenance, review, repair) wraps the loop; it must never
+   replace or bypass the planner's per-objective design.
+
 A lightweight, industry-standard git workflow so changes stay easy to track.
 Until we publish to GitHub we manage everything locally.
 
