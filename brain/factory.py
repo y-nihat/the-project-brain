@@ -110,6 +110,14 @@ def agent_system_prompt(spec: AgentSpec, allowed_tools: list[str],
         "evidence, and flag anything you could not ground in a real source."
     )
     lines.append(
+        "RENDERED ARTIFACTS: when the deliverable is something an audience will view (HTML, "
+        "a document, slides), author the COMPLETE final content yourself and pass it whole to "
+        "a file-writing tool. Visible text must be real, finished copy exactly as the audience "
+        "should read it — never markdown markup (**, ##), never your design meta-commentary "
+        "('animated dashed lines, violet palette'), never truncated fragments. Give it a real "
+        "title. Describe your design in YOUR OWN output; keep it out of the artifact's text."
+    )
+    lines.append(
         "SOURCE ANCHORING: when working from a provided document, anchor on what the SOURCE "
         "actually contains — its real title and its recurring terms. Do NOT import background "
         "associations you happen to know about the subject or its publisher: if a concept "
