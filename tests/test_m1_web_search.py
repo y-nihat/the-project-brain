@@ -170,6 +170,8 @@ def test_author_file_consuming_tool(tmp_path):
             "sample_input": {"files": ["a.txt", "b.txt"]},
             "sample_files": {"a.txt": "A", "b.txt": "B"},
             "requires_credential": None,
+            # File-consuming tools MUST declare their output role (typed evidence).
+            "emits": "derived",
         }
 
     try:
@@ -178,6 +180,7 @@ def test_author_file_consuming_tool(tmp_path):
             developer=stub_developer, description="combine input files", tracer=tracer,
         ))
         assert cap.verified and reg.get("combiner").verified
+        assert reg.get("combiner").emits == "derived"
         assert ledger.find_leaks("author-file") == []
     finally:
         mgr.close()
