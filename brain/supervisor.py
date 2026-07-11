@@ -38,6 +38,13 @@ _SYSTEM = (
     "EXPLICIT requirements (a stated count, a required deliverable, a demanded format). "
     "`guidance` is a concrete instruction for the fix. Not for taste.\n"
     "- abort: continuing is clearly harmful or pointless.\n"
+    "inform_user messages are NONBLOCKING NOTICES — the run continues immediately; never "
+    "phrase one as a question or a set of options awaiting the user's choice.\n"
+    "STATE DISCIPLINE: the digest's structured facts (REVIEW VERDICTS, observed files) "
+    "are authoritative over any stage's own prose — never assert 'verified', 'approved', "
+    "'grounded', or 'criteria met' unless the structured state says so. A failed or "
+    "empty observation is NOT evidence of absence in the source: 'the channel returned "
+    "nothing' never becomes 'the source lacks it'.\n"
     "Be decisive, be brief, and call `emit_decision` exactly once."
 )
 

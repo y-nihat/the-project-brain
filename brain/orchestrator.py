@@ -375,6 +375,7 @@ class Orchestrator:
         self._replans = 0
         self._gaps_seen = 0
         self._criteria: list[str] = []
+        self._review_verdicts: list[str] = []
 
     # ------------------------------------------------------------------ #
     # run
@@ -441,6 +442,7 @@ class Orchestrator:
             workflow._transformation_depth(stages) >= config.REVIEW_DEPTH_THRESHOLD
         self._review_ran = False
         self._review_approved = False
+        self._review_verdicts: list[str] = []   # authoritative, in round order
         self._blocked = False
         self._repair_stalled = False    # unchanged defect signature -> detector suspect
         self._verbatim_caps: dict[str, bool] = {}  # cap -> every observed write was verbatim
@@ -521,6 +523,12 @@ class Orchestrator:
             await self._maybe_extend(stages, i, objective, outputs)
 
         answer = outputs.get(last_done, "") if last_done else "No stages were produced."
+        # The PURE deliverable — before any engine banner/note/appendix — gets
+        # its own channel: "exactly one paragraph" must have a file that IS
+        # exactly one paragraph, whatever the terminal envelope shows.
+        deliverable_dir = Path(config.RUNS_DIR) / self.session / "outputs"
+        deliverable_dir.mkdir(parents=True, exist_ok=True)
+        (deliverable_dir / "DELIVERABLE.md").write_text(answer or "")
         if failure_note:
             answer = (answer + "\n\n" + failure_note).strip()
 
@@ -723,6 +731,7 @@ class Orchestrator:
                           else "not-approved" if self._review_ran
                           else "not-required" if not self._high_risk else "missing"),
             "criteria": ("approved" if self._review_approved
+                         else "assessed-not-approved" if self._review_ran
                          else "not-assessed" if self._criteria else "none-compiled"),
             "artifact": "defective" if issues else "ok",
             "blockers": "fatal" if fatal else ("open" if blockers else "none"),
@@ -975,11 +984,15 @@ class Orchestrator:
                 source = _source_evidence(workspace, self._reader_dirs())
                 _art_issues = artifact_issues(workspace)
                 inp = workspace / "input"
-                no_source = ("" if source or not (inp.is_dir() and any(inp.iterdir())) else
-                             "NO ORIGINAL SOURCE EVIDENCE could be assembled, although the user "
-                             "supplied input files. You cannot approve grounding you cannot see: "
-                             "your verdict MUST be 'needs-evidence' (name the extraction needed) "
-                             "or 'revise' — never 'approved'.\n\n")
+                evidence_expected = self._high_risk or (inp.is_dir() and any(inp.iterdir()))
+                no_source = ("" if source or not evidence_expected else
+                             "NO ORIGINAL SOURCE EVIDENCE could be assembled, although this run "
+                             "derives claims from user-referenced sources (attached files and/or "
+                             "remote locators). You cannot approve grounding you cannot see, and "
+                             "reasoning over upstream narration instead is exactly the failure "
+                             "this block exists to prevent: your verdict MUST be "
+                             "'needs-evidence' (name the observation/extraction needed — a "
+                             "courier will fetch and RETAIN it) or 'revise' — never 'approved'.\n\n")
                 ctx = (
                     "DRAFT under review:\n---\n" + draft + "\n---\n\n"
                     + (f"ORIGINAL SOURCE EVIDENCE (the user's actual inputs / raw extraction — the "
@@ -1029,6 +1042,7 @@ class Orchestrator:
                 verdict = m.group(1).lower() if m else "approved"
                 record.append({"round": rnd, "verdict": verdict,
                                "critique": (critique or "").strip()[:4000]})
+                self._review_verdicts.append(verdict)
                 self.tracer.event("review.verdict", stage.id, status="info",
                                   round=rnd, verdict=verdict, parsed=bool(m))
                 if verdict == "approved":
@@ -1103,6 +1117,12 @@ class Orchestrator:
         if self._criteria:
             lines.append("\nSUCCESS CRITERIA (from the objective — the deliverable must meet these):")
             lines += [f"- {c}" for c in self._criteria]
+        if self._review_verdicts:
+            lines.append(
+                "\nREVIEW VERDICTS so far (AUTHORITATIVE, in round order): "
+                + ", ".join(self._review_verdicts)
+                + " — never describe the work as verified/approved/grounded unless "
+                  "this says approved; stage prose claiming success is not state.")
         if self._outputs:
             lines.append("")
             lines.append("COMPLETED STAGE OUTPUTS (heads — already streamed to the user's terminal):")
