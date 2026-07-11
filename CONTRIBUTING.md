@@ -13,6 +13,13 @@ objective (never from a template); each stage declares what it needs; the
 resolver reuses or the brain authors the capabilities; agents are synthesized
 per stage; execution runs under supervision and review.
 
+The loop may RE-ENTER itself mid-run: when execution reveals an unmet
+observation need (an agent reports that the objective depends on something its
+tools cannot establish), the engine re-enters at "identify the requirements"
+for the residual need — the planner extends the plan, the brain acquires the
+missing methods, execution continues. Iteration is part of the loop;
+replacing it is not.
+
 Two rules follow:
 
 1. **No scenario-specific changes.** An engine change must be statable as a

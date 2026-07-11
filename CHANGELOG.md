@@ -5,6 +5,55 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
 [Semantic Versioning](https://semver.org/) — `0.x` while the core algorithm
 and behavior are still expected to change between releases.
 
+## [0.5.0] — 2026-07-11
+
+The adaptive-control release, from the first non-document consumer test (a
+remote-source summary). The exposed failure class: the system was open-loop at
+the knowledge level — a familiar mechanism substituted for the method the
+objective required, its insufficient yield changed nothing, the gap was filled
+from remembered narration, and the result shipped as "grounded and
+criteria-consistent" with nothing ever assessed.
+
+### Added
+- **The loop re-enters on unmet observation needs**: agents declare that the
+  objective depends on something their tools cannot observe
+  (`report_evidence_gap`); the orchestrator re-enters the core loop at
+  "identify the requirements" — the planner extends the running plan for the
+  residual need (new stages, new capabilities where none fit), extension
+  stages run before any pending review and feed its evidence. Bounded by
+  `REPLANS_PER_RUN`.
+- **Evidentiary yield ≠ operational health**: observers report `coverage` and
+  `unresolved_needs`; partial yield surfaces as an engine note steering the
+  agent to the gap signal instead of letting exit-0 read as knowledge.
+- **Remote sources are first-class evidence**: remote locators in the
+  objective gate grounding review exactly like attached files; observers
+  report `source_refs` and persist raw retrieved payloads so review and
+  `locate_evidence` reach them; provenance says "observed remote source(s)"
+  instead of "from arguments only".
+- **Blocker severity**: a fatal blocker is authoritative run state — it can
+  prevent SUCCEEDED.
+
+### Fixed
+- **Classification honesty**: grounding and criteria dimensions distinguish
+  approved / not-required / not-assessed; the success reason states exactly
+  what was and was not verified; the supervisor consults on single-stage runs
+  too; the deliverable-files appendix is labeled engine audit.
+- **Memory laundering**: injected prior-run answers are labeled
+  narration-not-evidence (hypothesis; re-establish or deliver as unverified).
+- **Consolidation residue**: promotion strips remote locators and
+  output-shape policy from capability descriptions.
+
+### Deferred (tracked as issues)
+Decision-profile model routing, explicit competing-hypothesis state, abstract
+strategy memory, typed multimodal observation flow, full deliverable/audit
+envelope separation.
+
+## [0.4.2] — 2026-07-10
+
+Evidence-surface resilience: a mislabeled extractor can no longer silence the
+evidence layer (observation-role capabilities preferred, file-consuming
+fallback; validators/artifact producers always excluded).
+
 ## [0.4.1] — 2026-07-10
 
 ### Added
