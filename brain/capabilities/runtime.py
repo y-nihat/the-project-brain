@@ -52,12 +52,17 @@ def incompatible_refs(file_refs, accepts: list[str]) -> list[str]:
 def provenance_line(cap_name: str, file_refs, meta) -> str:
     """Provenance from what the tool REPORTS it observed (#10), not routing.
 
-    Tools' output contract includes `consumed_inputs` (files actually read) and
-    optionally `generated`/`generated_fixtures`. Routed-but-unconsumed files are
-    flagged; unreported consumption is marked unverified rather than trusted."""
+    Tools' output contract includes `consumed_inputs` (files actually read),
+    `source_refs` (remote locators actually accessed) and optionally
+    `generated`/`generated_fixtures`. Routed-but-unconsumed files are flagged;
+    unreported consumption is marked unverified rather than trusted. A tool
+    that genuinely observed a REMOTE source is not 'from arguments only' —
+    that wording erased real observations from the evidence model."""
     meta = meta if isinstance(meta, dict) else {}
     generated = bool(meta.get("generated") or meta.get("generated_fixtures"))
     routed = [str(r) for r in (file_refs or [])]
+    remote = meta.get("source_refs")
+    remote = [str(s)[:120] for s in remote][:6] if isinstance(remote, list) else []
     consumed = meta.get("consumed_inputs")
     if isinstance(consumed, list):
         consumed = [str(c) for c in consumed]
@@ -65,15 +70,21 @@ def provenance_line(cap_name: str, file_refs, meta) -> str:
         parts = []
         if consumed:
             parts.append(f"derived by '{cap_name}' from consumed input(s): {consumed}")
+        elif remote:
+            parts.append(f"observed by '{cap_name}' from remote source(s): {remote}")
         else:
             parts.append(f"'{cap_name}' consumed NO input files — result is NOT derived "
                          "from user evidence")
+        if consumed and remote:
+            parts.append(f"also observed remote source(s): {remote}")
         if ignored:
             parts.append(f"routed but NOT consumed (result is NOT derived from these): {ignored}")
         if generated:
             parts.append("contains GENERATED/FIXTURE content — NON-EVIDENCE, never present it "
                          "as coming from a user document")
         return "; ".join(parts)
+    if remote:
+        return f"observed by '{cap_name}' from remote source(s): {remote}"
     if routed:
         return (f"routed input(s) {routed} to '{cap_name}', but the tool did not report "
                 "consumed_inputs — treat any 'derived from these files' assumption as UNVERIFIED")
@@ -260,6 +271,22 @@ def build_caps_server(
             if rclass == health_mod.EMPTY:
                 text += ("\n\n[engine note] this returned NO results. If this keeps happening the "
                          "tool may be degraded — vary your query or stop and report the limitation.")
+            # Evidentiary yield ≠ operational health: an exit-0 result that
+            # covers only part of what was asked is a KNOWLEDGE gap, and the
+            # agent must route it to the controller, never paper over it.
+            coverage = str(meta.get("coverage", "")) if isinstance(meta, dict) else ""
+            needs = meta.get("unresolved_needs") if isinstance(meta, dict) else None
+            needs = [str(n)[:120] for n in needs][:5] if isinstance(needs, list) else []
+            if coverage in ("partial", "none") or needs:
+                if tracer is not None:
+                    tracer.event("evidence.gap", cap.name, status="info",
+                                 coverage=coverage or "unreported", needs=needs)
+                text += ("\n\n[engine note] evidentiary yield: coverage="
+                         + (coverage or "unreported")
+                         + (f"; unresolved: {needs}" if needs else "")
+                         + " — if the objective depends on what was NOT observed, call "
+                           "report_evidence_gap instead of filling the gap from memory "
+                           "or plausibility.")
             return {"content": [{"type": "text", "text": text}]}
 
         return handler
