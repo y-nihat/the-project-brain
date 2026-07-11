@@ -5,6 +5,34 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
 [Semantic Versioning](https://semver.org/) — `0.x` while the core algorithm
 and behavior are still expected to change between releases.
 
+## [0.5.1] — 2026-07-11
+
+Corrections from the v0.5.0 rerun of the remote-source test (the loop worked:
+gap → replan → review gate → honest UNVERIFIED; these fix what the working
+loop exposed).
+
+### Fixed
+- **Remote observers can no longer skip the staleness gate**: any capability
+  that observes (files or network) without a declared output role is stale by
+  construction; legacy descriptions are normalized on revalidation (URLs,
+  output policy) so residue stops anchoring plans.
+- **Extension retargets the review**: the extension's terminal stage becomes
+  the artifact-of-record — reviewed and repairable — instead of repair
+  rerunning the superseded original stage.
+- **Strategy adjudication on replan**: the extension planner must compare
+  materially different methods, choose by epistemic fit before cost, justify
+  proxies, and emit a traced `strategy_rationale`; mechanism-bound success
+  criteria are recompilable (and initial planning is barred from writing
+  them).
+- **Empty evidence plane bars approval on any high-risk run**, not only
+  attached-file runs; the criteria dimension distinguishes
+  assessed-not-approved from not-assessed.
+- **One authoritative state**: the supervisor reads the review verdicts and
+  cannot assert verified/approved against them; inform_user is a nonblocking
+  notice; failed observation ≠ observed absence (agents and supervisor).
+- **Pure deliverable channel**: `outputs/DELIVERABLE.md` holds the deliverable
+  with no engine banner/note/appendix.
+
 ## [0.5.0] — 2026-07-11
 
 The adaptive-control release, from the first non-document consumer test (a
