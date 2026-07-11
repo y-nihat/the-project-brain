@@ -90,7 +90,10 @@ _SYSTEM = (
     "constraints ('under 40 words'), and self-consistency ('the final answer accurately "
     "describes the artifact produced'). Fidelity criteria must bind to the USER'S ORIGINAL "
     "source/evidence, never to an intermediate stage's notes — 'traceable to the analysis' "
-    "permits a perfectly analysis-consistent fabrication. Derive them from the request; never "
+    "permits a perfectly analysis-consistent fabrication — and never to YOUR CHOSEN "
+    "MECHANISM: 'traceable to the transcript' freezes a method assumption that becomes "
+    "incompatible with the objective the moment that channel yields nothing; write "
+    "'traceable to observations of the source' instead. Derive them from the request; never "
     "emit a fixed template. A reviewer will check the deliverable against them.\n"
     "You MUST call `emit_plan` exactly once with the full workflow and must NOT answer in prose."
 )
@@ -99,9 +102,24 @@ _EXTEND_ADDENDUM = (
     "EXTENSION MODE: a run of this workflow is ALREADY EXECUTING and has reported "
     "specific observation needs its current methods cannot establish. Do NOT re-plan "
     "completed work. Emit ONLY the additional stages that observe what is missing. "
-    "Derive the method from the NEED, not from what happens to exist: if no current "
-    "capability can observe the required property, name a NEW capability for it. "
-    "New stages may depend on the existing stage ids provided in the prompt."
+    "New stages may depend on the existing stage ids provided in the prompt.\n"
+    "STRATEGY ADJUDICATION (required): before choosing, enumerate the materially "
+    "different ways the missing property could be established — direct observation of "
+    "the designated target; a transformation that PRESERVES the needed property; an "
+    "authoritative first-party description; independent secondary descriptions (a "
+    "PROXY: evidence of what others say, not of the target itself); or honest "
+    "abstention. Choose by EPISTEMIC FIT FIRST — how directly and reliably the method "
+    "observes the requested property — then cost. A cheap, familiar method that cannot "
+    "observe the property must not win over a feasible source-aligned one; if you "
+    "select a proxy, state why more direct routes are infeasible or disproportionate. "
+    "Put this comparison in `strategy_rationale` (it is traced and audited). If no "
+    "current capability can observe the required property, name a NEW capability for "
+    "it — the system builds tools at runtime; do not settle for a near-miss.\n"
+    "CRITERIA RECOMPILATION: if an existing success criterion encodes the FAILED "
+    "mechanism (e.g. binds claims to a channel that yielded nothing), emit a revised "
+    "`success_criteria` list — preserve every demand of the user's objective and its "
+    "explicit output constraints; only the method-bound assumptions may change, and "
+    "claims established via a proxy must be required to CARRY that limitation."
 )
 
 _PLAN_SCHEMA = {
@@ -126,6 +144,9 @@ _PLAN_SCHEMA = {
             },
         },
         "success_criteria": {"type": "array", "items": {"type": "string"}},
+        # Extension mode: the comparison of candidate methods and why the
+        # chosen one best observes the missing property (audited).
+        "strategy_rationale": {"type": "string"},
     },
     "required": ["stages"],
 }
@@ -246,6 +267,11 @@ class Planner:
         stages, warnings = normalize_stages(raw)
         for w in warnings:
             self.tracer.event("plan.normalized", "planner.extend", status="info", warning=w)
+        rationale = str(captured.get("strategy_rationale") or "").strip()
+        self.tracer.event("plan.strategy", "planner.extend",
+                          status="info" if rationale else "failed",
+                          rationale=rationale[:1500] or "(none recorded — availability "
+                          "may have functioned as the implicit rule)")
         # normalize_stages drops deps outside ITS list — restore references to
         # already-executed stages (that linkage is the point of an extension).
         raw_deps = {str(r.get("id")): [str(d) for d in (r.get("depends_on") or [])]
@@ -255,7 +281,8 @@ class Planner:
             for d in raw_deps.get(s.id, []):
                 if d in known and d not in s.depends_on:
                     s.depends_on.append(d)
-        return [s for s in stages if s.id not in known]
+        criteria = [str(c) for c in (captured.get("success_criteria") or []) if str(c).strip()]
+        return [s for s in stages if s.id not in known], criteria
 
 
 class StubPlanner:

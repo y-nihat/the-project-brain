@@ -653,29 +653,49 @@ class Orchestrator:
         self._replans += 1
         completed = "\n".join(f"[{sid}] {(out or '')[:400]}" for sid, out in outputs.items())
         try:
-            new_stages = await extend(objective, completed, gaps,
-                                      [s.id for s in stages])
+            result = await extend(objective, completed, gaps,
+                                  [s.id for s in stages])
         except Exception as e:  # noqa: BLE001 — replanning must never kill the run
             self.tracer.event("plan.extend.failed", "planner", status="failed",
                               error=f"{type(e).__name__}: {str(e)[:200]}")
             return
+        # A strategy change may invalidate criteria that encoded the FAILED
+        # mechanism ("traceable to the transcript" after the transcript yielded
+        # nothing) — the planner may recompile them; the user's objective and
+        # explicit constraints stay authoritative.
+        new_stages, new_criteria = (result if isinstance(result, tuple)
+                                    else (result, []))
+        if new_criteria:
+            self.tracer.event("plan.criteria.recompiled", "planner", status="info",
+                              before=self._criteria, after=new_criteria)
+            self._criteria = list(new_criteria)
         if not new_stages:
             self.tracer.event("plan.extended", "planner", status="info",
                               added=[], note="no feasible additional observation")
             return
         # Insert before the first still-pending review so the verifier judges
-        # the run WITH the new evidence; the new stages' notes join its
-        # evidence set (deps after the first are evidence-only).
+        # the run WITH the new evidence.
         insert_at = next((j for j in range(i + 1, len(stages))
                           if stages[j].pattern == REVIEW), len(stages))
         for off, s in enumerate(new_stages):
             stages.insert(insert_at + off, s)
             self._stages_by_id[s.id] = s
         if insert_at + len(new_stages) < len(stages):
+            # Graph reconciliation, not just insertion: the extension's LAST
+            # stage is the new artifact-of-record, so the review must treat IT
+            # as the draft it verifies and repairs (deps[0]); the superseded
+            # draft and the other new stages become evidence. Observed failure:
+            # review kept repairing the original stage while the extension's
+            # synthesis stage — the actual deliverable — sat unreviewable as
+            # evidence-only.
             pending_review = stages[insert_at + len(new_stages)]
-            for s in new_stages:
-                if s.id not in pending_review.depends_on:
-                    pending_review.depends_on.append(s.id)
+            terminal = new_stages[-1].id
+            evidence = [d for d in pending_review.depends_on if d != terminal] + \
+                       [s.id for s in new_stages[:-1]
+                        if s.id not in pending_review.depends_on]
+            pending_review.depends_on = [terminal] + evidence
+            self.tracer.event("review.retargeted", pending_review.id, status="info",
+                              draft=terminal, evidence=evidence)
         self.tracer.event("plan.extended", "planner", status="info",
                           added=[s.id for s in new_stages],
                           needs=[g.get("need", "")[:120] for g in gaps])
