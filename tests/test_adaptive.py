@@ -10,7 +10,7 @@ import pytest
 
 from brain import acquisition, config, workflow
 from brain.memory.blackboard import Blackboard
-from brain.models import StageSpec
+from brain.models import Capability, StageSpec
 from brain.orchestrator import _EXTERNAL_LOCATOR, Orchestrator
 from brain.planner import StubPlanner
 
@@ -175,7 +175,14 @@ def test_extension_lands_before_pending_review_and_feeds_it(tmp_path, monkeypatc
         bb.close()
     assert planner.extend_calls == 1
     assert ran.index("gather") < ran.index("review.r1")   # extension precedes review
-    assert "gather" in orch._stages_by_id["review"].depends_on  # review sees its notes
+    # Graph reconciliation: the extension's terminal stage is the new
+    # artifact-of-record — review must treat IT as the draft it verifies and
+    # repairs (deps[0]), with the superseded draft demoted to evidence.
+    # Observed failure: repair reran the original stage while the extension's
+    # synthesis sat unreviewable as evidence-only.
+    review = orch._stages_by_id["review"]
+    assert review.depends_on[0] == "gather"
+    assert "draft" in review.depends_on[1:]
     assert orch.classification == "succeeded"
 
 
@@ -206,12 +213,16 @@ def test_success_reason_never_asserts_unassessed_criteria(tmp_path, monkeypatch)
 def test_url_objective_without_approval_is_unverified(tmp_path, monkeypatch):
     """A one-stage summary of a linked source can no longer ship as grounded
     when nothing checked its claims: the engine appends review, and a
-    non-approving review yields UNVERIFIED."""
+    non-approving review yields UNVERIFIED. With an EMPTY evidence plane on a
+    high-risk run, the reviewer is barred from approving outright (observed:
+    16 empty lookups, then two rounds reasoned over upstream narration)."""
     monkeypatch.setattr(config, "RUNS_DIR", tmp_path / "runs")
     bb = Blackboard(tmp_path / "b.db", "url")
+    review_prompts: list[str] = []
 
     async def runner(tracer, name, prompt, options):
         if name.startswith("review.r"):
+            review_prompts.append(prompt)
             return "VERDICT: revise\n1. claims not traceable to the source"
         return "summary from metadata"
 
@@ -225,6 +236,65 @@ def test_url_objective_without_approval_is_unverified(tmp_path, monkeypatch):
         bb.close()
     assert orch.classification == "unverified"
     assert "UNVERIFIED" in answer
+    # No retained evidence + user-referenced remote source => approval barred.
+    assert "NO ORIGINAL SOURCE EVIDENCE" in review_prompts[0]
+    # Pure deliverable channel: exactly the stage output, no banner/appendix.
+    pure = (tmp_path / "runs" / "url" / "outputs" / "DELIVERABLE.md").read_text()
+    assert "UNVERIFIED" not in pure and "engine audit" not in pure
+
+
+def test_extension_can_recompile_mechanism_bound_criteria(tmp_path, monkeypatch):
+    """A criterion that froze the failed mechanism ('traceable to the
+    transcript') must be revisable when the strategy changes — the reviewers
+    were observed stuck with a contract incompatible with the objective."""
+    monkeypatch.setattr(config, "RUNS_DIR", tmp_path / "runs")
+    bb = Blackboard(tmp_path / "b.db", "recompile")
+
+    class RecompilingPlanner(ExtendingPlanner):
+        async def extend(self, objective, completed, gaps, existing_ids):
+            stages = await super().extend(objective, completed, gaps, existing_ids)
+            return stages, ["claims traceable to observations of the source "
+                            "(proxy-derived claims carry that limitation)"]
+
+    async def runner(tracer, name, prompt, options):
+        if name == "a":
+            bb.put("evidence.gaps", [{"agent": "a", "need": "actual content"}])
+        return f"{name} out"
+
+    planner = RecompilingPlanner(
+        [StageSpec(id="a", pattern="single", role="A", goal="g")],
+        [StageSpec(id="b", pattern="single", role="B", goal="g", depends_on=["a"])],
+        criteria=["every claim traceable to the transcript retrieved this run"])
+    orch = Orchestrator(session="recompile", manager=None, ledger=None, registry=None,
+                        blackboard=bb, broker=None, planner=planner, resolver=None,
+                        session_runner=runner)
+    try:
+        asyncio.run(orch.run("describe the thing"))
+    finally:
+        bb.close()
+    assert orch._criteria == ["claims traceable to observations of the source "
+                              "(proxy-derived claims carry that limitation)"]
+
+
+def test_revalidation_rejects_pre_contract_remote_observer(tmp_path):
+    """Network observers escaped the staleness gate (only file consumers were
+    checked): two remote tools were re-stamped under a new epoch declaring no
+    output role — the evidence plane failed open for their whole class."""
+    from brain.registry import Registry
+
+    reg = Registry(tmp_path / "r.db", tmp_path / "store")
+    legacy = Capability(name="net_observer", description="d", image_tag="i:1",
+                        command=["x"], input_schema={"type": "object", "properties": {}},
+                        env_map={"q": "Q"}, network="bridge", verified=True)
+    reg.add(legacy)
+    ok, reason = acquisition.revalidate_capability(reg.get("net_observer"), None, reg)
+    assert not ok and "older capability contract" in reason
+    # A local pure generator (no files, no network) is not an observer at all.
+    gen = Capability(name="gen", description="d", image_tag="i:1", command=["x"],
+                     input_schema={"type": "object", "properties": {}}, env_map={},
+                     network="none", verified=True)
+    assert acquisition._declares_inputs(gen, {}) is False
+    reg.close()
 
 
 def test_fatal_blocker_prevents_succeeded(tmp_path, monkeypatch):
