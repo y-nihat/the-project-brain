@@ -1304,6 +1304,18 @@ class Orchestrator:
                             ok, reason = await asyncio.to_thread(
                                 revalidate_capability, cap, self.manager, self.registry)
                         if ok:
+                            # Legacy migration rides on revalidation: promoted
+                            # descriptions predating consolidation hygiene may
+                            # still carry task residue (originating URL, output
+                            # policy) — normalize before re-trusting, or the
+                            # residue keeps anchoring every future plan.
+                            from .acquisition import generalize_description
+                            clean = generalize_description(cap.description)
+                            if clean != cap.description:
+                                cap.description = clean
+                                self.registry.add(cap)
+                                self.tracer.event("capability.normalized", cap.name,
+                                                  status="info", description=clean[:200])
                             self.registry.stamp_validated(cap.name, epoch)
                         else:
                             self.registry.quarantine(cap.name, reason)

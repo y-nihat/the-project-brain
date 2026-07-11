@@ -113,6 +113,9 @@ def web_search_capability() -> Capability:
         network="bridge",
         tags=["web_search", "research"],
         verified=False,
+        # Discovery-class observation: snippets are retained evidence of what
+        # the index returned, NOT of the linked pages' full content.
+        emits="observation",
     )
 
 
@@ -387,15 +390,21 @@ def revalidate_capability(cap: Capability, manager, registry) -> tuple[bool, str
     against an already-promoted capability before it is reused. Rebuilds the
     image from the stored build context if it is missing. Returns (ok, reason).
 
-    A capability whose declared contract predates the current one (a
-    file-consuming tool with no `emits` output-role declaration) is STALE by
+    A capability whose declared contract predates the current one is STALE by
     construction — probes cannot verify semantics the contract never asked it
-    to declare, so it must be re-authored, not re-stamped."""
-    if not cap.emits and (cap.accepts or
-                          "files" in ((cap.input_schema or {}).get("properties") or {})):
-        return False, ("authored under an older capability contract: consumes files but "
-                       "declares no `emits` output role, so its output cannot be routed "
-                       "as evidence — re-author under the current contract")
+    to declare, so it must be re-authored, not re-stamped. This covers EVERY
+    evidence-producing class: file consumers (accepts/files) AND remote
+    observers (network access) — two network observers were re-stamped under
+    a new epoch while declaring no output role, no source_refs, and retaining
+    no payloads, so the whole evidence plane failed open for their class."""
+    observes = (cap.accepts
+                or "files" in ((cap.input_schema or {}).get("properties") or {})
+                or (cap.network or "none") != "none")
+    if not cap.emits and observes:
+        return False, ("authored under an older capability contract: it observes "
+                       "(consumes files or reaches external sources) but declares no "
+                       "`emits` output role, so its output cannot be routed as "
+                       "evidence — re-author under the current contract")
     try:
         try:
             manager.ensure_image(cap.image_tag)
