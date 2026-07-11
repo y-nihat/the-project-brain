@@ -372,6 +372,9 @@ class Orchestrator:
         self._sessions = 0
         self._repair_stalled = False
         self._verbatim_caps: dict[str, bool] = {}
+        self._replans = 0
+        self._gaps_seen = 0
+        self._criteria: list[str] = []
 
     # ------------------------------------------------------------------ #
     # run
@@ -509,6 +512,12 @@ class Orchestrator:
                         outputs[stage.id] = out
                         self.blackboard.put(f"output:{stage.id}", out)
 
+            # Feedback transition: an agent reported that the objective depends
+            # on something its tools could not OBSERVE. Re-enter the core loop
+            # for the residual need — plan additional observation, acquire the
+            # tools for it, keep executing. Bounded; never a task-shaped branch.
+            await self._maybe_extend(stages, i, objective, outputs)
+
         answer = outputs.get(last_done, "") if last_done else "No stages were produced."
         if failure_note:
             answer = (answer + "\n\n" + failure_note).strip()
@@ -621,23 +630,86 @@ class Orchestrator:
                 + "\n\n" + "\n\n".join(current), out)
         return out
 
+    async def _maybe_extend(self, stages: list, i: int, objective: str,
+                            outputs: dict) -> None:
+        """Bounded mid-run re-entry of the core loop (analyze → requirements →
+        acquire → execute) for UNMET OBSERVATION NEEDS agents reported via
+        report_evidence_gap. The alternative method is induced from the need by
+        the planner — never from a domain branch in the engine. Observed
+        failure this closes: 'transcript unavailable' changed the data but not
+        the strategy, and the gap was filled from remembered narration."""
+        if self.blackboard is None or self._replans >= config.REPLANS_PER_RUN:
+            return
+        extend = getattr(self.planner, "extend", None)
+        if extend is None:
+            return
+        gaps = (self.blackboard.get("evidence.gaps", []) or [])[self._gaps_seen:]
+        if not gaps:
+            return
+        self._gaps_seen += len(gaps)
+        self._replans += 1
+        completed = "\n".join(f"[{sid}] {(out or '')[:400]}" for sid, out in outputs.items())
+        try:
+            new_stages = await extend(objective, completed, gaps,
+                                      [s.id for s in stages])
+        except Exception as e:  # noqa: BLE001 — replanning must never kill the run
+            self.tracer.event("plan.extend.failed", "planner", status="failed",
+                              error=f"{type(e).__name__}: {str(e)[:200]}")
+            return
+        if not new_stages:
+            self.tracer.event("plan.extended", "planner", status="info",
+                              added=[], note="no feasible additional observation")
+            return
+        # Insert before the first still-pending review so the verifier judges
+        # the run WITH the new evidence; the new stages' notes join its
+        # evidence set (deps after the first are evidence-only).
+        insert_at = next((j for j in range(i + 1, len(stages))
+                          if stages[j].pattern == REVIEW), len(stages))
+        for off, s in enumerate(new_stages):
+            stages.insert(insert_at + off, s)
+            self._stages_by_id[s.id] = s
+        if insert_at + len(new_stages) < len(stages):
+            pending_review = stages[insert_at + len(new_stages)]
+            for s in new_stages:
+                if s.id not in pending_review.depends_on:
+                    pending_review.depends_on.append(s.id)
+        self.tracer.event("plan.extended", "planner", status="info",
+                          added=[s.id for s in new_stages],
+                          needs=[g.get("need", "")[:120] for g in gaps])
+
     def _classify(self, had_failure: bool, workspace: Path) -> tuple[str, str]:
         """Map the run to succeeded | partial | unverified | blocked, with the
         failing DIMENSION named precisely (#17/#20): grounding, artifact
         completeness, and stage completion are independent facts — 'grounded
-        but truncated' must not read as a grounding failure."""
+        but truncated' must not read as a grounding failure. 'not-assessed',
+        'not-required', and 'approved' are DIFFERENT states, and the reason
+        never asserts an assessment that did not happen (a metadata-only run
+        was observed shipping as 'grounded and criteria-consistent' although
+        neither grounding nor any criterion was ever evaluated)."""
         issues = artifact_issues(workspace, definite_only=True)  # only true-positive defects gate
+        # Fatal blockers reported by agents are authoritative run state, not
+        # side notes: 'I cannot observe what the objective asks about' must be
+        # able to prevent SUCCEEDED.
+        blockers = (self.blackboard.get("team.blockers", []) or []) if self.blackboard else []
+        fatal = [b for b in blockers if b.get("severity") == "fatal"]
+        if fatal:
+            self._blocked = True
         dims = {
             "stage_completion": "failed" if had_failure else "ok",
             "grounding": ("approved" if self._review_approved
                           else "not-approved" if self._review_ran
                           else "not-required" if not self._high_risk else "missing"),
+            "criteria": ("approved" if self._review_approved
+                         else "not-assessed" if self._criteria else "none-compiled"),
             "artifact": "defective" if issues else "ok",
+            "blockers": "fatal" if fatal else ("open" if blockers else "none"),
         }
         self.tracer.event("run.dimensions", "run", status="info", **dims,
                           artifact_issues=issues[:6])
         if self._blocked:
-            return "blocked", "the run hit an obstacle it could not resolve; see the answer."
+            what = ("; ".join(f"{b.get('issue', '')}" for b in fatal[:2])
+                    if fatal else "see the answer")
+            return "blocked", f"the run hit an obstacle it could not resolve: {what}."
         if had_failure:
             return "partial", "a stage failed; the last completed result was delivered as-is."
         grounded = dims["grounding"] in ("approved", "not-required")

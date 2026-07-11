@@ -75,8 +75,14 @@ def agent_system_prompt(spec: AgentSpec, allowed_tools: list[str],
             + (", ".join(team_stages) if team_stages else "none yet")
             + f"; budget {config.TEAM_MAX_QUESTIONS} questions). If an item is impossible "
             "(unreachable source, missing input), report it with report_blocker and move on — "
-            "never guess or fabricate around an obstacle. During long work, call "
-            "progress_update at milestones so the user sees what you are doing."
+            "never guess or fabricate around an obstacle; severity='fatal' if the objective "
+            "itself cannot be met. EVIDENCE GAP: if the objective depends on something your "
+            "tools cannot OBSERVE (a required channel is absent; your observation establishes "
+            "identity/metadata but not the substance asked about), call report_evidence_gap — "
+            "the engine plans a different observation method. NEVER fill such a gap from "
+            "memory, prior runs' narration, or plausibility; deliver what you actually "
+            "observed with the gap marked. During long work, call progress_update at "
+            "milestones so the user sees what you are doing."
         )
     if allowed_tools:
         from . import config

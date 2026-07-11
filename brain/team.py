@@ -9,7 +9,12 @@ acts as the team lead:
     agent over its own output and returns the answer.
   * ``report_blocker`` — record an obstacle (unreachable item, missing input)
     so it lands in the trace and the blackboard instead of being silently
-    worked around; the agent is told to continue best-effort.
+    worked around. A FATAL blocker is authoritative run state: the classifier
+    can refuse SUCCEEDED because of it.
+  * ``report_evidence_gap`` — declare that the objective depends on something
+    OBSERVED that the agent's current tools cannot establish. This signal
+    re-enters the core loop: the engine replans for the unmet need instead of
+    letting the gap be filled from memory, prior narration, or plausibility.
 
 One :class:`TeamChannel` exists per agent session, so the question budget is
 per teammate, like a person's patience.
@@ -37,6 +42,7 @@ class TeamChannel:
         self.max_questions = max_questions if max_questions is not None else config.TEAM_MAX_QUESTIONS
         self.questions_used = 0
         self.blockers: list[dict] = []
+        self.gaps: list[dict] = []
 
     async def ask(self, stage: str, question: str) -> tuple[bool, str]:
         """Returns (ok, answer_or_reason)."""
@@ -52,20 +58,45 @@ class TeamChannel:
         answer = await self._ask_fn(stage, question)
         return True, answer
 
-    def block(self, issue: str, needed: Optional[str] = None) -> str:
-        record = {"agent": self.agent_id, "issue": issue[:500], "needed": (needed or "")[:300]}
+    def block(self, issue: str, needed: Optional[str] = None,
+              severity: str = "recoverable") -> str:
+        severity = severity if severity in ("recoverable", "fatal") else "recoverable"
+        record = {"agent": self.agent_id, "issue": issue[:500],
+                  "needed": (needed or "")[:300], "severity": severity}
         self.blockers.append(record)
         self.tracer.event("team.blocker", self.agent_id, status="failed",
-                          issue=record["issue"], needed=record["needed"])
+                          issue=record["issue"], needed=record["needed"],
+                          severity=severity)
         if self.blackboard is not None:
-            existing = self.blackboard.get("team.blockers", [])
+            existing = self.blackboard.get("team.blockers", []) or []
             self.blackboard.put("team.blockers", existing + [record])
+        if severity == "fatal":
+            return ("fatal blocker recorded — the run's final status will reflect it. "
+                    "Deliver what you can, stating plainly what could not be done; "
+                    "do not fabricate around it.")
         return ("blocker recorded. Continue best-effort with your remaining items; "
                 "unresolved gaps will be reported honestly, do not fabricate around them.")
 
+    def evidence_gap(self, need: str, attempted: Optional[str] = None) -> str:
+        """The observation the objective depends on cannot be established with
+        the agent's current tools — recorded as controller state so the engine
+        can re-enter planning for the unmet need."""
+        record = {"agent": self.agent_id, "need": need[:500],
+                  "attempted": (attempted or "")[:300]}
+        self.gaps.append(record)
+        self.tracer.event("team.evidence_gap", self.agent_id, status="failed",
+                          need=record["need"], attempted=record["attempted"])
+        if self.blackboard is not None:
+            existing = self.blackboard.get("evidence.gaps", []) or []
+            self.blackboard.put("evidence.gaps", existing + [record])
+        return ("evidence gap recorded — the engine will plan additional observation "
+                "for it if possible. Finish your stage with what you HAVE observed, "
+                "clearly marking the gap; do NOT fill it from memory, prior runs' "
+                "narration, or plausibility.")
+
 
 TEAM_TOOLS = ["mcp__team__ask_upstream", "mcp__team__report_blocker",
-              "mcp__team__progress_update"]
+              "mcp__team__report_evidence_gap", "mcp__team__progress_update"]
 
 
 def build_team_server(channel: TeamChannel):
@@ -85,13 +116,33 @@ def build_team_server(channel: TeamChannel):
 
     @tool("report_blocker",
           "Report an obstacle you cannot resolve (unreachable source, missing input, "
-          "impossible item) instead of silently working around it.",
+          "impossible item) instead of silently working around it. severity='fatal' when "
+          "the objective itself cannot be met because of it — that becomes the run's "
+          "final status; 'recoverable' (default) when your stage can still deliver value.",
           {"type": "object",
            "properties": {"issue": {"type": "string"},
-                          "needed": {"type": "string", "description": "what would unblock you"}},
+                          "needed": {"type": "string", "description": "what would unblock you"},
+                          "severity": {"type": "string", "enum": ["recoverable", "fatal"]}},
            "required": ["issue"]})
     async def report_blocker(args):
-        text = channel.block(str(args.get("issue", "")), args.get("needed"))
+        text = channel.block(str(args.get("issue", "")), args.get("needed"),
+                             str(args.get("severity", "recoverable")))
+        return {"content": [{"type": "text", "text": text}]}
+
+    @tool("report_evidence_gap",
+          "The objective depends on something OBSERVED (content, events, structure, state) "
+          "that your tools cannot establish — e.g. the required channel is absent or your "
+          "observation covers identity but not the substance asked about. Report the gap so "
+          "the engine can plan a different observation method. NEVER fill such a gap from "
+          "memory, prior answers, or plausibility.",
+          {"type": "object",
+           "properties": {"need": {"type": "string",
+                                   "description": "what must be observed, stated abstractly"},
+                          "attempted": {"type": "string",
+                                        "description": "what you tried and what it yielded"}},
+           "required": ["need"]})
+    async def report_evidence_gap(args):
+        text = channel.evidence_gap(str(args.get("need", "")), args.get("attempted"))
         return {"content": [{"type": "text", "text": text}]}
 
     @tool("progress_update",
@@ -107,4 +158,5 @@ def build_team_server(channel: TeamChannel):
         return {"content": [{"type": "text", "text": "noted — continue."}]}
 
     return create_sdk_mcp_server(name="team", version="1.0.0",
-                                 tools=[ask_upstream, report_blocker, progress_update])
+                                 tools=[ask_upstream, report_blocker,
+                                        report_evidence_gap, progress_update])

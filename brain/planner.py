@@ -61,6 +61,15 @@ _SYSTEM = (
     "part of the work: whoever reads a file should check the extraction is complete and "
     "faithful (counts, structure, non-text content such as images) and surface anything that "
     "needs additional processing rather than silently ignoring it.\n"
+    "EVIDENCE BEFORE MECHANISM: first identify what must be OBSERVED for the deliverable's "
+    "load-bearing claims — identity? full content? ordered events? structure? state? — then "
+    "bind stages to capabilities that can actually observe THOSE properties. An available "
+    "capability is not the epistemic target: retrieving metadata about a source is not "
+    "observing its content, and a familiar mechanism must never substitute for the method "
+    "the objective actually requires. A capability's description may carry residue of the "
+    "task that created it — judge fit by its input/output contract, not its narrative. If "
+    "no capability can observe a required property, NAME A NEW capability for that "
+    "observation (the system builds it) rather than binding a near-miss.\n"
     "NEVER design a stage or capability that asks the user for input, credentials, keys, or "
     "configuration — sandboxed tools cannot reach the user. When a tool genuinely needs a "
     "credential (API key, bot token, connection string), the ENGINE detects it and collects "
@@ -84,6 +93,15 @@ _SYSTEM = (
     "permits a perfectly analysis-consistent fabrication. Derive them from the request; never "
     "emit a fixed template. A reviewer will check the deliverable against them.\n"
     "You MUST call `emit_plan` exactly once with the full workflow and must NOT answer in prose."
+)
+
+_EXTEND_ADDENDUM = (
+    "EXTENSION MODE: a run of this workflow is ALREADY EXECUTING and has reported "
+    "specific observation needs its current methods cannot establish. Do NOT re-plan "
+    "completed work. Emit ONLY the additional stages that observe what is missing. "
+    "Derive the method from the NEED, not from what happens to exist: if no current "
+    "capability can observe the required property, name a NEW capability for it. "
+    "New stages may depend on the existing stage ids provided in the prompt."
 )
 
 _PLAN_SCHEMA = {
@@ -176,6 +194,68 @@ class Planner:
                                 goal=objective, capabilities=["web_search"])]
         criteria = [str(c) for c in (captured.get("success_criteria") or []) if str(c).strip()]
         return Plan(objective=objective, stages=stages, success_criteria=criteria)
+
+    async def extend(self, objective: str, completed: str, gaps: list[dict],
+                     existing_ids: list[str]) -> list[StageSpec]:
+        """Re-enter the core loop mid-run: design ONLY the additional stages
+        needed to observe what execution revealed it cannot establish. The
+        unmet need drives the method — the planner may reuse capabilities or
+        NAME NEW ONES for the system to author, exactly as in initial planning.
+        Returns [] when no additional observation is feasible."""
+        from claude_agent_sdk import create_sdk_mcp_server, tool
+
+        from .factory import locked_session
+        from .observability import trace_query
+
+        captured: dict = {}
+
+        @tool("emit_plan", "Emit the ADDITIONAL stages as structured data.", _PLAN_SCHEMA)
+        async def emit_plan(args):
+            captured.update(args or {})
+            return {"content": [{"type": "text", "text": "extension recorded"}]}
+
+        known_str = ("\n".join(f"  - {k}: {v}" for k, v in self.known.items())
+                     if self.known else "  (none yet)")
+        server = create_sdk_mcp_server(name="planner", version="1.0.0", tools=[emit_plan])
+        options = locked_session(
+            system_prompt=_SYSTEM.format(known=known_str) + "\n\n" + _EXTEND_ADDENDUM,
+            mcp_servers={"planner": server},
+            allowed_tools=["mcp__planner__emit_plan"],
+            model=self.model,
+            max_turns=4,
+        )
+        need_lines = "\n".join(
+            f"- NEED: {g.get('need', '')}" + (f" (attempted: {g['attempted']})"
+                                              if g.get("attempted") else "")
+            for g in gaps)
+        prompt = (
+            f"OBJECTIVE (unchanged): {objective}\n\n"
+            f"WORK COMPLETED SO FAR (its outputs are available to new stages as "
+            f"dependencies):\n{completed}\n\n"
+            f"UNMET OBSERVATION NEEDS reported during execution — the objective "
+            f"depends on these and current methods could not establish them:\n{need_lines}\n\n"
+            f"Existing stage ids (your new stages may depend on them; do NOT reuse "
+            f"these ids): {existing_ids}\n\n"
+            "Design ONLY the additional stage(s) that can actually observe what is "
+            "missing — a different observation method, a new capability to author, or "
+            "independent corroborating sources. If NO additional observation is "
+            "feasible, emit an empty stages list."
+        )
+        await trace_query(self.tracer, "planner.extend", prompt, options)
+        raw = captured.get("stages", []) or []
+        stages, warnings = normalize_stages(raw)
+        for w in warnings:
+            self.tracer.event("plan.normalized", "planner.extend", status="info", warning=w)
+        # normalize_stages drops deps outside ITS list — restore references to
+        # already-executed stages (that linkage is the point of an extension).
+        raw_deps = {str(r.get("id")): [str(d) for d in (r.get("depends_on") or [])]
+                    for r in raw if isinstance(r, dict)}
+        known = set(existing_ids)
+        for s in stages:
+            for d in raw_deps.get(s.id, []):
+                if d in known and d not in s.depends_on:
+                    s.depends_on.append(d)
+        return [s for s in stages if s.id not in known]
 
 
 class StubPlanner:

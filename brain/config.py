@@ -138,6 +138,9 @@ MAP_RETRY_FAILED_SHARDS = int(os.environ.get("MAP_RETRY_FAILED_SHARDS", "1"))
 TEAM_MAX_QUESTIONS = int(os.environ.get("TEAM_MAX_QUESTIONS", "3"))       # per session
 # The reviewer may demand missing evidence once; a courier session fetches it.
 REVIEW_EVIDENCE_FETCHES = int(os.environ.get("REVIEW_EVIDENCE_FETCHES", "1"))
+# Bounded mid-run loop re-entries: when agents report an unmet OBSERVATION need
+# (report_evidence_gap), the planner may EXTEND the running plan this many times.
+REPLANS_PER_RUN = int(os.environ.get("REPLANS_PER_RUN", "1"))
 
 # Executive supervision: an LLM judgment consulted at decision moments
 # (pre-user-interaction, stage completions). Fail-open, budget-capped.
