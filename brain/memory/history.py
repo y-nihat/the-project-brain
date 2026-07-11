@@ -104,7 +104,14 @@ def run_context(db_path: str | Path, runs_dir: str | Path, run: dict, max_chars:
         lines.append("files it produced (seedable into the current workspace): " + ", ".join(files))
     answer = _final_answer(db_path, runs_dir, run).strip()
     if answer:
-        lines.append("its final answer (excerpt): " + answer[:600].replace("\n", " "))
+        # A prior answer is NARRATION, not evidence: injecting it unlabeled let
+        # a new run repeat a prior conclusion without the observations that
+        # once supported it (and would amplify a wrong one just as readily).
+        lines.append(
+            "its final answer (EXCERPT — prior narration, NOT evidence: treat as a "
+            "hypothesis; any load-bearing claim reused from it must be re-established "
+            "from sources observed in the CURRENT run, or delivered explicitly as "
+            "unverified): " + answer[:600].replace("\n", " "))
     return "\n".join(lines)[:max_chars]
 
 

@@ -261,14 +261,30 @@ def _capability_from_submission(need_key: str, description: str, sub: dict) -> C
 _PATH_RESIDUE = re.compile(r"\b(?:input|workspace|prior|/work)[\w./-]*", re.IGNORECASE)
 _FILENAME_RESIDUE = re.compile(r"\b[\w-]+\.(?:pdf|md|txt|csv|json|html?|docx?|xlsx?|png|jpe?g)\b",
                                re.IGNORECASE)
+# Remote locators are task residue exactly like local paths: a promoted tool
+# whose description names the originating URL becomes an availability anchor
+# for every future objective that mentions that source.
+_URL_RESIDUE = re.compile(r"(?:\w{2,10}://|www\.)\S+", re.IGNORECASE)
+# Output-shape POLICY belongs to the task that asked for it, never to the
+# reusable mechanism ("write a single paragraph (maximum 10 sentences)" was
+# observed promoted as a tool's global identity).
+_COUNT_POLICY_RESIDUE = re.compile(
+    r"\(?\b(?:exactly|no more than|at most|maximum(?: of)?|up to|a single|one)\s+"
+    r"(?:\w{1,12}\s+)?(?:sentence|paragraph|word|page|slide|bullet|item|line)s?\b\)?",
+    re.IGNORECASE)
 
 
 def generalize_description(desc: str) -> str:
     """Consolidation hygiene (#15): a promoted capability is reusable procedural
     memory, so its description must be a GENERAL contract, not the originating
-    task. Strip task-specific path/filename residue that would mislead reuse."""
+    task. Strip task residue — local paths/filenames, remote locators, and
+    output-shape policy — that would mislead or anchor future planning."""
     d = _PATH_RESIDUE.sub("a provided file", desc or "")
     d = _FILENAME_RESIDUE.sub("a provided file", d)
+    d = _URL_RESIDUE.sub("a provided source", d)
+    d = _COUNT_POLICY_RESIDUE.sub("", d)
+    d = re.sub(r"\(\s*\)", "", d)              # empty parens left by stripping
+    d = re.sub(r"\s+([,.;:])", r"\1", d)
     d = re.sub(r"\s{2,}", " ", d).strip()
     return d[:500]
 
