@@ -339,7 +339,7 @@ def test_mechanical_defect_triggers_artifact_repair(tmp_path, monkeypatch):
     finally:
         bb.close()
     assert answer.startswith("fixed the deck")          # repaired output delivered
-    assert "DELIVERABLE FILES" in answer                # engine lists real files
+    assert "FILES actually produced this run" in answer   # engine audit lists real files
     assert "deck.html" in answer
     assert orch.classification == "succeeded"           # defect resolved -> clean
     # Aggregate stage outputs exist for every stage (#24).
