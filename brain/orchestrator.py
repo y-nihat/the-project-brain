@@ -495,7 +495,9 @@ class Orchestrator:
                 last_done = stage.id
 
             # Executive check: does what just happened still serve the objective?
-            if self.supervisor is not None and len(stages) > 1:
+            # Single-stage runs are NOT exempt — one stage was exactly where an
+            # unassessed answer shipped with two criteria visibly violated.
+            if self.supervisor is not None:
                 d = await self.supervisor.consult(
                     "stage_completed",
                     self._digest(just_completed=(stage.id, out)),
@@ -566,7 +568,8 @@ class Orchestrator:
                     for p in sorted(workspace.rglob("*"))
                     if p.is_file() and p.relative_to(workspace).parts[0] not in ("prior", "input")]
         if produced:
-            answer += ("\n\n---\nDELIVERABLE FILES (as actually produced this run):\n"
+            answer += ("\n\n---\n[engine audit — NOT part of the deliverable] "
+                       "FILES actually produced this run:\n"
                        + "\n".join(f"- workspace/{rel} ({size:,} bytes)" for rel, size in produced))
 
         self.blackboard.put("answer", answer)
@@ -723,7 +726,12 @@ class Orchestrator:
             return "partial", ("grounded_but_artifact_defective — the content is grounded, but "
                                "the artifact has unresolved mechanical defects: "
                                + "; ".join(issues[:3]))
-        return "succeeded", "grounded and criteria-consistent."
+        if self._review_approved:
+            return "succeeded", "grounding and success criteria approved by review."
+        return "succeeded", ("operationally complete; no user-referenced evidence was "
+                             "transformed (grounding not required)"
+                             + (", and the compiled success criteria were NOT independently "
+                                "verified" if self._criteria else "") + ".")
 
     # ------------------------------------------------------------------ #
     # stage dispatch
