@@ -33,6 +33,10 @@ from .models import (CREATE, MAP, REDUCE, REUSE, REVIEW, AgentSpec, Capability,
 from .team import TEAM_TOOLS, TeamChannel, build_team_server
 
 _VERDICT_RE = re.compile(r"VERDICT:\s*(approved|revise|needs-evidence)", re.IGNORECASE)
+# A remote locator in the objective is user-referenced evidence, exactly like an
+# attached file — format-neutral detection (any scheme://host or www.host), never
+# a service or task pattern.
+_EXTERNAL_LOCATOR = re.compile(r"\b\w{2,10}://\S+|\bwww\.\S+\.\S+", re.IGNORECASE)
 
 
 def _stage_dict(s: StageSpec) -> dict:
@@ -383,15 +387,22 @@ class Orchestrator:
         workspace = Path(config.RUNS_DIR) / self.session / "workspace"
         workspace.mkdir(parents=True, exist_ok=True)
 
-        # Risk-scaled review (#13): if the user provided evidence (attached files)
-        # or the chain is very deep, guarantee a grounding review stage.
+        # Risk-scaled review (#13): a user-REFERENCED source is evidence whether
+        # it is local (attached file) or remote (a locator named in the
+        # objective) — a run deriving factual claims from either must be
+        # grounding-reviewed. A one-stage summary of a linked source was
+        # observed shipping as 'grounded' with nothing ever checking its claims.
         has_user_evidence = (workspace / "input").is_dir() and \
             any((workspace / "input").iterdir())
+        has_external_evidence = bool(_EXTERNAL_LOCATOR.search(objective or ""))
         planned, appended = workflow.append_review_if_needed(
-            plan.stages, has_user_evidence=has_user_evidence)
+            plan.stages, has_user_evidence=has_user_evidence,
+            has_external_evidence=has_external_evidence)
         if appended:
             self.tracer.event("review.appended", "plan", status="info",
-                              reason="user evidence transformed" if has_user_evidence else "deep chain")
+                              reason=("user evidence transformed" if has_user_evidence
+                                      else "external source referenced" if has_external_evidence
+                                      else "deep chain"))
         stages = workflow.topo_order(planned)
         roster = [_stage_dict(s) for s in stages]
         self.blackboard.put("plan", roster)
@@ -420,19 +431,25 @@ class Orchestrator:
         if self._criteria:
             self.tracer.event("plan.criteria", "plan", status="info", criteria=self._criteria)
         # Objective-success classification signals (#17): a run is high-risk when
-        # it transforms user evidence or runs a very deep chain — such a run must
-        # be grounding-reviewed before it can read "succeeded".
-        self._high_risk = has_user_evidence or \
+        # it derives claims from user-referenced evidence (local or remote) or
+        # runs a very deep chain — such a run must be grounding-reviewed before
+        # it can read "succeeded".
+        self._high_risk = has_user_evidence or has_external_evidence or \
             workflow._transformation_depth(stages) >= config.REVIEW_DEPTH_THRESHOLD
         self._review_ran = False
         self._review_approved = False
         self._blocked = False
         self._repair_stalled = False    # unchanged defect signature -> detector suspect
         self._verbatim_caps: dict[str, bool] = {}  # cap -> every observed write was verbatim
+        self._replans = 0               # bounded loop re-entries on evidence gaps
+        self._gaps_seen = 0             # gaps already routed to a replan
 
         last_done: Optional[str] = None
         failure_note: Optional[str] = None
-        for stage in stages:
+        i = -1
+        while i + 1 < len(stages):   # index-based: the plan may EXTEND mid-run
+            i += 1
+            stage = stages[i]
             try:
                 with self.tracer.span("stage", stage.id, pattern=stage.pattern) as sp:
                     out = await self._run_stage(stage, stages, outputs, objective, history, workspace)

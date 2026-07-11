@@ -136,19 +136,21 @@ def normalize_stages(raw: list) -> tuple[list[StageSpec], list[str]]:
     return stages, warnings
 
 
-def append_review_if_needed(stages: list[StageSpec], *, has_user_evidence: bool
+def append_review_if_needed(stages: list[StageSpec], *, has_user_evidence: bool,
+                            has_external_evidence: bool = False
                             ) -> tuple[list[StageSpec], bool]:
     """Risk-scaled review (#13), enforced structurally rather than by rubric hope.
 
-    A grounding review is appended (if the plan lacks one) when the run transforms
-    USER EVIDENCE into a synthesized deliverable — the exact shape that produced
-    the ebook confabulation (a user file distorted through extraction→synthesis),
-    regardless of stage count — or when the transformation chain is very deep.
-    Returns (stages, appended)."""
+    A grounding review is appended (if the plan lacks one) when the run derives
+    factual claims from a USER-REFERENCED SOURCE — an attached file (the shape
+    that produced the ebook confabulation) or an external locator named in the
+    objective (URL / remote source: a one-stage summary of a linked source was
+    observed classified 'grounded' although nothing ever checked its claims) —
+    or when the transformation chain is very deep. Returns (stages, appended)."""
     if any(s.pattern == REVIEW for s in stages):
         return stages, False
     deep = _transformation_depth(stages) >= config.REVIEW_DEPTH_THRESHOLD
-    if not (has_user_evidence or deep):
+    if not (has_user_evidence or has_external_evidence or deep):
         return stages, False
     ordered = topo_order(stages)
     if not ordered:
