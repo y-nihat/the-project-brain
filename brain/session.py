@@ -127,7 +127,12 @@ class BrainSession:
         from . import files as files_mod
 
         objective, mentioned = files_mod.parse_mentions(objective)
-        attach_paths = list(dict.fromkeys(mentioned + list(files or [])))
+        # Files dropped in the sanctioned inbox and named by path are attached
+        # too — so "provide the video directly and name it" designates a source
+        # even without an @mention (last run's video sat in inbox, referenced by
+        # a backticked path, and never entered the workspace).
+        objective, inbox_paths = files_mod.rewrite_inbox_mentions(objective)
+        attach_paths = list(dict.fromkeys(mentioned + inbox_paths + list(files or [])))
 
         hist_text, seed_run = history_mod.history_block(config.DB_PATH, config.RUNS_DIR, objective)
 

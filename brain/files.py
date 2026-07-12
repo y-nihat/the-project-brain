@@ -16,6 +16,9 @@ from . import config
 # @"path with spaces" or @bare/path (stops at whitespace)
 _MENTION = re.compile(r'@(?:"([^"]+)"|([^\s"\'@]+))')
 
+# A path/filename token, backticked (`data/inbox/x.mp4`) or bare (foo.mp4).
+_PATHLIKE = re.compile(r'`([^`]+)`|([\w./-]+\.\w{1,6})')
+
 
 def parse_mentions(text: str) -> tuple[str, list[str]]:
     """Extract @file mentions; rewrite each to its workspace name (input/<name>)
@@ -38,6 +41,40 @@ def parse_mentions(text: str) -> tuple[str, list[str]]:
         return f"input/{Path(p).name}{trailer}"
 
     return _MENTION.sub(_sub, text), paths
+
+
+def rewrite_inbox_mentions(text: str) -> tuple[str, list[str]]:
+    """Recognize files the user DROPPED in the sanctioned inbox and named in the
+    objective by path (``data/inbox/x.mp4`` or bare ``x.mp4``) — a first-class
+    way to designate a source, alongside @mentions and remote locators. Each
+    match is rewritten to its workspace path (``input/<name>``) and returned for
+    materialization. ONLY files that actually resolve inside the inbox are
+    touched, so an arbitrary host path in objective text is never materialized.
+    Run AFTER parse_mentions so already-rewritten ``input/...`` tokens are left
+    alone."""
+    inbox = config.INBOX_DIR
+    if not inbox.is_dir():
+        return text, []
+    inbox_r = inbox.resolve()
+    paths: list[str] = []
+
+    def _sub(m: re.Match) -> str:
+        tok = (m.group(1) or m.group(2) or "").strip().strip('\'"')
+        if not tok or tok.startswith("input/"):
+            return m.group(0)
+        for cand in ((config.PROJECT_ROOT / tok), (inbox / Path(tok).name)):
+            try:
+                c = cand.resolve()
+            except (OSError, ValueError):
+                continue
+            if c.is_file() and str(c).startswith(str(inbox_r)):
+                paths.append(str(c))
+                repl = f"input/{Path(tok).name}"
+                # Keep surrounding backticks; replace only the inner token.
+                return m.group(0).replace(tok, repl) if m.group(1) else repl
+        return m.group(0)
+
+    return _PATHLIKE.sub(_sub, text), paths
 
 
 def materialize(paths: list[str], workspace: Path) -> list[dict]:
