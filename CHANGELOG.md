@@ -5,6 +5,35 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
 [Semantic Versioning](https://semver.org/) — `0.x` while the core algorithm
 and behavior are still expected to change between releases.
 
+## [0.9.1] — 2026-07-12
+
+Bug-fix release from the two final runs of the video task. The frame pipeline
+was architecturally correct — 402 frames extracted, a 12-worker perception map,
+synthesis, review — but a one-line regression made it observe nothing, and the
+run burned its session cap retrying the broken tool ($10.27, blocked). No new
+features; correctness and honesty fixes only.
+
+### Fixed
+- **`read_file` crashed on every call (the regression that killed multimodal
+  perception)**: it passed `kind=` to `Tracer.event`, colliding with that
+  method's positional `kind` parameter, so every image read returned "got
+  multiple values for argument 'kind'". Renamed the field; the whole handler is
+  now guarded so an engine fault fails loud and self-labeled ("do NOT retry …
+  report a blocker") instead of becoming a retry sink. **Root cause of the miss:
+  the perception path was only ever tested with `NullTracer`, which swallows
+  `**kwargs`** — a real-`Tracer` regression test now covers it.
+- **An unparseable review verdict no longer auto-approves**: a review whose
+  prose lacks the exact `VERDICT:` token defaults to `revise` (was `approved`) —
+  a synthesis grounded in zero observed frames had been auto-approved on an
+  unparsed verdict.
+- **File listings say "showing first 40 of N"** instead of implying only 40
+  files exist (a worker concluded the video had 40 frames when 402 were
+  extracted).
+- **A `blocker_class` must be justified by the current run**, not by a prior
+  run's failure, and `resource_ceiling` may not be claimed for acquisition,
+  conversion, or perception (only for loading a heavy model/payload at once) —
+  a run had proxied a URL by citing a stale OOM from an approach no longer used.
+
 ## [0.9.0] — 2026-07-12
 
 The accessible-source release. A file named plainly in the objective (not via
