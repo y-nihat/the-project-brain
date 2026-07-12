@@ -104,6 +104,35 @@ class Plan:
     # file", "final answer accurately describes the artifact"). Generated per
     # objective — never a fixed template — and used by review/supervision.
     success_criteria: list[str] = field(default_factory=list)
+    # Why THIS strategy: the planner's comparison of candidate observation
+    # methods. Persisted and traced — an unauditable initial method choice is
+    # how a familiar mechanism silently substitutes for the required one.
+    strategy_rationale: str = ""
+    # Per NEW capability key: an instance-neutral authoring contract plus the
+    # concrete example inputs for verification. Separated from the stage goal
+    # so task policy (a URL, "one paragraph", synthesis instructions) never
+    # compiles into reusable mechanism code: {key: {contract, example_input}}.
+    capability_needs: dict = field(default_factory=dict)
+
+
+@dataclass
+class MethodOutcome:
+    """A method/stage failure converted into controller state — the observation
+    the adaptive loop reasons over. Produced automatically at the stage
+    boundary; never dependent on an agent volunteering a report (the agent may
+    not exist: capability acquisition fails before any agent starts)."""
+
+    stage_id: str
+    requirement: str        # what the stage was to establish (its goal) — stays open
+    phase: str              # "acquisition" | "execution"
+    failure_class: str      # authority | packaging | implementation | contract |
+                            # submission | suppressed | budget | engine | ...
+    detail: str             # concise causal account (the END of the error)
+    capability: str = ""    # the capability need involved, for acquisition failures
+    attempts: int = 0       # implementation attempts already spent on the method
+    attempt_history: list[str] = field(default_factory=list)  # one line per attempt
+    retryable: bool = True  # False when same-method retry cannot help (authority, budget)
+    partial_evidence: list[str] = field(default_factory=list)  # workspace files retained
 
 
 # Resolver decision kinds.

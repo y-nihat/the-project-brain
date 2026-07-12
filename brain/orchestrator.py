@@ -20,16 +20,18 @@ budget, health monitor + runtime tool repair).
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import re
 from pathlib import Path
 from typing import Awaitable, Callable, Optional
 
 from . import config, factory, workflow
-from .acquisition import acquire, make_builder_agent
+from .acquisition import (AcquisitionError, acquire, generalize_description,
+                          make_builder_agent)
 from .acquisition import repair_capability as acquire_repair
 from .capabilities.runtime import build_caps_server
 from .models import (CREATE, MAP, REDUCE, REUSE, REVIEW, AgentSpec, Capability,
-                     Decision, StageSpec)
+                     Decision, MethodOutcome, StageSpec)
 from .team import TEAM_TOOLS, TeamChannel, build_team_server
 
 _VERDICT_RE = re.compile(r"VERDICT:\s*(approved|revise|needs-evidence)", re.IGNORECASE)
@@ -364,7 +366,10 @@ class Orchestrator:
         from .observability import NullTracer
 
         self.tracer = tracer or NullTracer()
-        self.classification = "succeeded"  # objective-success class (#17)
+        # Objective-success class (#17) — starts UNASSESSED, never implicitly
+        # successful; only `_classify` (the one authoritative state machine)
+        # assigns a terminal value.
+        self.classification = "unassessed"
         # Test seam: run an agent session; defaults to observability.trace_query.
         self._session_runner = session_runner
         # Executive judgment (None => no supervision; the session wires one in).
@@ -376,6 +381,11 @@ class Orchestrator:
         self._gaps_seen = 0
         self._criteria: list[str] = []
         self._review_verdicts: list[str] = []
+        self._failures: list[MethodOutcome] = []
+        self._recoveries = 0
+        self._recovery_state = "not-needed"
+        self._cap_needs: dict[str, dict] = {}
+        self._suppressed_caps: set[str] = set()
 
     # ------------------------------------------------------------------ #
     # run
@@ -434,6 +444,14 @@ class Orchestrator:
         self._criteria = list(getattr(plan, "success_criteria", []) or [])
         if self._criteria:
             self.tracer.event("plan.criteria", "plan", status="info", criteria=self._criteria)
+        # The initial method choice is auditable state (P0-F): persist the
+        # planner's strategy rationale and the per-capability authoring
+        # contracts it compiled (instance-neutral; the concrete task values
+        # ride separately as verification inputs).
+        self._cap_needs = {str(k): dict(v) for k, v in
+                           (getattr(plan, "capability_needs", {}) or {}).items()}
+        if getattr(plan, "strategy_rationale", ""):
+            self.blackboard.put("plan.rationale", plan.strategy_rationale)
         # Objective-success classification signals (#17): a run is high-risk when
         # it derives claims from user-referenced evidence (local or remote) or
         # runs a very deep chain — such a run must be grounding-reviewed before
@@ -448,6 +466,10 @@ class Orchestrator:
         self._verbatim_caps: dict[str, bool] = {}  # cap -> every observed write was verbatim
         self._replans = 0               # bounded loop re-entries on evidence gaps
         self._gaps_seen = 0             # gaps already routed to a replan
+        self._failures = []             # MethodOutcome per failed stage (controller state)
+        self._recoveries = 0            # bounded failure-driven strategy re-entries
+        self._recovery_state = "not-needed"
+        self._suppressed_caps = set()   # methods that failed this run; need new rationale
 
         last_done: Optional[str] = None
         failure_note: Optional[str] = None
@@ -463,12 +485,31 @@ class Orchestrator:
                     # invisible until the run ends.
                     sp.set(output_head=(out or "")[:700])
             except Exception as e:  # noqa: BLE001
-                # Best-effort delivery: a completed draft must never be vaporized
-                # by a later stage's death. With nothing completed, fail loudly.
+                # A stage failure — including capability acquisition dying BEFORE
+                # any agent existed — is an OBSERVATION about the method, not (yet)
+                # a verdict on the run: classify it, preserve what was learned,
+                # and re-enter strategy adjudication for the residual requirement.
+                # Observed failure this closes: authoring exhausted its retries,
+                # the exception escaped, and no alternative strategy was ever
+                # considered because the only feedback path required a running
+                # agent to report it.
+                outcome = self._method_outcome(stage, e, workspace)
+                self._failures.append(outcome)
+                prior_failures = self.blackboard.get("method.failures", []) or []
+                self.blackboard.put("method.failures",
+                                    prior_failures + [dataclasses.asdict(outcome)])
                 self.tracer.event("stage.failed", stage.id, status="failed",
-                                  error=f"{type(e).__name__}: {str(e)[:300]}")
+                                  error=f"{type(e).__name__}: {str(e)[:300]}",
+                                  phase=outcome.phase,
+                                  failure_class=outcome.failure_class,
+                                  attempts=outcome.attempts)
+                if await self._recover_failed_stage(stage, stages, i, objective,
+                                                    outputs, outcome):
+                    continue
                 if last_done is None:
-                    raise
+                    break   # nothing to deliver — finalized below as controller state
+                # Best-effort delivery: a completed draft must never be vaporized
+                # by a later stage's death.
                 failure_note = (f"[engine note] stage '{stage.id}' failed "
                                 f"({type(e).__name__}: {str(e)[:200]}); delivering the last "
                                 f"completed stage's result ('{last_done}') as-is.")
@@ -522,15 +563,22 @@ class Orchestrator:
             # tools for it, keep executing. Bounded; never a task-shaped branch.
             await self._maybe_extend(stages, i, objective, outputs)
 
-        answer = outputs.get(last_done, "") if last_done else "No stages were produced."
-        # The PURE deliverable — before any engine banner/note/appendix — gets
-        # its own channel: "exactly one paragraph" must have a file that IS
-        # exactly one paragraph, whatever the terminal envelope shows.
-        deliverable_dir = Path(config.RUNS_DIR) / self.session / "outputs"
-        deliverable_dir.mkdir(parents=True, exist_ok=True)
-        (deliverable_dir / "DELIVERABLE.md").write_text(answer or "")
-        if failure_note:
-            answer = (answer + "\n\n" + failure_note).strip()
+        if last_done is not None:
+            answer = outputs.get(last_done, "")
+            # The PURE deliverable — before any engine banner/note/appendix — gets
+            # its own channel: "exactly one paragraph" must have a file that IS
+            # exactly one paragraph, whatever the terminal envelope shows.
+            deliverable_dir = Path(config.RUNS_DIR) / self.session / "outputs"
+            deliverable_dir.mkdir(parents=True, exist_ok=True)
+            (deliverable_dir / "DELIVERABLE.md").write_text(answer or "")
+            if failure_note:
+                answer = (answer + "\n\n" + failure_note).strip()
+        else:
+            # Nothing completed: no DELIVERABLE.md exists (a deliverable that is
+            # a failure notice would be a lie), and the user's answer is a
+            # controller-level diagnosis — what was tried, what remains open,
+            # why execution stopped — never a raw traceback.
+            answer = self._failure_report(workspace)
 
         # Persistent artifact defects at delivery: quarantine ONLY the tool the
         # defect is causally attributable to. Attribution requires all three:
@@ -564,7 +612,7 @@ class Orchestrator:
 
         # Objective-success classification (#17/#20): operational completion is
         # NOT objective success, and the reason names the failing DIMENSION.
-        self.classification, reason = self._classify(bool(failure_note), workspace)
+        self.classification, reason = self._classify(bool(failure_note), workspace, last_done)
         self.tracer.event("run.classification", "run", status="info",
                           classification=self.classification, reason=reason)
         if self.classification != "succeeded":
@@ -671,12 +719,13 @@ class Orchestrator:
         # mechanism ("traceable to the transcript" after the transcript yielded
         # nothing) — the planner may recompile them; the user's objective and
         # explicit constraints stay authoritative.
-        new_stages, new_criteria = (result if isinstance(result, tuple)
-                                    else (result, []))
+        new_stages, new_criteria, new_needs = self._unpack_extension(result)
         if new_criteria:
             self.tracer.event("plan.criteria.recompiled", "planner", status="info",
                               before=self._criteria, after=new_criteria)
             self._criteria = list(new_criteria)
+        if new_needs:
+            self._cap_needs.update(new_needs)
         if not new_stages:
             self.tracer.event("plan.extended", "planner", status="info",
                               added=[], note="no feasible additional observation")
@@ -688,35 +737,188 @@ class Orchestrator:
         for off, s in enumerate(new_stages):
             stages.insert(insert_at + off, s)
             self._stages_by_id[s.id] = s
-        if insert_at + len(new_stages) < len(stages):
-            # Graph reconciliation, not just insertion: the extension's LAST
-            # stage is the new artifact-of-record, so the review must treat IT
-            # as the draft it verifies and repairs (deps[0]); the superseded
-            # draft and the other new stages become evidence. Observed failure:
-            # review kept repairing the original stage while the extension's
-            # synthesis stage — the actual deliverable — sat unreviewable as
-            # evidence-only.
-            pending_review = stages[insert_at + len(new_stages)]
-            terminal = new_stages[-1].id
-            evidence = [d for d in pending_review.depends_on if d != terminal] + \
-                       [s.id for s in new_stages[:-1]
-                        if s.id not in pending_review.depends_on]
-            pending_review.depends_on = [terminal] + evidence
-            self.tracer.event("review.retargeted", pending_review.id, status="info",
-                              draft=terminal, evidence=evidence)
+        self._retarget_pending_review(stages, insert_at + len(new_stages), new_stages)
         self.tracer.event("plan.extended", "planner", status="info",
                           added=[s.id for s in new_stages],
                           needs=[g.get("need", "")[:120] for g in gaps])
 
-    def _classify(self, had_failure: bool, workspace: Path) -> tuple[str, str]:
-        """Map the run to succeeded | partial | unverified | blocked, with the
-        failing DIMENSION named precisely (#17/#20): grounding, artifact
-        completeness, and stage completion are independent facts — 'grounded
-        but truncated' must not read as a grounding failure. 'not-assessed',
-        'not-required', and 'approved' are DIFFERENT states, and the reason
-        never asserts an assessment that did not happen (a metadata-only run
-        was observed shipping as 'grounded and criteria-consistent' although
-        neither grounding nor any criterion was ever evaluated)."""
+    @staticmethod
+    def _unpack_extension(result) -> tuple[list, list, dict]:
+        """Planner.extend evolved from a bare stage list -> (stages, criteria) ->
+        (stages, criteria, capability_needs); accept every shape."""
+        if isinstance(result, tuple):
+            parts = list(result)
+            stages = parts[0] if parts else []
+            criteria = parts[1] if len(parts) > 1 else []
+            needs = parts[2] if len(parts) > 2 else {}
+            return list(stages or []), list(criteria or []), dict(needs or {})
+        return list(result or []), [], {}
+
+    def _retarget_pending_review(self, stages: list, from_idx: int, new_stages: list) -> None:
+        """Graph reconciliation, not just insertion: the grafted stages' LAST
+        stage is the new artifact-of-record, so the first still-pending review
+        must treat IT as the draft it verifies and repairs (deps[0]); the other
+        new stages join as evidence. Observed failure this closes: review kept
+        repairing the superseded original stage while the extension's synthesis
+        stage — the actual deliverable — sat unreviewable as evidence-only."""
+        pending = next((s for s in stages[from_idx:] if s.pattern == REVIEW), None)
+        if pending is None:
+            return
+        terminal = new_stages[-1].id
+        evidence = [d for d in pending.depends_on if d != terminal] + \
+                   [s.id for s in new_stages[:-1] if s.id not in pending.depends_on]
+        pending.depends_on = [terminal] + evidence
+        self.tracer.event("review.retargeted", pending.id, status="info",
+                          draft=terminal, evidence=evidence)
+
+    def _workspace_files(self, workspace: Path) -> list[str]:
+        """Files this run ACTUALLY produced so far — the partial evidence that
+        must survive a failed method: preserved, listed, never re-established
+        blindly and never laundered into completed-work claims."""
+        root = Path(workspace)
+        if not root.is_dir():
+            return []
+        return [str(p.relative_to(root)) for p in sorted(root.rglob("*"))
+                if p.is_file() and p.relative_to(root).parts[0] not in ("prior", "input")][:20]
+
+    def _method_outcome(self, stage: StageSpec, exc: Exception, workspace: Path) -> MethodOutcome:
+        """Typed failure state (P0-A): classify WHAT failed and preserve what was
+        learned, so recovery is adjudicated from evidence — failure phase, class,
+        attempt history, retained observations — not from a bare retry count."""
+        files = self._workspace_files(workspace)
+        if isinstance(exc, AcquisitionError):
+            return MethodOutcome(
+                stage_id=stage.id, requirement=stage.goal, phase="acquisition",
+                failure_class=exc.failure_class, detail=str(exc)[:500],
+                capability=exc.need, attempts=exc.attempts,
+                attempt_history=list(exc.history),
+                retryable=exc.failure_class not in ("authority", "suppressed"),
+                partial_evidence=files)
+        return MethodOutcome(
+            stage_id=stage.id, requirement=stage.goal, phase="execution",
+            failure_class=("engine" if isinstance(exc, (TypeError, KeyError, AttributeError))
+                           else "execution"),
+            detail=f"{type(exc).__name__}: {str(exc)[:400]}",
+            attempts=1, partial_evidence=files)
+
+    async def _recover_failed_stage(self, failed: StageSpec, stages: list, i: int,
+                                    objective: str, outputs: dict,
+                                    outcome: MethodOutcome) -> bool:
+        """Transactional failed-node replacement (P0-E/P0-F): a stage that never
+        completed becomes a residual requirement and re-enters strategy
+        adjudication — the same adjudicator that serves evidence gaps, so method
+        selection is justified everywhere, never a domain branch. The failed
+        method is suppressed for this recovery cycle unless the planner
+        re-justifies it with a NEW contract; replacement stages are grafted in,
+        dependents and any pending review are rewired to the new terminal
+        producer, and the failed node survives only as failure history — never
+        as evidence. An empty extension is a calibrated stop, finalized
+        honestly. Bounded by RECOVERIES_PER_RUN."""
+        extend = getattr(self.planner, "extend", None)
+        if extend is None:
+            return False
+        if self._recoveries >= config.RECOVERIES_PER_RUN:
+            self._recovery_state = (f"recovery budget exhausted "
+                                    f"({config.RECOVERIES_PER_RUN} per run)")
+            self.tracer.event("recovery.skipped", failed.id, status="failed",
+                              reason=self._recovery_state)
+            return False
+        self._recoveries += 1
+        if outcome.capability:
+            self._suppressed_caps.add(outcome.capability)
+        need = {
+            "need": (f"the objective still requires what stage '{failed.id}' was to "
+                     f"establish: {failed.goal}"),
+            "attempted": (f"method '{outcome.capability or failed.id}' FAILED during "
+                          f"{outcome.phase} [{outcome.failure_class}] after "
+                          f"{max(1, outcome.attempts)} attempt(s): {outcome.detail[:300]}"
+                          + ("; attempt history: " + " | ".join(outcome.attempt_history[:4])
+                             if outcome.attempt_history else "")),
+        }
+        completed = "\n".join(f"[{sid}] {(out or '')[:400]}"
+                              for sid, out in outputs.items()) or "(none yet)"
+        if outcome.partial_evidence:
+            completed += ("\nPARTIAL OBSERVATIONS retained in the workspace (available to "
+                          f"new stages via file tools): {outcome.partial_evidence[:10]}")
+        try:
+            result = await extend(objective, completed, [need], [s.id for s in stages])
+        except Exception as e:  # noqa: BLE001 — recovery must never kill the run
+            self._recovery_state = f"planner error during recovery ({type(e).__name__})"
+            self.tracer.event("recovery.failed", failed.id, status="failed",
+                              error=f"{type(e).__name__}: {str(e)[:200]}")
+            return False
+        new_stages, new_criteria, new_needs = self._unpack_extension(result)
+        if new_criteria:
+            self.tracer.event("plan.criteria.recompiled", "planner", status="info",
+                              before=self._criteria, after=new_criteria)
+            self._criteria = list(new_criteria)
+        if new_needs:
+            self._cap_needs.update(new_needs)
+            # A fresh contract IS the new information that justifies retrying a
+            # suppressed method — the planner made a deliberate, recorded choice.
+            for key in new_needs:
+                self._suppressed_caps.discard(key)
+        if not new_stages:
+            self._recovery_state = "no admissible alternative method (calibrated stop)"
+            self.tracer.event("recovery.stopped", failed.id, status="info",
+                              reason=self._recovery_state,
+                              failure_class=outcome.failure_class)
+            return False
+        for off, s in enumerate(new_stages):
+            stages.insert(i + 1 + off, s)
+            self._stages_by_id[s.id] = s
+        terminal = new_stages[-1].id
+        # Rewire dependents: the failed node produced NOTHING, so its dependents'
+        # true upstream is the replacement terminal; the superseded method stays
+        # visible as failure history, never as evidence.
+        for s in stages[i + 1 + len(new_stages):]:
+            if failed.id in s.depends_on:
+                s.depends_on = list(dict.fromkeys(
+                    terminal if d == failed.id else d for d in s.depends_on))
+        self._retarget_pending_review(stages, i + 1 + len(new_stages), new_stages)
+        self._recovery_state = "replanned after method failure"
+        self.tracer.event("plan.recovered", failed.id, status="info",
+                          replaced_by=[s.id for s in new_stages], terminal=terminal,
+                          failure_class=outcome.failure_class)
+        return True
+
+    def _failure_report(self, workspace: Path) -> str:
+        """Concise controller diagnosis for a run that completed nothing: what
+        was tried (with the classified per-attempt history), what remains open,
+        why execution stopped, and what partial evidence survives. The raw
+        traceback stays in the trace and artifacts — it is diagnostics, not an
+        answer."""
+        lines = ["The objective could not be fulfilled: no stage completed and no "
+                 "deliverable was produced.", "", "What was attempted:"]
+        for f in self._failures:
+            lines.append(
+                f"- stage '{f.stage_id}'"
+                + (f", capability '{f.capability}'" if f.capability else "")
+                + f" — failed during {f.phase} [{f.failure_class}] after "
+                  f"{max(1, f.attempts)} attempt(s): {f.detail[:240]}")
+            lines += [f"    · {h[:200]}" for h in f.attempt_history[:4]]
+        lines += ["", "What remains open:"]
+        lines += [f"- {f.requirement[:220]}" for f in self._failures[:3]] or ["- (unrecorded)"]
+        lines += ["", f"Why execution stopped: {self._recovery_state}."]
+        retained = self._workspace_files(workspace)
+        if retained:
+            lines += ["", "Partial observations retained under workspace/: "
+                          + ", ".join(retained[:10])]
+        lines += ["", "Full diagnostics (per-attempt tool code, build logs, verification "
+                      "output) are retained in this run's artifacts."]
+        return "\n".join(lines)
+
+    def _classify(self, had_failure: bool, workspace: Path,
+                  last_done: Optional[str] = "") -> tuple[str, str]:
+        """Map the run to succeeded | partial | unverified | blocked | failed,
+        with the failing DIMENSION named precisely (#17/#20): grounding,
+        artifact completeness, stage completion, and recovery are independent
+        facts — 'grounded but truncated' must not read as a grounding failure.
+        'not-assessed', 'not-required', and 'approved' are DIFFERENT states, and
+        the reason never asserts an assessment that did not happen. EVERY
+        expected terminal — including a first-stage failure where no agent ever
+        started — flows through here, so dimensions and classification always
+        exist and status, trace, and user message cannot disagree."""
         issues = artifact_issues(workspace, definite_only=True)  # only true-positive defects gate
         # Fatal blockers reported by agents are authoritative run state, not
         # side notes: 'I cannot observe what the objective asks about' must be
@@ -725,8 +927,10 @@ class Orchestrator:
         fatal = [b for b in blockers if b.get("severity") == "fatal"]
         if fatal:
             self._blocked = True
+        nothing_completed = last_done is None
         dims = {
-            "stage_completion": "failed" if had_failure else "ok",
+            "stage_completion": ("none-completed" if nothing_completed
+                                 else "failed" if had_failure else "ok"),
             "grounding": ("approved" if self._review_approved
                           else "not-approved" if self._review_ran
                           else "not-required" if not self._high_risk else "missing"),
@@ -735,9 +939,20 @@ class Orchestrator:
                          else "not-assessed" if self._criteria else "none-compiled"),
             "artifact": "defective" if issues else "ok",
             "blockers": "fatal" if fatal else ("open" if blockers else "none"),
+            "recovery": self._recovery_state,
+            "deliverable": "absent" if nothing_completed else "present",
+            "method_failures": [f"{f.stage_id}:{f.phase}/{f.failure_class}"
+                                for f in self._failures[:4]],
         }
         self.tracer.event("run.dimensions", "run", status="info", **dims,
                           artifact_issues=issues[:6])
+        if nothing_completed:
+            tried = "; ".join(
+                f"'{f.capability or f.stage_id}' ({f.phase}: {f.failure_class}"
+                + (f", {f.attempts} attempt(s)" if f.attempts else "") + ")"
+                for f in self._failures[:3]) or "no stage could start"
+            return "failed", (f"no stage completed and no deliverable exists — "
+                              f"failed method(s): {tried}; recovery: {self._recovery_state}.")
         if self._blocked:
             what = ("; ".join(f"{b.get('issue', '')}" for b in fatal[:2])
                     if fatal else "see the answer")
@@ -1123,6 +1338,11 @@ class Orchestrator:
                 + ", ".join(self._review_verdicts)
                 + " — never describe the work as verified/approved/grounded unless "
                   "this says approved; stage prose claiming success is not state.")
+        if self._failures:
+            lines.append("\nMETHOD FAILURES (controller state — each was converted to a "
+                         "residual requirement; a failed method is not evidence):")
+            lines += [f"- stage '{f.stage_id}' [{f.phase}/{f.failure_class}]: {f.detail[:160]}"
+                      for f in self._failures[-3:]]
         if self._outputs:
             lines.append("")
             lines.append("COMPLETED STAGE OUTPUTS (heads — already streamed to the user's terminal):")
@@ -1308,9 +1528,13 @@ class Orchestrator:
                                   reason=reason, stats=monitor.summary(name))
                 try:
                     with self.tracer.span("capability.repair", name, reason=reason):
+                        # Decision-aware routing (P1-D): a seeded fix with the
+                        # live failure in hand is bounded mechanics — fast tier.
                         new_cap = await acquire_repair(
                             caps[name], reason, manager=self.manager, registry=self.registry,
-                            broker=self.broker, model=self.model, tracer=self.tracer,
+                            broker=self.broker,
+                            model=config.model_for("repair") or self.model,
+                            tracer=self.tracer,
                         )
                     caps[name] = new_cap
                     repaired_any = True
@@ -1349,7 +1573,6 @@ class Orchestrator:
                             # still carry task residue (originating URL, output
                             # policy) — normalize before re-trusting, or the
                             # residue keeps anchoring every future plan.
-                            from .acquisition import generalize_description
                             clean = generalize_description(cap.description)
                             if clean != cap.description:
                                 cap.description = clean
@@ -1358,6 +1581,13 @@ class Orchestrator:
                                                   status="info", description=clean[:200])
                             self.registry.stamp_validated(cap.name, epoch)
                         else:
+                            # Normalize the stored description on the FAILURE
+                            # path too — quarantine used to preserve the
+                            # task-shaped text, which kept anchoring plans.
+                            clean = generalize_description(cap.description)
+                            if clean != cap.description:
+                                cap.description = clean
+                                self.registry.add(cap)
                             self.registry.quarantine(cap.name, reason)
                             self.tracer.event("capability.quarantined", cap.name,
                                               status="failed", reason=reason[:300])
@@ -1388,17 +1618,36 @@ class Orchestrator:
                                       choice="reuse", capability=cap.name, agent=spec.id)
                     caps[cap.name] = cap
                 elif decision.kind == CREATE and decision.capability_need:
+                    if need in self._suppressed_caps:
+                        # Scoped negative memory: this method already failed this
+                        # run; blind re-authoring is exactly the repaired-forever
+                        # loop. A NEW contract from the planner lifts suppression.
+                        raise AcquisitionError(
+                            f"method '{need}' already failed this run and is suppressed "
+                            "for this recovery cycle (no new contract/rationale given)",
+                            need=need, failure_class="suppressed")
                     builder = make_builder_agent(self.model, self.tracer) if self.use_builder else None
+                    need_spec = self._cap_needs.get(need) or {}
+                    # P0-B: the developer sees an INSTANCE-NEUTRAL contract — the
+                    # planner's compiled capability need when present, else the
+                    # stage goal scrubbed of task residue — while the concrete
+                    # instance values ride separately, for verification only.
+                    # Passing the whole raw stage goal was observed compiling a
+                    # URL and a ten-sentence output policy into three
+                    # generations of an unusable observer-and-summarizer.
+                    description = generalize_description(
+                        need_spec.get("contract") or f"{spec.role}: {spec.goal}")
                     cap = await acquire(
                         need,
                         manager=self.manager,
                         registry=self.registry,
                         broker=self.broker,
                         builder=builder,
-                        description=f"{spec.role}: {spec.goal}",
+                        description=description,
                         model=self.model,
                         tracer=self.tracer,
                         pre_interaction=self._consult_interaction,
+                        example_input=need_spec.get("example_input") or None,
                     )
                     caps[cap.name] = cap
         return caps

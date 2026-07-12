@@ -70,8 +70,10 @@ BRAIN_MODEL_FAST = os.environ.get("BRAIN_MODEL_FAST") or None
 
 def model_for(role: str):
     """Pick the model tier for an engine role: high-frequency, small-context
-    roles ('worker', 'supervisor') -> fast; judgment-heavy roles -> strong."""
-    if role in ("worker", "supervisor"):
+    roles ('worker', 'supervisor') and tightly-scoped mechanics ('repair' — a
+    seeded fix with the live traceback in hand) -> fast; judgment-heavy roles
+    (planning, strategy adjudication, authoring, synthesis) -> strong."""
+    if role in ("worker", "supervisor", "repair"):
         return BRAIN_MODEL_FAST or BRAIN_MODEL
     return BRAIN_MODEL_STRONG or BRAIN_MODEL
 
@@ -141,6 +143,11 @@ REVIEW_EVIDENCE_FETCHES = int(os.environ.get("REVIEW_EVIDENCE_FETCHES", "1"))
 # Bounded mid-run loop re-entries: when agents report an unmet OBSERVATION need
 # (report_evidence_gap), the planner may EXTEND the running plan this many times.
 REPLANS_PER_RUN = int(os.environ.get("REPLANS_PER_RUN", "1"))
+# Bounded failure-driven recoveries: when a stage FAILS (capability could not be
+# acquired, or the stage died before completing), the controller converts the
+# failure into a residual requirement and re-enters strategy adjudication this
+# many times per run — replacing the failed node, never retrying it blindly.
+RECOVERIES_PER_RUN = int(os.environ.get("RECOVERIES_PER_RUN", "2"))
 
 # Executive supervision: an LLM judgment consulted at decision moments
 # (pre-user-interaction, stage completions). Fail-open, budget-capped.

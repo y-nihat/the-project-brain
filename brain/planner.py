@@ -84,6 +84,28 @@ _SYSTEM = (
     "embed_and_search). Do NOT reuse an existing key whose description does not fit, and "
     "avoid vague umbrella names like 'code_execution'. The system will build any new "
     "capability you name.\n"
+    "ATOMIC CAPABILITIES: one operation per capability — an observer observes, a "
+    "transformer transforms, a synthesizer synthesizes, a validator validates. Never a "
+    "fetch-and-summarize monolith: when the optional interpretation half fails, it destroys "
+    "the successful observation half with it, and the compiled-in task policy makes the "
+    "tool unusable for any other objective. Interpretation and final formatting belong to "
+    "the STAGE AGENT, which composes atomic tools.\n"
+    "CAPABILITY NEEDS: for EVERY new capability key you name, add an entry to "
+    "`capability_needs` with: `key`; `contract` — an INSTANCE-NEUTRAL statement of the one "
+    "operation (what it observes/does, its inputs, its outputs, and that partial/negative "
+    "yield must be reported honestly) containing NO specific URLs/paths/identifiers, NO "
+    "output-shape policy (counts, paragraph limits), and NO final-answer synthesis; and "
+    "`example_input` — the CONCRETE values from THIS objective (the actual locator, query, "
+    "identifier) used only to verify the built tool. The builder sees the contract, not "
+    "your stage goals — a contract that smuggles task policy poisons the reusable library.\n"
+    "STRATEGY ADJUDICATION: when the objective depends on observing a designated external "
+    "source/system (or the method choice is otherwise consequential), enumerate in "
+    "`strategy_rationale` the materially different ways the required properties could be "
+    "observed, and choose by EPISTEMIC FIT FIRST — how directly and reliably the method "
+    "observes what the deliverable's claims need — then cost; note why the rejected "
+    "alternatives lost. Always emit at least a brief `strategy_rationale` (it is persisted "
+    "and audited). Prefer a plan whose first method failing still leaves the alternatives "
+    "reachable — observation before synthesis, not fused into it.\n"
     "Also compile `success_criteria`: a short list of CHECKABLE conditions the finished work "
     "must meet, derived from THIS objective's explicit demands — counts ('exactly 3 sections'), "
     "formats ('self-contained HTML'), fidelity ('every claim traceable to the provided file'), "
@@ -103,6 +125,15 @@ _EXTEND_ADDENDUM = (
     "specific observation needs its current methods cannot establish. Do NOT re-plan "
     "completed work. Emit ONLY the additional stages that observe what is missing. "
     "New stages may depend on the existing stage ids provided in the prompt.\n"
+    "FAILED METHODS ARE EVIDENCE: a need may arise because a method FAILED — its tool "
+    "could not be built, or its stage died (the classified failure account is included "
+    "with the need). Treat that as an observation about the strategy: do NOT re-select "
+    "the failed method unless the failure account itself justifies a targeted variation "
+    "(state that justification in `strategy_rationale`); prefer a materially different, "
+    "source-aligned method, and carry forward any retained partial observations instead "
+    "of re-establishing them. If NO admissible method remains — or the only remaining "
+    "routes need authority/input only the user can grant — emit an EMPTY stages list: "
+    "a calibrated stop that the run reports honestly beats a doomed rebuild.\n"
     "STRATEGY ADJUDICATION (required): before choosing, enumerate the materially "
     "different ways the missing property could be established — direct observation of "
     "the designated target; a transformation that PRESERVES the needed property; an "
@@ -144,12 +175,40 @@ _PLAN_SCHEMA = {
             },
         },
         "success_criteria": {"type": "array", "items": {"type": "string"}},
-        # Extension mode: the comparison of candidate methods and why the
-        # chosen one best observes the missing property (audited).
+        # The comparison of candidate methods and why the chosen one best
+        # observes the required properties (persisted and audited).
         "strategy_rationale": {"type": "string"},
+        # Instance-neutral authoring contract per NEW capability key; the
+        # concrete task values ride separately as example_input (verification
+        # only) so task policy never compiles into reusable mechanism code.
+        "capability_needs": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "key": {"type": "string"},
+                    "contract": {"type": "string"},
+                    "example_input": {"type": "object"},
+                },
+                "required": ["key", "contract"],
+            },
+        },
     },
     "required": ["stages"],
 }
+
+
+def _normalize_needs(raw) -> dict[str, dict]:
+    """Coerce emitted capability_needs into {key: {contract, example_input}}."""
+    out: dict[str, dict] = {}
+    for n in raw or []:
+        if isinstance(n, dict) and n.get("key") and n.get("contract"):
+            ex = n.get("example_input")
+            out[str(n["key"])] = {
+                "contract": str(n["contract"])[:1200],
+                "example_input": ex if isinstance(ex, dict) else {},
+            }
+    return out
 
 
 class Planner:
@@ -214,15 +273,27 @@ class Planner:
             stages = [StageSpec(id="researcher", pattern="single", role="researcher",
                                 goal=objective, capabilities=["web_search"])]
         criteria = [str(c) for c in (captured.get("success_criteria") or []) if str(c).strip()]
-        return Plan(objective=objective, stages=stages, success_criteria=criteria)
+        # The initial method choice must be as auditable as a replan: an
+        # unrecorded rationale is where availability quietly becomes the rule.
+        rationale = str(captured.get("strategy_rationale") or "").strip()
+        self.tracer.event("plan.strategy", "planner",
+                          status="info" if rationale else "failed",
+                          rationale=rationale[:1500] or "(none recorded — availability "
+                          "may have functioned as the implicit rule)")
+        return Plan(objective=objective, stages=stages, success_criteria=criteria,
+                    strategy_rationale=rationale,
+                    capability_needs=_normalize_needs(captured.get("capability_needs")))
 
     async def extend(self, objective: str, completed: str, gaps: list[dict],
-                     existing_ids: list[str]) -> list[StageSpec]:
+                     existing_ids: list[str]):
         """Re-enter the core loop mid-run: design ONLY the additional stages
-        needed to observe what execution revealed it cannot establish. The
-        unmet need drives the method — the planner may reuse capabilities or
-        NAME NEW ONES for the system to author, exactly as in initial planning.
-        Returns [] when no additional observation is feasible."""
+        needed to observe what execution revealed it cannot establish — whether
+        the trigger was an agent-reported evidence gap or a METHOD FAILURE the
+        controller converted into a residual need. The unmet need drives the
+        method — the planner may reuse capabilities or NAME NEW ONES for the
+        system to author, exactly as in initial planning. Returns
+        ``(stages, success_criteria, capability_needs)``; empty stages means no
+        additional observation is feasible (a calibrated stop)."""
         from claude_agent_sdk import create_sdk_mcp_server, tool
 
         from .factory import locked_session
@@ -282,16 +353,22 @@ class Planner:
                 if d in known and d not in s.depends_on:
                     s.depends_on.append(d)
         criteria = [str(c) for c in (captured.get("success_criteria") or []) if str(c).strip()]
-        return [s for s in stages if s.id not in known], criteria
+        return ([s for s in stages if s.id not in known], criteria,
+                _normalize_needs(captured.get("capability_needs")))
 
 
 class StubPlanner:
     """Deterministic planner for tests; returns the workflow it was given."""
 
-    def __init__(self, stages: list[StageSpec], success_criteria: Optional[list[str]] = None):
+    def __init__(self, stages: list[StageSpec], success_criteria: Optional[list[str]] = None,
+                 strategy_rationale: str = "", capability_needs: Optional[dict] = None):
         self._stages = stages
         self._criteria = success_criteria or []
+        self._rationale = strategy_rationale
+        self._needs = dict(capability_needs or {})
 
     async def plan(self, objective: str, history: Optional[str] = None) -> Plan:
         return Plan(objective=objective, stages=list(self._stages),
-                    success_criteria=list(self._criteria))
+                    success_criteria=list(self._criteria),
+                    strategy_rationale=self._rationale,
+                    capability_needs=dict(self._needs))

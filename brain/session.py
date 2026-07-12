@@ -150,7 +150,13 @@ class BrainSession:
             objective += files_mod.manifest_note(manifest)
         blackboard = Blackboard(config.DB_PATH, session_id)
         manager = SandboxManager(session_id, self.ledger, tracer=self.tracer)
-        known = {c.name: c.description for c in self.registry.all()}
+        # Catalog hygiene BEFORE planning (P1-B): the planner sees current,
+        # qualified affordances — quarantined tools excluded, stale contracts
+        # labeled, previously-failed needs carrying their failure — instead of
+        # raw stored descriptions whose task residue anchors new plans.
+        from .acquisition import validation_epoch
+        from .registry import qualified_catalog
+        known = qualified_catalog(self.registry, validation_epoch())
         planner = Planner(model=config.model_for("planner"), known_capabilities=known,
                           tracer=self.tracer)
         from .supervisor import Supervisor
