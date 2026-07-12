@@ -445,6 +445,7 @@ class Orchestrator:
         # remote locators) are held to the retained-evidence gate; depth-only
         # risk is not — a pure synthesis chain has no payloads to retain.
         self._source_derived = has_user_evidence or has_external_evidence
+        plan = await self._correct_proxy_first_plan(plan, objective, history)
         planned, appended = workflow.append_review_if_needed(
             plan.stages, has_user_evidence=has_user_evidence,
             has_external_evidence=has_external_evidence)
@@ -682,6 +683,105 @@ class Orchestrator:
         answer_dir.mkdir(parents=True, exist_ok=True)
         (answer_dir / "ANSWER.md").write_text(answer or "")
         return answer or "(no answer produced)"
+
+    async def _correct_proxy_first_plan(self, plan, objective: str,
+                                        history: Optional[str]):
+        """Proactive tool creation (user directive: 'if the tool required is not
+        available, create it — do not treat a less relevant alternative as
+        sufficient'). A source-derived objective whose plan skipped direct
+        observation with NO legitimate intrinsic blocker is a proxy-first plan:
+        the planner fell back to a weaker channel because the direct tool was
+        not already installed. Tool-absence is never a blocker — the system
+        authors tools — so re-plan ONCE with a pointed corrective. Bounded and
+        fail-open: any error, or a planner that still cannot observe directly,
+        keeps the best plan we have."""
+        from .planner import observation_is_accountable
+
+        if not self._source_derived or observation_is_accountable(
+                getattr(plan, "direct_observation", {})):
+            return plan
+        direct = getattr(plan, "direct_observation", {}) or {}
+        self.tracer.event("plan.proxy_first", "planner", status="failed",
+                          decision=direct.get("decision", "unstated"),
+                          blocker=direct.get("blocker_class", ""))
+        corrective = (
+            "REVISION REQUIRED — your plan does not directly observe the designated "
+            "source, and you recorded no legitimate blocker. The ABSENCE OF AN EXISTING "
+            "TOOL IS NOT A BLOCKER: this system AUTHORS tools at runtime. Redesign so the "
+            "plan OBSERVES THE SOURCE ITSELF — decompose it into atomic capabilities you "
+            "NAME for the system to build (acquire the object; convert its carrying signal "
+            "into files) followed by an ordinary agent stage that PERCEIVES those files "
+            "(reading text, looking at images — the agent is natively multimodal, so do NOT "
+            "author a vision/OCR/caption model). Do not substitute web search or other "
+            "testimony for direct observation. Only if direct observation is genuinely "
+            "infeasible, set direct_observation.decision='infeasible' with a real "
+            "blocker_class (requires_credential / resource_ceiling / no_free_means / "
+            "physical_access / user_authority).")
+        try:
+            revised = await self.planner.plan(objective, history=history, corrective=corrective)
+        except Exception as e:  # noqa: BLE001 — correction must never break planning
+            self.tracer.event("plan.corrected", "planner", status="failed",
+                              error=f"{type(e).__name__}: {str(e)[:160]}")
+            return plan
+        self.tracer.event(
+            "plan.corrected", "planner", status="info",
+            accountable=observation_is_accountable(getattr(revised, "direct_observation", {})),
+            stages=[s.id for s in revised.stages])
+        return revised if revised.stages else plan
+
+    def _workspace_server(self, workspace: Path):
+        """A general, always-available file viewer for stage agents: open any
+        file the run retained or produced (workspace-relative). IMAGES are
+        returned AS IMAGES — the reasoning model is multimodal, so 'describe
+        these frames/screenshots/scans' is the agent's OWN ability and needs no
+        vision-model tool. Text returns an excerpt. This is the primitive that
+        makes a plan of [author a frame/segment/page extractor] -> [an agent
+        perceives the produced files] executable across stages."""
+        from claude_agent_sdk import create_sdk_mcp_server, tool
+
+        from .capabilities.runtime import image_blocks
+
+        @tool("read_file",
+              "Open a file the run holds (workspace-relative path — e.g. a path from a "
+              "tool's produced-files list or an upstream note). IMAGES (png/jpg/webp/…) "
+              "come back as images for you to LOOK AT directly; text files return an "
+              "excerpt. Use it to PERCEIVE retained evidence — frames, screenshots, "
+              "scans, rendered pages, charts — rather than guessing their content.",
+              {"type": "object", "properties": {"path": {"type": "string"}},
+               "required": ["path"]})
+        async def read_file(args):
+            return self._read_workspace(workspace, str(args.get("path", "")))
+
+        return create_sdk_mcp_server(name="workspace", version="1.0.0", tools=[read_file])
+
+    def _read_workspace(self, workspace: Path, rel: str) -> dict:
+        """Image-aware workspace file read (the read_file tool body, split out so
+        it is directly testable). Images -> image content block; text -> excerpt;
+        path traversal and missing files -> honest error."""
+        from .capabilities.runtime import image_blocks
+
+        root = Path(workspace).resolve()
+        rel = str(rel or "").strip().lstrip("/")
+        p = (root / rel).resolve()
+        if not str(p).startswith(str(root)) or not p.is_file():
+            avail = sorted(str(x.relative_to(root)) for x in root.rglob("*")
+                           if x.is_file() and x.relative_to(root).parts[:1] != ("prior",))[:40]
+            return {"content": [{"type": "text", "text":
+                    f"no such workspace file: {rel!r}. Files that exist: {avail}"}],
+                    "is_error": True}
+        imgs = image_blocks([str(p.relative_to(root))], root, 1,
+                            config.OBSERVATION_MAX_IMAGE_BYTES)
+        self.tracer.event("agent.read_file", "workspace", status="info",
+                          path=rel[:160], kind="image" if imgs else "text")
+        if imgs:
+            return {"content": [{"type": "text", "text": f"[{rel} — shown as image]"}] + imgs}
+        try:
+            text = p.read_text(errors="ignore")
+        except OSError as e:
+            return {"content": [{"type": "text", "text": f"unreadable: {e}"}],
+                    "is_error": True}
+        more = f"\n[…{len(text) - 8000:,} more chars]" if len(text) > 8000 else ""
+        return {"content": [{"type": "text", "text": f"[{rel}]\n{text[:8000]}{more}"}]}
 
     async def _repair_artifacts(self, stage_id: str, outputs: dict, workspace: Path,
                                 out: str) -> str:
@@ -1270,7 +1370,7 @@ class Orchestrator:
             "against EACH; an unmet criterion is grounds to revise):\n"
             + "\n".join(f"- {c}" for c in self._criteria) if self._criteria else "")
         evidence_server = {"evidence": self._evidence_server(workspace)}
-        evidence_tools = ["mcp__evidence__locate_evidence", "mcp__evidence__view_evidence"]
+        evidence_tools = ["mcp__evidence__locate_evidence"]
         try:
             for rnd in range(1, max(1, stage.rounds) + 1):
                 spec = AgentSpec(id=f"{stage.id}.r{rnd}", role=stage.role, goal=stage.goal,
@@ -1344,7 +1444,7 @@ class Orchestrator:
                       "'proxy'-tier entries are retained testimony ABOUT it (grounding in proxy "
                       "alone is a stated limitation, only acceptable when the criteria admit it); "
                       "an agent's or courier's PROSE — however organized or confident — is "
-                      "narration, NEVER evidence, whatever it calls itself. Use view_evidence to "
+                      "narration, NEVER evidence, whatever it calls itself. Use read_file to "
                       "open retained files (images are shown as images — look at visual artifacts "
                       "before judging claims about them). "
                       "Your FIRST line must be exactly one of: 'VERDICT: approved' — "
@@ -1645,38 +1745,10 @@ class Orchestrator:
                               found=result.startswith("FOUND"))
             return {"content": [{"type": "text", "text": result}]}
 
-        @tool("view_evidence",
-              "Open a file the run retained or produced (workspace-relative path, as "
-              "listed in the evidence ledger / file lists). Images are returned AS "
-              "IMAGES — look at visual evidence and visual artifacts before judging "
-              "claims about them; text files return an excerpt.",
-              {"type": "object", "properties": {"path": {"type": "string"}},
-               "required": ["path"]})
-        async def view_evidence(args):
-            from .capabilities.runtime import image_blocks
-
-            rel = str(args.get("path", "")).strip()
-            p = (Path(workspace) / rel).resolve()
-            if not str(p).startswith(str(Path(workspace).resolve())) or not p.is_file():
-                return {"content": [{"type": "text", "text":
-                        f"no such workspace file: {rel!r}"}], "is_error": True}
-            imgs = image_blocks([rel], Path(workspace), 1,
-                                config.OBSERVATION_MAX_IMAGE_BYTES)
-            self.tracer.event("review.view", "evidence", status="info",
-                              path=rel[:160], kind="image" if imgs else "text")
-            if imgs:
-                return {"content": [{"type": "text",
-                                     "text": f"[{rel} — shown as image]"}] + imgs}
-            try:
-                text = p.read_text(errors="ignore")[:6000]
-            except OSError as e:
-                return {"content": [{"type": "text", "text": f"unreadable: {e}"}],
-                        "is_error": True}
-            return {"content": [{"type": "text",
-                                 "text": f"[{rel} — first 6000 chars]\n{text}"}]}
-
+        # File viewing (incl. images-as-images) is the general read_file tool
+        # every stage agent already has; review needs no separate copy.
         return create_sdk_mcp_server(name="evidence", version="1.0.0",
-                                     tools=[locate_evidence, view_evidence])
+                                     tools=[locate_evidence])
 
     async def _run_agent_with_reflection(self, spec, caps, objective, upstream, history,
                                          workspace, task_context: Optional[str] = None,
@@ -1703,6 +1775,10 @@ class Orchestrator:
         allowed = [f"mcp__caps__{name}" for name in caps]
         if channel is not None:
             allowed = allowed + TEAM_TOOLS
+        # Multimodal perception is the agent's own ability: every real stage
+        # agent can open retained files, images shown AS images.
+        if channel is not None and workspace is not None:
+            allowed = allowed + ["mcp__workspace__read_file"]
         if extra_tools:
             allowed = allowed + list(extra_tools)
         session_secrets = getattr(self.broker, "secrets", {}) or {}
@@ -1723,6 +1799,8 @@ class Orchestrator:
                     secrets=getattr(self.broker, "secrets", None))
             if channel is not None:
                 servers["team"] = build_team_server(channel)
+            if channel is not None and workspace is not None:
+                servers["workspace"] = self._workspace_server(workspace)
             if extra_servers:
                 servers.update(extra_servers)
             options = factory.locked_session(

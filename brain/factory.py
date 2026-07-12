@@ -98,9 +98,12 @@ def agent_system_prompt(spec: AgentSpec, allowed_tools: list[str],
             "synthesize and conclude. If a tool keeps returning no results, stop calling it and say so."
         )
         lines.append(
-            "Some tool results include IMAGES (files the tool produced, shown inline). "
-            "Actually LOOK at them — visual content is evidence you are expected to "
-            "observe and describe from what you see, never from what you assume."
+            "PERCEPTION IS YOUR OWN ABILITY: you are natively multimodal. Some tool "
+            "results include IMAGES (files a tool produced, shown inline), and the "
+            "read_file tool opens any file the run holds — images come back as images. "
+            "Actually LOOK at them: to describe frames, screenshots, scans, rendered "
+            "pages, or charts, open them with read_file and report what you SEE — never "
+            "what you assume, and never by building a separate vision model."
         )
     else:
         lines.append(
