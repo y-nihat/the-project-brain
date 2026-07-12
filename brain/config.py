@@ -164,6 +164,9 @@ SUPERVISOR_MAX_CALLS = int(os.environ.get("SUPERVISOR_MAX_CALLS", "12"))
 # User-provided files (@mentions / attach): copied into the run workspace.
 FILE_ATTACH_MAX_MB = int(os.environ.get("FILE_ATTACH_MAX_MB", "50"))
 FILE_ATTACH_TOTAL_MAX_MB = int(os.environ.get("FILE_ATTACH_TOTAL_MAX_MB", "200"))
+# When a file the user NAMED cannot be accessed, ask them for a correct path
+# this many times before proceeding without it (interactive sessions only).
+FILE_ASK_ATTEMPTS = int(os.environ.get("FILE_ASK_ATTEMPTS", "2"))
 
 # Reflection loop: watch a trusted tool's live health and repair it if it degrades.
 CAPABILITY_CALL_BUDGET = int(os.environ.get("CAPABILITY_CALL_BUDGET", "25"))          # per (agent, capability)

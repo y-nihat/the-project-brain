@@ -10,14 +10,19 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
+from typing import Optional
 
 from . import config
 
 # @"path with spaces" or @bare/path (stops at whitespace)
 _MENTION = re.compile(r'@(?:"([^"]+)"|([^\s"\'@]+))')
 
-# A path/filename token, backticked (`data/inbox/x.mp4`) or bare (foo.mp4).
-_PATHLIKE = re.compile(r'`([^`]+)`|([\w./-]+\.\w{1,6})')
+# A DESIGNATED file the user named in the objective: a backticked token, or a
+# bare token ending in a file extension. The extension must START with a letter
+# then be alphanumeric (so ".mp4"/".mp3"/".h264" match, while "e.g", "i.e", and
+# "v3.12" — digit- or single-char tails — do not).
+_DESIGNATED = re.compile(r'`([^`]+)`|([^\s`"\'<>|]+\.[A-Za-z][A-Za-z0-9]{1,5})\b')
+_HAS_EXT = re.compile(r'\.[A-Za-z][A-Za-z0-9]{1,5}$')
 
 
 def parse_mentions(text: str) -> tuple[str, list[str]]:
@@ -43,38 +48,79 @@ def parse_mentions(text: str) -> tuple[str, list[str]]:
     return _MENTION.sub(_sub, text), paths
 
 
-def rewrite_inbox_mentions(text: str) -> tuple[str, list[str]]:
-    """Recognize files the user DROPPED in the sanctioned inbox and named in the
-    objective by path (``data/inbox/x.mp4`` or bare ``x.mp4``) — a first-class
-    way to designate a source, alongside @mentions and remote locators. Each
-    match is rewritten to its workspace path (``input/<name>``) and returned for
-    materialization. ONLY files that actually resolve inside the inbox are
-    touched, so an arbitrary host path in objective text is never materialized.
-    Run AFTER parse_mentions so already-rewritten ``input/...`` tokens are left
-    alone."""
-    inbox = config.INBOX_DIR
-    if not inbox.is_dir():
-        return text, []
-    inbox_r = inbox.resolve()
-    paths: list[str] = []
+def _looks_like_file(tok: str) -> bool:
+    """A token that plausibly names a file the user wants used — not a URL, not
+    an already-rewritten workspace path, ending in a real file extension."""
+    tok = tok.strip().strip('\'"`').rstrip(".,;:!?)]}")
+    if not tok or "://" in tok or tok.lower().startswith(("www.", "input/")):
+        return False
+    return _HAS_EXT.search(tok) is not None
+
+
+def resolve_file(token: str) -> Optional[Path]:
+    """Resolve a user-named path to a readable file the ENGINE can reach —
+    project-relative, absolute (inside the brain's mount), or a basename in the
+    sanctioned inbox. Returns None when nothing accessible matches. This is the
+    heart of "why can't the agent read the file I named": a sandboxed tool only
+    ever sees files the engine copies into the workspace, so a path the engine
+    cannot resolve here can never reach a tool, no matter how the agent spells
+    it."""
+    tok = token.strip().strip('\'"`').rstrip(".,;:!?)]}")
+    if not tok:
+        return None
+    candidates = []
+    p = Path(tok)
+    if p.is_absolute():
+        candidates.append(p)
+    else:
+        candidates.append(config.PROJECT_ROOT / tok)
+        try:
+            candidates.append(Path.cwd() / tok)
+        except OSError:
+            pass
+    candidates.append(config.INBOX_DIR / Path(tok).name)
+    for c in candidates:
+        try:
+            r = c.resolve()
+        except (OSError, ValueError):
+            continue
+        if r.is_file():
+            return r
+    return None
+
+
+def resolve_local_sources(text: str) -> tuple[str, list[str], list[str]]:
+    """Detect files the user DESIGNATED by path in the objective (backticked or
+    bare, e.g. ``data/inbox/clip.mp4`` or ``report.pdf``) — a first-class way to
+    provide a source, alongside @mentions and remote locators.
+
+    Returns ``(rewritten_text, resolved_abs_paths, unresolved_tokens)``:
+      * a token that resolves to a readable file is rewritten in-text to
+        ``input/<name>`` and its absolute path returned for materialization;
+      * a token that clearly names a file but does NOT resolve is returned
+        unresolved, so the caller can ASK the user for an accessible path
+        instead of letting the run author a doomed, file-starved pipeline.
+
+    Only file-shaped tokens are considered; URLs and ``input/`` tokens are left
+    untouched. Run AFTER parse_mentions."""
+    resolved: list[str] = []
+    unresolved: list[str] = []
 
     def _sub(m: re.Match) -> str:
-        tok = (m.group(1) or m.group(2) or "").strip().strip('\'"')
-        if not tok or tok.startswith("input/"):
+        raw = m.group(1) if m.group(1) is not None else (m.group(2) or "")
+        tok = raw.strip().strip('\'"').rstrip(".,;:!?)]}")
+        if not _looks_like_file(tok):
             return m.group(0)
-        for cand in ((config.PROJECT_ROOT / tok), (inbox / Path(tok).name)):
-            try:
-                c = cand.resolve()
-            except (OSError, ValueError):
-                continue
-            if c.is_file() and str(c).startswith(str(inbox_r)):
-                paths.append(str(c))
-                repl = f"input/{Path(tok).name}"
-                # Keep surrounding backticks; replace only the inner token.
-                return m.group(0).replace(tok, repl) if m.group(1) else repl
+        hit = resolve_file(tok)
+        if hit is not None:
+            if str(hit) not in resolved:
+                resolved.append(str(hit))
+            return m.group(0).replace(tok, f"input/{hit.name}")
+        if tok not in unresolved:
+            unresolved.append(tok)
         return m.group(0)
 
-    return _PATHLIKE.sub(_sub, text), paths
+    return _DESIGNATED.sub(_sub, text), resolved, unresolved
 
 
 def materialize(paths: list[str], workspace: Path) -> list[dict]:

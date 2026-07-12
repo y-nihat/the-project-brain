@@ -127,12 +127,32 @@ class BrainSession:
         from . import files as files_mod
 
         objective, mentioned = files_mod.parse_mentions(objective)
-        # Files dropped in the sanctioned inbox and named by path are attached
-        # too — so "provide the video directly and name it" designates a source
-        # even without an @mention (last run's video sat in inbox, referenced by
-        # a backticked path, and never entered the workspace).
-        objective, inbox_paths = files_mod.rewrite_inbox_mentions(objective)
-        attach_paths = list(dict.fromkeys(mentioned + inbox_paths + list(files or [])))
+        # A file the user NAMES by path (backticked or bare — not only via @) is
+        # a designated source too. Resolve each to a file the engine can reach:
+        # a sandboxed tool only ever sees files the engine copies into the
+        # workspace, so a path the engine cannot resolve here can NEVER reach a
+        # tool, however the agent spells it (the technical reason a plainly-named
+        # file was 'unreadable' — last run's inbox video, referenced by path,
+        # never entered the workspace).
+        objective, path_resolved, unresolved = files_mod.resolve_local_sources(objective)
+        resolved = list(path_resolved)
+        for tok in dict.fromkeys(mentioned + list(files or [])):
+            hit = files_mod.resolve_file(tok)
+            (resolved.append(str(hit)) if hit else unresolved.append(tok))
+        # Unavoidable interaction: when a designated file cannot be accessed, ASK
+        # for a correct path (bounded) instead of retrying blindly or starving
+        # the run — the same interactive channel the credential gate uses.
+        objective, resolved, missing = self._resolve_missing_files(
+            objective, list(dict.fromkeys(unresolved)), resolved)
+        attach_paths = list(dict.fromkeys(resolved))
+        if missing:
+            objective += (
+                "\n\n[engine note] These file(s) you referenced could NOT be accessed and "
+                "were NOT loaded into the run: " + ", ".join(missing) + ". Sandboxed tools "
+                "can only read files the engine placed in the workspace. If the task depends "
+                "on such a file, report a fatal blocker naming it — do NOT retry with guessed "
+                "paths and NEVER fabricate its contents.")
+            self.tracer.event("files.unavailable", "attach", status="failed", tokens=missing)
 
         hist_text, seed_run = history_mod.history_block(config.DB_PATH, config.RUNS_DIR, objective)
 
@@ -201,6 +221,44 @@ class BrainSession:
         finally:
             manager.close()
             blackboard.close()
+
+    def _resolve_missing_files(self, objective: str, unresolved: list[str],
+                               resolved: list[str]) -> tuple[str, list[str], list[str]]:
+        """Ask the user for an accessible path for each designated file that
+        could not be found — the file analogue of the credential gate. Bounded
+        by FILE_ASK_ATTEMPTS; returns (objective, resolved, still_missing)."""
+        from pathlib import Path as _Path
+
+        from . import files as files_mod
+
+        missing: list[str] = []
+        for tok in unresolved:
+            name = _Path(tok).name
+            help_text = (
+                f"The file '{tok}' named in your objective is not accessible to the brain. "
+                f"Put it in the project's data/inbox/ folder and enter its path "
+                f"(e.g. data/inbox/{name}), or enter any path inside the project the brain "
+                "can read. Sandboxed tools can only use files the engine loads from there.")
+            found: Optional[str] = None
+            for _ in range(max(0, config.FILE_ASK_ATTEMPTS)):
+                val = self.broker.collect_value(
+                    name=f"an accessible path for {name}",
+                    purpose=f"the file '{tok}' could not be accessed",
+                    help_text=help_text)
+                if not val:
+                    break
+                hit = files_mod.resolve_file(val)
+                if hit is not None:
+                    found = str(hit)
+                    objective = objective.replace(tok, f"input/{_Path(hit).name}")
+                    break
+                self.broker.inform(f"Still cannot access '{val}'. The file must be inside "
+                                   "the project (e.g. under data/inbox/).")
+            if found:
+                resolved.append(found)
+            else:
+                missing.append(tok)
+        return objective, list(dict.fromkeys(resolved)), missing
 
     def _export(self, run_id: str) -> None:
         endpoint = os.environ.get("PHOENIX_COLLECTOR_ENDPOINT", "http://phoenix:6006/v1/traces")

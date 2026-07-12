@@ -168,6 +168,33 @@ class ApprovalBroker:
         self.tracer.event("secret.provided", name, status="granted")  # name only, never the value
         return value
 
+    def collect_value(self, name: str, purpose: str,
+                      help_text: Optional[str] = None) -> Optional[str]:
+        """Interactively collect a NON-secret value from the user — e.g. a
+        corrected file path when a designated source cannot be reached. Unlike
+        :meth:`collect_secret` the value is shown on screen and is NOT stored in
+        the session secret store; it is the same interactive channel the
+        credential gate uses, extended to 'the system needs a fact only you can
+        supply'. Returns None on empty input or in an automated session."""
+        self.tracer.event("input.requested", name[:60], status="info", purpose=purpose[:200])
+        if self.auto is not None:
+            # Automated/non-interactive sessions cannot answer a free-form ask.
+            self.tracer.event("input.provided", name[:60], status="denied")
+            return None
+        self._output(
+            f"\n  INPUT NEEDED — {purpose}\n"
+            + (("  " + "\n  ".join(str(help_text).strip().splitlines()) + "\n")
+               if help_text else "")
+            + "  (leave empty to proceed without it)"
+        )
+        try:
+            value = (self._input(f"  Enter {name}: ") or "").strip()
+        except Exception:  # noqa: BLE001 — no tty, EOF, interrupted, ...
+            value = ""
+        self.tracer.event("input.provided", name[:60],
+                          status="granted" if value else "denied")
+        return value or None
+
     def _decide(self, req: ApprovalRequest) -> bool:
         banner = (
             "\n" + "=" * 72 + "\n"

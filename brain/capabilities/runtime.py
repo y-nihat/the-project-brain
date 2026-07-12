@@ -196,7 +196,10 @@ def build_caps_server(
                         "content": [{"type": "text", "text": (
                             f"file(s) not found in the workspace: {missing}. The tool was NOT "
                             f"run. Files that actually exist: {available}. Use these exact "
-                            "workspace-relative paths.")}],
+                            "workspace-relative paths. If a file the task REQUIRES is not among "
+                            "them, it was never provided to this run — report a fatal blocker "
+                            "naming it (report_blocker, severity='fatal'); do NOT retry with "
+                            "guessed paths and never fabricate its contents.")}],
                         "is_error": True,
                     }
 
