@@ -100,7 +100,24 @@ def main():
     except Exception as e:  # noqa: BLE001
         print(json.dumps({"error": f"search failed: {e}", "query": query}))
         return 1
-    print(json.dumps({"query": query, "results": results}))
+    # Evidence contract, same as every observer: retain the raw payload,
+    # report what was ACTUALLY accessed (the search index, never the linked
+    # pages), and report yield honestly — snippets are index excerpts, so
+    # coverage of any deeper property is at most partial.
+    os.makedirs("/work/out", exist_ok=True)
+    with open("/work/out/search-results.json", "w") as fh:
+        json.dump({"query": query, "results": results}, fh, indent=2)
+    print(json.dumps({
+        "query": query,
+        "results": results,
+        "source_refs": ["search-index://duckduckgo/?q=" + query],
+        "coverage": "partial" if results else "none",
+        "unresolved_needs": (
+            ["full content of the result pages (snippets are search-index "
+             "excerpts; the linked pages were NOT fetched)"] if results
+            else ["any results for this query via this index"]),
+        "consumed_inputs": [],
+    }))
     return 0
 
 
@@ -141,8 +158,13 @@ def web_search_build_context() -> dict[str, str]:
     return {"Dockerfile": WEB_SEARCH_DOCKERFILE, "search.py": WEB_SEARCH_PROGRAM}
 
 
+# (make_capability, make_build_context, free_hint, sample_input) — the sample
+# input drives the SAME generic evidence-contract verification every authored
+# observer passes; recipes get no privileged bypass.
 _RECIPES: dict[str, tuple] = {
-    "web_search": (web_search_capability, web_search_build_context, "ddgs (DuckDuckGo, no API key)"),
+    "web_search": (web_search_capability, web_search_build_context,
+                   "ddgs (DuckDuckGo, no API key)",
+                   {"query": "site reliability engineering", "max_results": 3}),
 }
 
 
@@ -194,7 +216,7 @@ async def acquire(
 async def _acquire_from_recipe(
     need_key, recipe, *, manager, registry, builder, max_attempts, tracer
 ) -> Capability:
-    make_cap, make_context, free_hint = recipe
+    make_cap, make_context, free_hint, sample_input = recipe
     cap: Capability = make_cap()
 
     with tracer.span("capability.acquire", need_key, mode="recipe", free_path=free_hint):
@@ -227,13 +249,25 @@ async def _acquire_from_recipe(
                 await asyncio.to_thread(manager.build_image, cap.image_tag, build_context)
 
             with tracer.span("capability.verify", cap.name) as vsp:
-                result: VerificationResult = await asyncio.to_thread(verify, cap, manager)
+                # ONE evidence contract for every observer (V060 finding: the
+                # bootstrap path was exempt from the invariant applied to
+                # authored tools — the most trusted tool had the weakest
+                # contract). Generic verification (incl. evidence-contract
+                # checks) runs FIRST; the recipe's shape verifier remains as
+                # an extra known-good check.
+                ok, detail, _ = await asyncio.to_thread(
+                    _generic_verify, cap, sample_input or {}, {}, manager)
+                if ok:
+                    result: VerificationResult = await asyncio.to_thread(verify, cap, manager)
+                else:
+                    result = VerificationResult(False, f"evidence contract: {detail}")
                 vsp.set(passed=result.passed, detail=result.detail, source=source)
                 if not result.passed:
                     vsp.status = "failed"
 
             if result.passed:
                 cap.verified = True
+                cap.validated_engine = validation_epoch()
                 promoted_dir = tracer.artifact_path(cap.name, "promoted")
                 _write_context(promoted_dir, build_context)
                 with tracer.span("capability.promote", cap.name) as psp:
@@ -804,8 +838,13 @@ _BUILDER_SYSTEM = (
     "that searches the live web using a FREE library that needs NO API key (suggested: {free_hint}). "
     "Requirements for the program:\n"
     "  * read the query from env var SEARCH_QUERY and an optional integer SEARCH_MAX_RESULTS;\n"
+    "  * write the raw results payload to /work/out/search-results.json (retained evidence);\n"
     "  * print exactly one JSON object on the final stdout line: "
-    "{{\"query\": <str>, \"results\": [{{\"title\": <str>, \"href\": <str>, \"body\": <str>}}]}};\n"
+    "{{\"query\": <str>, \"results\": [{{\"title\": <str>, \"href\": <str>, \"body\": <str>}}], "
+    "\"source_refs\": [<the index locator actually queried>], "
+    "\"coverage\": \"partial\"|\"none\", \"unresolved_needs\": [<what snippets do NOT cover>], "
+    "\"consumed_inputs\": []}} — snippets are index excerpts, so coverage is at most partial "
+    "and the linked pages must be listed as unresolved;\n"
     "  * exit 0 on success, non-zero on failure.\n"
     "Requirements for the Dockerfile: base image python:3.12-slim, pip install the chosen library, "
     "and `COPY search.py /app/search.py`. Do NOT set an ENTRYPOINT/CMD. "
