@@ -144,7 +144,9 @@ def test_extension_lands_before_pending_review_and_feeds_it(tmp_path, monkeypatc
     """End-to-end shape of the observed failure, fixed: a URL objective gets an
     engine-appended review; the draft stage reports a gap; the extension runs
     BEFORE the review; the review sees its notes and approves; the run is
-    honestly SUCCEEDED via an actual assessment."""
+    honestly SUCCEEDED via an actual assessment. The gather stage RETAINS a
+    payload — on a source-derived run, approval over an empty evidence ledger
+    is voided by the engine (V060), so an honest SUCCEEDED requires retention."""
     monkeypatch.setattr(config, "RUNS_DIR", tmp_path / "runs")
     bb = Blackboard(tmp_path / "b.db", "rev")
 
@@ -156,6 +158,9 @@ def test_extension_lands_before_pending_review_and_feeds_it(tmp_path, monkeypatc
             bb.put("evidence.gaps", [{"agent": "draft", "need": "content, not metadata"}])
             return "metadata-only draft"
         if name == "gather":
+            obs = tmp_path / "runs" / "rev" / "workspace" / "observer"
+            obs.mkdir(parents=True, exist_ok=True)
+            (obs / "content.txt").write_text("observed content: A then B then C")
             return "observed content: A then B then C"
         if name.startswith("review.r"):
             return "VERDICT: approved"
