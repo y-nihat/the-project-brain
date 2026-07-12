@@ -123,6 +123,12 @@ SANDBOX_MAX_TIMEOUT = int(os.environ.get("SANDBOX_MAX_TIMEOUT", "300"))
 # Cap on files captured back from /work/out (protects the orchestrator process).
 SANDBOX_MAX_OUTPUT_MB = int(os.environ.get("SANDBOX_MAX_OUTPUT_MB", "128"))
 
+# Multimodal observation: image files a tool produced are returned to the agent
+# as image content blocks (perception, not bulk transfer) — bounded per call.
+OBSERVATION_MAX_IMAGES = int(os.environ.get("OBSERVATION_MAX_IMAGES", "3"))
+OBSERVATION_MAX_IMAGE_BYTES = int(os.environ.get("OBSERVATION_MAX_IMAGE_BYTES",
+                                                 str(2 * 1024 * 1024)))
+
 # Watchdogs for agent (LLM) sessions: abort when no SDK message arrives for
 # AGENT_STALL_TIMEOUT seconds, or when a session exceeds AGENT_TOTAL_TIMEOUT.
 # Partial-message streaming makes token generation count as activity, so the

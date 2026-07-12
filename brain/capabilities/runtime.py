@@ -16,13 +16,48 @@ Docker or the host.
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 from pathlib import Path
 from typing import Iterable, Optional
 
+from .. import evidence as evidence_mod
 from ..models import Capability
 from ..sandbox import policy
 from . import health as health_mod
+
+# Observation results in a modality the reasoning model supports must be
+# PRESENTABLE in that modality: an image a tool produced (a rendered page, a
+# chart, a frame, a scan) is returned to the agent as an image content block,
+# not a "(N bytes, binary)" black hole. Without this, no plan involving visual
+# observation is executable, so visual channels silently vanish from the
+# strategy space. Bounded hard — perception, not bulk transfer.
+_IMAGE_EXTS = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+               ".gif": "image/gif", ".webp": "image/webp"}
+
+
+def image_blocks(produced: list[str], workspace: Path,
+                 max_images: int, max_bytes: int) -> list[dict]:
+    """MCP image content blocks for image files among a tool's outputs, in
+    production order, capped in count and per-file size."""
+    blocks: list[dict] = []
+    for rel in produced:
+        if len(blocks) >= max_images:
+            break
+        mime = _IMAGE_EXTS.get(Path(rel).suffix.lower())
+        if not mime:
+            continue
+        p = Path(workspace) / rel
+        try:
+            data = p.read_bytes()
+        except OSError:
+            continue
+        if not data or len(data) > max_bytes:
+            continue
+        blocks.append({"type": "image",
+                       "data": base64.b64encode(data).decode("ascii"),
+                       "mimeType": mime})
+    return blocks
 
 
 def _env_value(v) -> str:
@@ -231,6 +266,19 @@ def build_caps_server(
             produced: list[str] = []
             if result.output_files and ws is not None:
                 produced = _save_outputs(ws, cap.name, result.output_files)
+                # Retention is a LEDGER fact, not narration: record what was
+                # kept and the provenance the tool reported, so review and the
+                # approval gate compute the evidence plane instead of trusting
+                # any agent's account of it.
+                try:
+                    meta_line = json.loads(result.stdout.strip().splitlines()[-1])
+                except Exception:  # noqa: BLE001
+                    meta_line = {}
+                refs = meta_line.get("source_refs") if isinstance(meta_line, dict) else None
+                evidence_mod.record(
+                    ws.parent, cap.name, produced,
+                    refs if isinstance(refs, list) else [],
+                    str(meta_line.get("coverage", "")) if isinstance(meta_line, dict) else "")
                 # Causal-attribution evidence: did this call persist supplied
                 # content EXACTLY? A write that matches its input byte-for-byte
                 # exonerates the tool from defects IN that content — those
@@ -287,7 +335,18 @@ def build_caps_server(
                          + " — if the objective depends on what was NOT observed, call "
                            "report_evidence_gap instead of filling the gap from memory "
                            "or plausibility.")
-            return {"content": [{"type": "text", "text": text}]}
+            content: list[dict] = [{"type": "text", "text": text}]
+            if produced and ws is not None:
+                from .. import config as config_mod
+
+                imgs = image_blocks(produced, ws, config_mod.OBSERVATION_MAX_IMAGES,
+                                    config_mod.OBSERVATION_MAX_IMAGE_BYTES)
+                if imgs:
+                    content += imgs
+                    if tracer is not None:
+                        tracer.event("observation.images", cap.name, status="info",
+                                     count=len(imgs))
+            return {"content": content}
 
         return handler
 
