@@ -29,7 +29,25 @@ CAP_IMAGE_PREFIX = "brain/cap-"
 
 
 class AcquisitionError(RuntimeError):
-    pass
+    """A capability could not be acquired. Carries CLASSIFIED failure state so
+    the controller can treat the failure as an observation about the method —
+    route it to strategy adjudication — instead of a bare crash (the observed
+    terminal failure: three authoring dead ends escaped as a raw traceback and
+    no alternative strategy was ever considered).
+
+    ``failure_class``: authority (credential/approval denied), packaging (image
+    build / dependency), implementation (built but failed operational
+    verification), contract (violated the evidence/authoring contract),
+    submission (developer produced nothing usable), suppressed (method already
+    failed this run and no new rationale was given)."""
+
+    def __init__(self, message: str, *, need: str = "", failure_class: str = "unknown",
+                 attempts: int = 0, history: Optional[list[str]] = None):
+        super().__init__(message)
+        self.need = need
+        self.failure_class = failure_class
+        self.attempts = attempts
+        self.history = list(history or [])
 
 
 def _write_context(directory: Path, build_context: dict) -> None:
@@ -148,11 +166,14 @@ async def acquire(
     max_attempts: int = 3,
     tracer=None,
     pre_interaction=None,
+    example_input: Optional[dict] = None,
 ) -> Capability:
     """Acquire the capability for ``need_key`` (recipe if known, else author it).
 
     ``pre_interaction`` (async str -> None) is consulted before any user-facing
-    ask, so the supervisor can equip the user first."""
+    ask, so the supervisor can equip the user first. ``example_input`` carries
+    the CONCRETE instance values (a locator, a query) for verification only —
+    the description stays an instance-neutral contract."""
     tracer = tracer or NullTracer()
     recipe = _RECIPES.get(need_key)
     if recipe is not None:
@@ -163,7 +184,7 @@ async def acquire(
     return await _author_capability(
         need_key, description or need_key, manager=manager, registry=registry, broker=broker,
         model=model, developer=developer, max_attempts=max_attempts, tracer=tracer,
-        pre_interaction=pre_interaction,
+        pre_interaction=pre_interaction, example_input=example_input,
     )
 
 
@@ -225,7 +246,9 @@ async def _acquire_from_recipe(
             last_detail = result.detail
             build_context = None
 
-        raise AcquisitionError(f"could not build a working '{need_key}': {last_detail}")
+        raise AcquisitionError(f"could not build a working '{need_key}': {last_detail}",
+                               need=need_key, failure_class="implementation",
+                               attempts=max_attempts)
 
 
 # --------------------------------------------------------------------------- #
@@ -370,7 +393,9 @@ def _irrelevant_input_probe(cap: Capability, manager, extra_env: Optional[dict])
 
 # Bump when the probe battery itself changes behavior (the developer contract
 # is fingerprinted automatically; the probes are code, so they need a manual epoch).
-_PROBE_SUITE_VERSION = "2"
+# 3: evidence-contract checks (contradictory yield, observation-role yield fields,
+#    remote lineage + retention) joined verification.
+_PROBE_SUITE_VERSION = "3"
 
 
 def validation_epoch() -> str:
@@ -490,12 +515,63 @@ def _generic_verify(cap: Capability, sample_input: dict, sample_files: dict, man
         return (False, "output JSON must include `consumed_inputs`: the list of input "
                        "filenames the tool actually read (empty list if none). Provenance "
                        "depends on this being reported truthfully.", res)
+    ok, detail = _evidence_contract_check(cap, data if isinstance(data, dict) else {}, res)
+    if not ok:
+        return (False, detail, res)
     return (True, f"ok: {str(data)[:120]}", res)
+
+
+def _evidence_contract_check(cap: Capability, data: dict, res) -> tuple[bool, str]:
+    """Deterministic semantic-lineage checks on a verified run's output (#P0-C/D).
+
+    Operational success and instance yield are ORTHOGONAL: exit-0 with
+    coverage='none' is a valid observation ("nothing of the requested property
+    exists via this channel"), never a tool failure. What IS rejected:
+
+      * coverage that contradicts the reported unresolved needs — 'complete'
+        cannot coexist with named unobserved properties (length-based or
+        substituted coverage shows up exactly here);
+      * an observation-role tool that reports no yield fields at all — its
+        output cannot be routed as evidence;
+      * a remote observer claiming positive yield while retaining NO raw
+        payload — an unretained observation cannot support any claim later.
+    """
+    coverage = str(data.get("coverage", "")).strip().lower()
+    needs = data.get("unresolved_needs")
+    needs_list = needs if isinstance(needs, list) else None
+    if coverage == "complete" and needs_list:
+        return (False,
+                "CONTRADICTORY YIELD: the output claims coverage='complete' while also "
+                f"naming unresolved needs {needs_list[:3]}. Coverage is measured against the "
+                "REQUESTED property only — if any part of it could not be observed, coverage "
+                "is 'partial' or 'none'. A fallback/adjacent channel never inherits the "
+                "requested property's coverage.")
+    if cap.emits == "observation":
+        if "coverage" not in data or "unresolved_needs" not in data:
+            return (False,
+                    "MISSING EVIDENTIARY YIELD: an observation-role tool must report "
+                    "`coverage` ('complete'|'partial'|'none' for the REQUESTED property) and "
+                    "`unresolved_needs` (a list; empty if nothing) in its final JSON — "
+                    "without them its output cannot be routed as evidence.")
+        if (cap.network or "none") != "none":
+            refs = data.get("source_refs")
+            if not (isinstance(refs, list) and refs) and coverage in ("complete", "partial"):
+                return (False,
+                        "MISSING SOURCE LINEAGE: a remote observer reporting positive yield "
+                        "must include `source_refs` — the locators it ACTUALLY accessed.")
+            if coverage in ("complete", "partial") and not getattr(res, "output_files", None):
+                return (False,
+                        "UNRETAINED OBSERVATION: a remote observer reporting positive yield "
+                        "must write the raw retrieved payloads it relied on to /work/out as "
+                        "files (verbatim, not only a summary) — downstream verification "
+                        "traces claims to that retained evidence.")
+    return (True, "ok")
 
 
 async def _author_capability(
     need_key, description, *, manager, registry, broker, model, developer, max_attempts, tracer,
     seed: Optional[dict] = None, repair_reason: Optional[str] = None, pre_interaction=None,
+    example_input: Optional[dict] = None,
 ) -> Capability:
     dev = developer or make_developer_agent(model, tracer)
     mode = "repair" if seed else "author"
@@ -514,19 +590,45 @@ async def _author_capability(
             "same JSON shape)." if seed else None
         )
         last_detail = "no submission"
+        # Classified per-attempt record: the controller adjudicates strategy from
+        # WHAT KIND of failure this was and whether attempts are still learning
+        # anything — not from a bare retry count.
+        last_class = "submission"
+        history: list[str] = []
+        task = (description
+                + (f"\n\nConcrete example input for THIS task (use it in `sample_input` so the "
+                   f"tool is verified against the real target; NEVER hardcode these values into "
+                   f"the program or Dockerfile — they arrive as arguments at run time): "
+                   f"{json.dumps(example_input)}" if example_input else ""))
+
+        def _fail(reason: str) -> AcquisitionError:
+            if registry is not None and getattr(registry, "record_failure", None):
+                try:
+                    registry.record_failure(need_key, reason, last_class)
+                except Exception:  # noqa: BLE001 — memory must not mask the failure
+                    pass
+            return AcquisitionError(f"could not {mode} a working '{need_key}': {reason}",
+                                    need=need_key, failure_class=last_class,
+                                    attempts=len(history) or max_attempts, history=history)
 
         for attempt in range(1, max_attempts + 1):
-            sub = await dev(need_key, description, previous, error)
+            sub = await dev(need_key, task, previous, error)
             if not sub or not sub.get("program") or not sub.get("dockerfile"):
                 last_detail = "developer produced no usable submission"
+                last_class = "submission"
+                history.append(f"attempt {attempt}: submission — nothing usable")
                 error = last_detail
                 continue
             consumes_files = bool(sub.get("accepts")) or \
                 "files" in ((sub.get("input_schema") or {}).get("properties") or {})
-            if consumes_files and not sub.get("emits"):
-                last_detail = "file-consuming tool did not declare its output role"
-                error = ("Your submission is missing `emits`. A file-consuming tool MUST declare "
-                         "what its output IS: 'observation' (verbatim extraction), 'derived' "
+            observes = consumes_files or sub.get("network") == "bridge"
+            if observes and not sub.get("emits"):
+                last_detail = "observing tool did not declare its output role"
+                last_class = "contract"
+                history.append(f"attempt {attempt}: contract — missing `emits` declaration")
+                error = ("Your submission is missing `emits`. A tool that OBSERVES (consumes "
+                         "files or reaches external sources over the network) MUST declare what "
+                         "its output IS: 'observation' (verbatim extraction), 'derived' "
                          "(interpretation/summary), 'artifact' (produced deliverable), or "
                          "'validation' (a check result). Resubmit with `emits` set honestly.")
                 previous = {"program": sub["program"], "dockerfile": sub["dockerfile"]}
@@ -554,12 +656,16 @@ async def _author_capability(
                         requirements=[rc],
                     )
                     if not approved:
-                        raise AcquisitionError(f"approval denied: '{need_key}' needs {rc}")
+                        last_class = "authority"
+                        history.append(f"attempt {attempt}: authority — approval for {rc} denied")
+                        raise _fail(f"approval denied: it needs {rc}")
                     secret = broker.collect_secret(
                         rc, purpose=f"capability '{need_key}' ({description[:80]})",
                         help_text=sub.get("credential_help"))
                     if not secret:
-                        raise AcquisitionError(f"'{need_key}' needs {rc}, but no value was provided")
+                        last_class = "authority"
+                        history.append(f"attempt {attempt}: authority — no value for {rc}")
+                        raise _fail(f"it needs {rc}, but no value was provided")
                     secret_env[rc] = secret
 
             cap = _capability_from_submission(need_key, description, sub)
@@ -569,6 +675,17 @@ async def _author_capability(
             build_context = {"Dockerfile": sub["dockerfile"], "tool.py": sub["program"]}
             attempt_dir = tracer.artifact_path(cap.name, f"attempt-{attempt}-author")
             _write_context(attempt_dir, build_context)
+
+            # Transactional build: an UNVERIFIED candidate must never replace the
+            # canonical (possibly trusted) image — all three failed attempts were
+            # observed overwriting `:1.0.0` in place. Build attempt-scoped, verify,
+            # then promote by ATOMIC retag. (A manager without tagging — test
+            # stubs — keeps the legacy in-place behavior.)
+            canonical_tag = cap.image_tag
+            tagger = getattr(manager, "tag_image", None)
+            if tagger is not None:
+                import uuid
+                cap.image_tag = f"{CAP_IMAGE_PREFIX}{need_key}:cand-{uuid.uuid4().hex[:8]}"
 
             try:
                 with tracer.span("capability.build", cap.name, image=cap.image_tag,
@@ -581,6 +698,8 @@ async def _author_capability(
                 (attempt_dir / "build.log").write_text(full_log)
                 tail = _error_tail(str(e))
                 last_detail = f"build failed: {tail}"
+                last_class = "packaging"
+                history.append(f"attempt {attempt}: packaging — {_error_tail(tail, 160)}")
                 error = f"The docker image BUILD failed. Error (tail of build log):\n{tail}"
                 previous = {"program": sub["program"], "dockerfile": sub["dockerfile"]}
                 continue
@@ -605,6 +724,13 @@ async def _author_capability(
                         (attempt_dir / "verify.stdout").write_text(run_res.stdout or "")
 
             if ok:
+                if tagger is not None:
+                    candidate = cap.image_tag
+                    await asyncio.to_thread(tagger, candidate, canonical_tag)
+                    cap.image_tag = canonical_tag
+                    remover = getattr(manager, "remove_image", None)
+                    if remover is not None:  # drop the candidate alias, keep the image
+                        await asyncio.to_thread(remover, candidate)
                 cap.verified = True
                 cap.validated_engine = validation_epoch()  # passed the current battery+contract
                 cap.description = generalize_description(cap.description)  # #15: general contract
@@ -617,11 +743,22 @@ async def _author_capability(
                             artifact_path=str(promoted_dir))
                 return cap
 
+            if tagger is not None and getattr(manager, "remove_image", None):
+                await asyncio.to_thread(manager.remove_image, cap.image_tag)
             last_detail = detail
+            # Contract violations (fabrication, missing lineage, contradictory
+            # yield) are a different KIND of failure from a crashing tool — the
+            # controller must see which uncertainty is dominant.
+            up = (detail or "").upper()
+            last_class = ("contract" if any(k in up for k in (
+                "FABRICATION", "CONTRADICTORY YIELD", "MISSING EVIDENTIARY",
+                "MISSING SOURCE LINEAGE", "UNRETAINED OBSERVATION", "IRRELEVANT-INPUT"))
+                else "implementation")
+            history.append(f"attempt {attempt}: {last_class} — {_error_tail(detail, 160)}")
             error = f"The image built, but VERIFICATION of the running tool failed:\n{detail}"
             previous = {"program": sub["program"], "dockerfile": sub["dockerfile"]}
 
-        raise AcquisitionError(f"could not author a working '{need_key}': {last_detail}")
+        raise _fail(last_detail)
 
 
 def _load_seed(registry, cap: Capability) -> Optional[dict]:
@@ -789,6 +926,19 @@ _DEVELOPER_SYSTEM = (
     "(empty list if nothing). Exit 0 with partial yield is CORRECT behavior — a tool that "
     "quietly substitutes adjacent data (metadata for content, an index for the document) "
     "poisons every downstream conclusion.\n"
+    "NEGATIVE OBSERVATION IS A VALID RESULT (hard rule): finding that the requested "
+    "property does not exist or is not retrievable at the designated target ('this source "
+    "exposes no captions', 'the record has no such field') is a SUCCESSFUL observation: "
+    "exit 0, coverage='none', name it in `unresolved_needs`, and report what WAS observed. "
+    'Reserve {"error": ...} + non-zero exit for the tool itself failing to operate '
+    "(crash, unreachable service, invalid input) — never for an honest empty yield.\n"
+    "CHANNEL LINEAGE (hard rule): every output field and file must name the channel "
+    "ACTUALLY observed — a description is `description`, metadata is `metadata`, never "
+    "`transcript`/`content`. A fallback or adjacent channel may be reported as useful "
+    "extra evidence UNDER ITS TRUE NAME, but it NEVER inherits the requested property's "
+    "identity, coverage, or confidence: metadata is not content, a schema is not current "
+    "state, a description is not a transcript. `coverage` is measured against the "
+    "REQUESTED property only — length or availability of substitute text is NOT coverage.\n"
     "REMOTE OBSERVATION (hard rules): a tool observing remote sources (URLs, APIs, remote "
     "services/objects) MUST include `source_refs` — the locators/identifiers it ACTUALLY "
     "accessed — in its final JSON, and MUST write the raw retrieved content it relied on to "
@@ -828,8 +978,15 @@ _DEVELOPER_SYSTEM = (
     "REPLACES PyPI and those packages will not be found. Use a separate RUN step for special-index "
     "packages, or --extra-index-url.\n"
     "  * Prefer small, CPU-friendly libraries over heavy frameworks when they can do the job "
-    "(faster builds, fewer failures).\n"
-    "  * Pin versions only when you have a concrete reason.\n\n"
+    "(faster builds, fewer failures). Do NOT add a heavyweight interpretation/summarization "
+    "dependency to an observer — observing and interpreting are different tools.\n"
+    "  * Pin versions only when you have a concrete reason.\n"
+    "  * DOWNLOADS MUST FAIL THE BUILD WHEN THEY FAIL (hard rule): a Dockerfile step that "
+    "downloads models/corpora/data MUST verify the result — check the downloader's return "
+    "value and assert the expected files exist in a RUN step that exits non-zero otherwise "
+    "(e.g. `RUN python -c \"...; assert ok\" && test -e /app/nltk_data/...`). Never use "
+    "quiet/best-effort downloads: a build that 'succeeds' with missing resources crashes at "
+    "run time, after the expensive work.\n\n"
     "Prefer well-known, currently-maintained libraries. You MUST call `submit_tool` exactly once and "
     "must not answer in prose."
 )

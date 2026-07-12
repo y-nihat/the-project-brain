@@ -33,6 +33,12 @@ CREATE TABLE IF NOT EXISTS capabilities (
     cpus         REAL,
     timeout_seconds INTEGER
 );
+CREATE TABLE IF NOT EXISTS capability_failures (
+    name          TEXT NOT NULL,   -- the capability NEED key (may never have promoted)
+    failure_class TEXT,
+    reason        TEXT,
+    at            TEXT NOT NULL
+);
 """
 
 # Columns added after the original schema; applied to pre-existing databases.
@@ -114,6 +120,27 @@ class Registry:
                 (reason[:500], _dt.datetime.now(_dt.timezone.utc).isoformat(), name))
         self._sync_manifest(name, quarantined=reason[:500])
 
+    def record_failure(self, name: str, reason: str, failure_class: str = "") -> None:
+        """Scoped negative procedural memory: a capability NEED that could not be
+        built/verified, recorded so a later run does not walk into the same dead
+        end without new rationale. Keyed by need key — the capability may never
+        have been promoted at all."""
+        with self._lock, self._conn:
+            self._conn.execute(
+                "INSERT INTO capability_failures (name, failure_class, reason, at) "
+                "VALUES (?,?,?,?)",
+                (name, failure_class[:60], reason[:500],
+                 _dt.datetime.now(_dt.timezone.utc).isoformat()))
+
+    def last_failures(self) -> dict[str, dict]:
+        """Most recent recorded failure per need key: {name: {class, reason, at}}."""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT name, failure_class, reason, MAX(at) AS at FROM capability_failures "
+                "GROUP BY name").fetchall()
+        return {r["name"]: {"class": r["failure_class"] or "", "reason": r["reason"] or "",
+                            "at": r["at"]} for r in rows}
+
     def _sync_manifest(self, name: str, **fields) -> None:
         """Keep the human-facing manifest in agreement with the database — the
         two audit surfaces must never disagree about whether a capability is
@@ -173,3 +200,36 @@ class Registry:
     def close(self) -> None:
         with self._lock:
             self._conn.close()
+
+
+def qualified_catalog(registry: Registry, epoch: str) -> dict[str, str]:
+    """The planner's known-capability view, QUALIFIED by trust and availability
+    state — catalog hygiene BEFORE planning, not after (a quarantined tool with
+    a task-shaped description was observed anchoring the initial plan, then
+    getting quarantined only at acquisition time, after the strategy was set).
+
+      * quarantined         -> excluded (unsafe memory must not advertise itself);
+      * stale contract      -> labeled (usable only after revalidation/re-authoring);
+      * previously failed   -> the need key is listed with its failure so naming
+                               it again is a deliberate act, not amnesia;
+      * descriptions        -> normalized (task residue stripped) defensively.
+    """
+    from .acquisition import generalize_description  # lazy: avoid import cycle
+
+    known: dict[str, str] = {}
+    for cap in registry.all():
+        if cap.quarantined:
+            continue
+        desc = generalize_description(cap.description)
+        if cap.validated_engine != epoch:
+            desc += (" [stale contract: revalidated before any reuse; may be "
+                     "quarantined and re-authored]")
+        known[cap.name] = desc
+    for name, failure in registry.last_failures().items():
+        if name in known:
+            continue
+        known[name] = (f"(UNAVAILABLE — a previous attempt to build this failed: "
+                       f"{failure['class'] or 'unclassified'}: {failure['reason'][:160]}. "
+                       "Re-selecting it requires a materially different approach or new "
+                       "rationale; otherwise choose another method.)")
+    return known

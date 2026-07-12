@@ -108,6 +108,22 @@ class SandboxManager:
         except ImageNotFound:
             self.client.images.pull(image)
 
+    def tag_image(self, source: str, target: str) -> None:
+        """Point ``target`` at the image ``source`` names — the atomic promotion
+        step: candidates are built under attempt-scoped tags and only a VERIFIED
+        candidate may take over the canonical tag (an unverified attempt was
+        observed replacing the trusted local image before promotion)."""
+        repo, _, tag = target.rpartition(":")
+        self.client.images.get(source).tag(repo, tag or None)
+
+    def remove_image(self, tag: str) -> None:
+        """Best-effort: drop an image TAG (the image survives under its other
+        tags). Used to clean up candidate aliases after promotion or failure."""
+        try:
+            self.client.images.remove(tag)
+        except Exception:  # noqa: BLE001 — cleanup must never fail a run
+            pass
+
     def build_image(self, tag: str, build_context: dict[str, str]) -> str:
         """Build an image from an in-memory ``{filename: content}`` context.
 

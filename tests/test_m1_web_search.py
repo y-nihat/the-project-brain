@@ -76,6 +76,9 @@ def test_approval_gate_fires_when_tool_needs_credential(tmp_path):
             "network": "bridge",
             "sample_input": {},
             "requires_credential": "Acme API key",
+            # A network observer must declare its output role BEFORE the gate
+            # is consulted — contract validation is cheaper than a human ask.
+            "emits": "observation",
         }
 
     try:
