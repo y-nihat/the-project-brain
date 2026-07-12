@@ -37,7 +37,11 @@ _SYSTEM = (
     "Stage fields: `id` (short slug), `pattern`, `role`, `goal` (one sentence), "
     "`capabilities`, `depends_on` (stage ids), plus for map: `shard_size` (items per "
     "worker, default 5) and `shard_from` (which dependency's item list to divide); for "
-    "review: `rounds` (max fix cycles).\n"
+    "review: `rounds` (max fix cycles). For any OBSERVATION stage, also give `expectation` "
+    "— what a SUCCESSFUL run should yield (e.g. 'full-duration coverage of the visual "
+    "content', 'the ordered event sequence', 'N records'). The engine compares this to what "
+    "was actually observed; the gap tells it whether a retry is making progress or has "
+    "plateaued, so a good expectation makes the system persist intelligently.\n"
     "Pattern semantics:\n"
     "- single: one agent, runs once.\n"
     "- map: you describe ONE worker; the system replicates it at run time over the items "
@@ -223,6 +227,9 @@ _PLAN_SCHEMA = {
                     "shard_size": {"type": "integer"},
                     "shard_from": {"type": "string"},
                     "rounds": {"type": "integer"},
+                    "expectation": {"type": "string",
+                                    "description": "what a SUCCESSFUL run of this stage should "
+                                                   "yield (coverage, count, the property observed)"},
                 },
                 "required": ["id", "pattern", "role", "goal"],
             },

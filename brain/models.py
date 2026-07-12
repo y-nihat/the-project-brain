@@ -93,6 +93,11 @@ class StageSpec:
     shard_size: int = 0            # map: items per worker (0 => engine default)
     shard_from: Optional[str] = None  # map: stage whose manifest is sharded (default: first dep)
     rounds: int = 1                # review: max critique/fix cycles (clamped)
+    # What a SUCCESSFUL run of this stage should yield (the planner's explicit
+    # expectation). The gap between this and what was actually observed is the
+    # 'surprise' signal the persistence judgment reads — are we getting closer,
+    # or have approaches plateaued? Empty => fall back to the goal.
+    expectation: str = ""
 
 
 @dataclass

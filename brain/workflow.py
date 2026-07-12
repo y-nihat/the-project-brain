@@ -151,6 +151,7 @@ def normalize_stages(raw: list) -> tuple[list[StageSpec], list[str]]:
             # A 1-round review can only complain, never fix: unspecified rounds
             # on a review default to 2 (verdict -> one fix cycle -> re-verdict).
             rounds=int(r.get("rounds") or (2 if pattern == REVIEW else 1)),
+            expectation=str(r.get("expectation") or ""),
         ))
 
     ids = {s.id for s in stages}

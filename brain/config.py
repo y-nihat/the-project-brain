@@ -156,11 +156,13 @@ REPLANS_PER_RUN = int(os.environ.get("REPLANS_PER_RUN", "1"))
 # results are cached by topic so the same question is not re-researched.
 RESEARCH_MAX_REQUESTS = int(os.environ.get("RESEARCH_MAX_REQUESTS", "4"))
 RESEARCH_AGENT_MAX_TURNS = int(os.environ.get("RESEARCH_AGENT_MAX_TURNS", "10"))
-# Bounded failure-driven recoveries: when a stage FAILS (capability could not be
-# acquired, or the stage died before completing), the controller converts the
-# failure into a residual requirement and re-enters strategy adjudication this
-# many times per run — replacing the failed node, never retrying it blindly.
-RECOVERIES_PER_RUN = int(os.environ.get("RECOVERIES_PER_RUN", "2"))
+# Failure-driven recoveries: when a stage FAILS, the controller converts the
+# failure into a residual requirement and re-enters strategy adjudication,
+# replacing the failed node. This is now a SAFETY CEILING — the supervisor's
+# persistence judgment is the real governor (it stops earlier when progress
+# plateaus or the user's input is needed), so the ceiling can be higher without
+# risking a runaway; the per-run agent-session cap remains the hard cost rail.
+RECOVERIES_PER_RUN = int(os.environ.get("RECOVERIES_PER_RUN", "5"))
 
 # Executive supervision: an LLM judgment consulted at decision moments
 # (pre-user-interaction, stage completions). Fail-open, budget-capped.

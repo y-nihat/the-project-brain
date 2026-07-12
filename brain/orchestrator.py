@@ -419,6 +419,7 @@ class Orchestrator:
         self._format_violations: list = []
         self._research_used = 0
         self._research_cache: dict[str, str] = {}
+        self._help_request: Optional[dict] = None
 
     # ------------------------------------------------------------------ #
     # run
@@ -512,6 +513,7 @@ class Orchestrator:
         self._format_violations = []    # engine-measured count-criteria failures
         self._research_used = 0         # shared per-run research budget (agents + developers)
         self._research_cache = {}       # topic -> findings brief (dedup)
+        self._help_request = None       # set when the brain decides to stop and ask the user
 
         last_done: Optional[str] = None
         failure_note: Optional[str] = None
@@ -671,6 +673,10 @@ class Orchestrator:
                           classification=self.classification, reason=reason)
         if self.classification != "succeeded":
             answer = (f"[result: {self.classification.upper()}] {reason}\n\n" + answer).strip()
+        # A brain-decided stop-and-ask leads with its structured help request:
+        # how far it got, what it tried, why it stopped, and what it needs.
+        if self._help_request:
+            answer = (self._help_request_block() + "\n\n" + answer).strip()
 
         # The deliverable is the FILES, not the producing agent's self-account:
         # list them with observed facts so the answer cannot overclaim.
@@ -1008,6 +1014,35 @@ class Orchestrator:
             self.tracer.event("recovery.skipped", failed.id, status="failed",
                               reason=self._recovery_state)
             return False
+        # Brain-decided persistence (Component 2): rather than a flat counter, the
+        # supervisor judges — from the attempt history and the expectation gap —
+        # whether trying another approach is still productive, or whether the run
+        # has plateaued / needs something only the user can give. It can only make
+        # the run stop EARLIER; the hard ceiling above remains the safety rail.
+        if self.supervisor is not None:
+            d = await self.supervisor.persistence(
+                self._persistence_digest(failed, outcome))
+            if d.action == "stop_and_ask":
+                self._blocked = True
+                self._help_request = {
+                    "requirement": failed.goal,
+                    "why": d.reason or "the viable approaches were explored without success",
+                    "needed": d.message or "guidance, additional input, or access to proceed",
+                    "tried": [f"{f.stage_id} [{f.phase}/{f.failure_class}]"
+                              for f in self._failures[-6:]],
+                    "retained": self._workspace_files(self._run_ctx[2]) if self._run_ctx else [],
+                }
+                self._recovery_state = "stopped to ask the user (approaches explored)"
+                self.tracer.event("recovery.ask_user", failed.id, status="info",
+                                  needed=str(d.message)[:200], reason=d.reason)
+                return False
+            if d.action == "stop":
+                self._recovery_state = "calibrated stop (supervisor: no admissible path)"
+                self.tracer.event("recovery.stopped", failed.id, status="info",
+                                  reason=self._recovery_state)
+                return False
+            self.tracer.event("recovery.persist", failed.id, status="info",
+                              reason=str(d.reason)[:200])
         self._recoveries += 1
         if outcome.capability:
             self._suppressed_caps.add(outcome.capability)
@@ -1066,6 +1101,52 @@ class Orchestrator:
                           replaced_by=[s.id for s in new_stages], terminal=terminal,
                           failure_class=outcome.failure_class)
         return True
+
+    def _persistence_digest(self, failed: StageSpec, outcome: MethodOutcome) -> str:
+        """State for the supervisor's persistence judgment: what the failed stage
+        must establish and its EXPECTED yield, the attempt history (is progress
+        being made or has it plateaued?), what has actually been observed so far,
+        and the remaining budget."""
+        objective = self._run_ctx[0] if self._run_ctx else ""
+        lines = [f"OBJECTIVE: {objective}", "",
+                 f"A method for stage '{failed.id}' just FAILED "
+                 f"[{outcome.phase}/{outcome.failure_class}].",
+                 f"WHAT THIS STAGE MUST ESTABLISH: {failed.goal}"]
+        if failed.expectation:
+            lines.append(f"EXPECTED YIELD (what success looks like): {failed.expectation}")
+        lines += ["", "ATTEMPT / FAILURE HISTORY THIS RUN "
+                  "(judge PROGRESS — are attempts learning/closing the gap, or repeating?):"]
+        for f in self._failures[-6:]:
+            lines.append(f"- '{f.stage_id}' [{f.phase}/{f.failure_class}] "
+                         f"x{max(1, f.attempts)}: {f.detail[:200]}")
+            for h in f.attempt_history[:3]:
+                lines.append(f"    · {h[:160]}")
+        retained = self._workspace_files(self._run_ctx[2]) if self._run_ctx else []
+        if retained:
+            lines.append("\nPARTIAL OBSERVATIONS retained so far: " + ", ".join(retained[:10]))
+        completed = getattr(self, "_outputs", None) or {}
+        if completed:
+            lines.append("COMPLETED STAGES: " + ", ".join(completed))
+        lines.append(f"\nBUDGET: recoveries {self._recoveries}/{config.RECOVERIES_PER_RUN}; "
+                     f"sessions {self._sessions}/{config.RUN_MAX_AGENT_SESSIONS}.")
+        lines.append("Decide: keep_trying / stop_and_ask (state exactly what you need from the "
+                     "user) / stop.")
+        return "\n".join(lines)
+
+    def _help_request_block(self) -> str:
+        """The user-facing help request when the brain decides it needs input:
+        how far it got, what it tried, why it stopped, and exactly what it needs."""
+        h = self._help_request or {}
+        retained = h.get("retained") or []
+        return "\n".join([
+            "--- I need your input to continue ---",
+            f"What I was trying to establish: {str(h.get('requirement', ''))[:300]}",
+            "How far I got: " + (", ".join(retained[:8]) if retained
+                                 else "no usable partial results were retained"),
+            "What I tried: " + ("; ".join(h.get("tried") or []) or "(see the run trace)"),
+            f"Why I stopped: {str(h.get('why', ''))[:300]}",
+            f"What I need from you: {str(h.get('needed', ''))[:400]}",
+        ])
 
     def _failure_report(self, workspace: Path) -> str:
         """Concise controller diagnosis for a run that completed nothing: what
@@ -1132,6 +1213,11 @@ class Orchestrator:
         }
         self.tracer.event("run.dimensions", "run", status="info", **dims,
                           artifact_issues=issues[:6])
+        # A brain-decided stop-and-ask is BLOCKED-needs-you, not a dead end —
+        # the user can unblock it — so it outranks the nothing-completed 'failed'.
+        if self._help_request:
+            return "blocked", ("stopped to ask for your input — "
+                               f"{str(self._help_request.get('needed', ''))[:200]}")
         if nothing_completed:
             tried = "; ".join(
                 f"'{f.capability or f.stage_id}' ({f.phase}: {f.failure_class}"
@@ -1140,6 +1226,9 @@ class Orchestrator:
             return "failed", (f"no stage completed and no deliverable exists — "
                               f"failed method(s): {tried}; recovery: {self._recovery_state}.")
         if self._blocked:
+            if self._help_request and not fatal:
+                return "blocked", ("stopped to ask for your input — "
+                                   f"{str(self._help_request.get('needed', ''))[:200]}")
             what = ("; ".join(f"{b.get('issue', '')}" for b in fatal[:2])
                     if fatal else "see the answer")
             return "blocked", f"the run hit an obstacle it could not resolve: {what}."
