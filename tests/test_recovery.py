@@ -277,7 +277,7 @@ def test_capability_contract_reaches_developer_not_stage_goal(tmp_path, monkeypa
     async def runner(tracer, name, prompt, options):
         return "ok"
 
-    goal = ("Fetch the transcript of https://youtu.be/abc?si=x and write a single "
+    goal = ("Fetch the full text of https://example.test/v/abc?ref=x and write a single "
             "paragraph (no more than ten sentences) describing it")
     planner = StubPlanner(
         [StageSpec(id="s", pattern="single", role="Observer", goal=goal,
@@ -286,7 +286,7 @@ def test_capability_contract_reaches_developer_not_stage_goal(tmp_path, monkeypa
             "contract": "Retrieve the primary textual content available for a remotely "
                         "hosted source given its locator; report coverage per requested "
                         "property and unresolved needs honestly",
-            "example_input": {"url": "https://youtu.be/abc?si=x"}}})
+            "example_input": {"url": "https://example.test/v/abc?ref=x"}}})
     orch = Orchestrator(session="need1", manager=None, ledger=None, registry=None,
                         blackboard=bb, broker=None, planner=planner,
                         resolver=CreateResolver(), session_runner=runner)
@@ -296,9 +296,9 @@ def test_capability_contract_reaches_developer_not_stage_goal(tmp_path, monkeypa
         bb.close()
     d = seen[0]
     assert d["description"].startswith("Retrieve the primary textual content")
-    assert "youtu.be" not in d["description"] and "ten sentences" not in d["description"]
+    assert "example.test" not in d["description"] and "ten sentences" not in d["description"]
     # The concrete instance rides SEPARATELY, for verification only.
-    assert d["example_input"] == {"url": "https://youtu.be/abc?si=x"}
+    assert d["example_input"] == {"url": "https://example.test/v/abc?ref=x"}
 
 
 def test_fallback_authoring_description_is_scrubbed_of_task_policy(tmp_path, monkeypatch):
@@ -318,11 +318,11 @@ def test_fallback_authoring_description_is_scrubbed_of_task_policy(tmp_path, mon
     async def runner(tracer, name, prompt, options):
         return "ok"
 
-    goal = ("Fetch the transcript and metadata of the video at "
-            "https://youtu.be/abc123?si=xyz, then write a single paragraph "
+    goal = ("Fetch the primary content and metadata of the source at "
+            "https://example.test/v/abc123?ref=xyz, then write a single paragraph "
             "(maximum 10 sentences) describing what happens in it")
     planner = StubPlanner([StageSpec(id="s", pattern="single", role="Fetcher",
-                                     goal=goal, capabilities=["fetch_video_text"])])
+                                     goal=goal, capabilities=["fetch_source_text"])])
     orch = Orchestrator(session="need2", manager=None, ledger=None, registry=None,
                         blackboard=bb, broker=None, planner=planner,
                         resolver=CreateResolver(), session_runner=runner)
@@ -330,7 +330,7 @@ def test_fallback_authoring_description_is_scrubbed_of_task_policy(tmp_path, mon
         asyncio.run(orch.run(goal))
     finally:
         bb.close()
-    assert "youtu.be" not in seen[0] and "https://" not in seen[0]
+    assert "example.test" not in seen[0] and "https://" not in seen[0]
     assert "10" not in seen[0] and "single paragraph" not in seen[0]
 
 
@@ -355,9 +355,10 @@ class OneShotManager:
 
 
 def test_negative_observation_yield_is_operational_success():
-    """'No transcript retrievable' is a VALID observation: exit 0, coverage
-    'none', the unresolved property named — never a broken tool."""
-    out = json.dumps({"coverage": "none", "unresolved_needs": ["spoken content"],
+    """'The requested property is not retrievable' is a VALID observation:
+    exit 0, coverage 'none', the unresolved property named — never a broken
+    tool."""
+    out = json.dumps({"coverage": "none", "unresolved_needs": ["the requested property"],
                       "source_refs": [], "consumed_inputs": []})
     ok, detail, _ = acquisition._generic_verify(_obs_cap(), {}, {}, OneShotManager(_res(out)))
     assert ok, detail
@@ -367,7 +368,8 @@ def test_adjacent_channel_cannot_claim_target_coverage():
     """coverage='complete' with named unresolved needs is the substitution
     signature (length-based coverage, description relabeled as content) —
     rejected deterministically."""
-    out = json.dumps({"coverage": "complete", "unresolved_needs": ["actual transcript"],
+    out = json.dumps({"coverage": "complete",
+                      "unresolved_needs": ["the requested property itself"],
                       "source_refs": ["https://x"], "consumed_inputs": []})
     ok, detail, _ = acquisition._generic_verify(
         _obs_cap(), {}, {}, OneShotManager(_res(out, files={"description.txt": b"x"})))
@@ -401,9 +403,14 @@ def test_remote_positive_yield_requires_lineage_and_retention():
 def test_developer_contract_teaches_negative_yield_lineage_and_build_asserts():
     c = acquisition._DEVELOPER_SYSTEM
     assert "NEGATIVE OBSERVATION IS A VALID RESULT" in c
-    assert "CHANNEL LINEAGE" in c and "a description is not a transcript" in c
+    assert "CHANNEL LINEAGE" in c and "a schema is not current state" in c
     assert "DOWNLOADS MUST FAIL THE BUILD" in c
     assert "heavyweight interpretation/summarization dependency to an observer" in c
+    # The contract teaches GENERAL rules: no task/domain of any diagnostic
+    # trial may leak into what every future developer agent reads.
+    for residue in ("youtube", "youtu.be", "video", "transcript", "caption",
+                    "nltk", "punkt", "sumy"):
+        assert residue not in c.lower(), f"trial residue {residue!r} in developer contract"
 
 
 # --- P0-D4 + P1-C: authoring-time contract + transactional promotion ----------- #
@@ -540,7 +547,7 @@ def test_catalog_qualifies_quarantined_stale_and_failed(tmp_path):
                           verified=True, validated_engine=validated, emits="observation")
 
     reg.add(cap("current_tool", "Extract text from a provided file.", validated=epoch))
-    reg.add(cap("stale_tool", "Fetch the transcript of https://youtu.be/abc and "
+    reg.add(cap("stale_tool", "Fetch the full text of https://example.test/v/abc and "
                               "write a single paragraph (maximum 10 sentences).",
                 validated="0.0.1+c0"))
     reg.add(cap("bad_tool", "does bad things", validated=epoch))
@@ -553,7 +560,7 @@ def test_catalog_qualifies_quarantined_stale_and_failed(tmp_path):
     assert "bad_tool" not in known                     # unsafe memory not advertised
     assert known["current_tool"] == "Extract text from a provided file."
     assert "[stale contract" in known["stale_tool"]
-    assert "youtu.be" not in known["stale_tool"]       # residue normalized in the view
+    assert "example.test" not in known["stale_tool"]   # residue normalized in the view
     assert "maximum 10" not in known["stale_tool"]
     assert "UNAVAILABLE" in known["ghost_fetch"]       # dead ends carry their history
     assert "materially different" in known["ghost_fetch"]
