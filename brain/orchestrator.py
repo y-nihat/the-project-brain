@@ -417,6 +417,8 @@ class Orchestrator:
         self._locators: list[str] = []
         self._source_derived = False
         self._format_violations: list = []
+        self._research_used = 0
+        self._research_cache: dict[str, str] = {}
 
     # ------------------------------------------------------------------ #
     # run
@@ -508,6 +510,8 @@ class Orchestrator:
         self._recovery_state = "not-needed"
         self._suppressed_caps = set()   # methods that failed this run; need new rationale
         self._format_violations = []    # engine-measured count-criteria failures
+        self._research_used = 0         # shared per-run research budget (agents + developers)
+        self._research_cache = {}       # topic -> findings brief (dedup)
 
         last_done: Optional[str] = None
         failure_note: Optional[str] = None
@@ -1724,6 +1728,57 @@ class Orchestrator:
     # ------------------------------------------------------------------ #
     # sessions
     # ------------------------------------------------------------------ #
+    async def _research(self, topic: str, why: str = "", specifics: str = "") -> str:
+        """Delegated research (the mediated request→delegate→return pattern, like
+        ask_upstream but with tools): run a bounded research agent equipped with
+        web_search to investigate a topic an agent said it lacks knowledge of,
+        and return a concise findings brief. Shared per-run budget + a topic
+        cache (dedup) keep it bounded and traced.
+
+        Honesty guardrail: the brief is labeled METHOD KNOWLEDGE / general web
+        testimony. It informs HOW to proceed; it is NOT source evidence about the
+        run's designated target and the requester is told so explicitly. (The
+        web_search payloads it retains are proxy-tier in the ledger by
+        construction, never target-tier, so this cannot launder into grounding.)"""
+        objective, history, workspace = self._run_ctx
+        key = " ".join(str(topic or "").lower().split())[:200]
+        if key in self._research_cache:
+            self.tracer.event("research.cache_hit", "research", status="info", topic=key[:120])
+            return self._research_cache[key]
+        if self._research_used >= config.RESEARCH_MAX_REQUESTS:
+            return ("[research] budget exhausted for this run "
+                    f"({config.RESEARCH_MAX_REQUESTS} requests). Proceed with what you know, "
+                    "or report a blocker if you genuinely cannot continue without it.")
+        self._research_used += 1
+        n = self._research_used
+        spec = AgentSpec(
+            id=f"research.{n}", role="Research agent",
+            goal=("Investigate the requested topic using web search and return a CONCISE, "
+                  "actionable findings brief: the key facts, the concrete how-to or fix, and "
+                  "the source URLs. If sources disagree or are thin, say so. Do not pad."),
+            capabilities=["web_search"])
+        ctx = (f"A teammate needs to learn this to proceed.\nTOPIC: {topic}\n"
+               + (f"WHY (what they're stuck on): {why}\n" if why else "")
+               + (f"SPECIFICS (error text / versions / constraints): {specifics}\n" if specifics else "")
+               + "\nResearch it now and return the brief. Cite the URLs you used.")
+        try:
+            caps = await self._acquire_caps(spec)
+        except Exception as e:  # noqa: BLE001 — research is best-effort, never fatal
+            self.tracer.event("research.failed", spec.id, status="failed",
+                              error=f"{type(e).__name__}: {str(e)[:160]}")
+            return ("[research] could not be carried out (the research tool was unavailable). "
+                    "Proceed with what you know or report a blocker.")
+        with self.tracer.span("research", spec.id, topic=key[:120]):
+            findings = await self._run_agent_with_reflection(
+                spec, caps, objective, {}, history, workspace, task_context=ctx,
+                model=config.model_for("research"), team=False)
+        brief = ("[research findings — METHOD KNOWLEDGE / general web testimony, NOT source "
+                 "evidence about your task's designated target; use it to choose your "
+                 "approach, never present it as an observation of the target]\n\n"
+                 + (findings or "(no findings returned)"))
+        self._research_cache[key] = brief
+        return brief
+
     async def _answer_from_stage(self, stage_id: str, question: str) -> str:
         """Run a short, tool-less follow-up session of a completed stage's agent
         so a teammate's question gets answered by 'the person who did the work'."""
@@ -1789,7 +1844,7 @@ class Orchestrator:
         completed = list(getattr(self, "_outputs", {}) or {})
         channel = TeamChannel(agent_id=spec.id, completed_stages=completed,
                               ask_fn=self._answer_from_stage, blackboard=self.blackboard,
-                              tracer=self.tracer) if team else None
+                              tracer=self.tracer, research_fn=self._research) if team else None
         allowed = [f"mcp__caps__{name}" for name in caps]
         if channel is not None:
             allowed = allowed + TEAM_TOOLS
@@ -1856,7 +1911,7 @@ class Orchestrator:
                             caps[name], reason, manager=self.manager, registry=self.registry,
                             broker=self.broker,
                             model=config.model_for("repair") or self.model,
-                            tracer=self.tracer,
+                            tracer=self.tracer, research_fn=self._research,
                         )
                     caps[name] = new_cap
                     repaired_any = True
@@ -1970,6 +2025,7 @@ class Orchestrator:
                         tracer=self.tracer,
                         pre_interaction=self._consult_interaction,
                         example_input=need_spec.get("example_input") or None,
+                        research_fn=self._research,
                     )
                     caps[cap.name] = cap
         return caps

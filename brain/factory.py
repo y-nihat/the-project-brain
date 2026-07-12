@@ -81,8 +81,12 @@ def agent_system_prompt(spec: AgentSpec, allowed_tools: list[str],
             "identity/metadata but not the substance asked about), call report_evidence_gap — "
             "the engine plans a different observation method. NEVER fill such a gap from "
             "memory, prior runs' narration, or plausibility; deliver what you actually "
-            "observed with the gap marked. During long work, call progress_update at "
-            "milestones so the user sees what you are doing."
+            "observed with the gap marked. NEED KNOWLEDGE: if you lack the KNOW-HOW to "
+            "proceed — an unfamiliar library/API, an error you don't understand, a technique "
+            "or design direction you must decide — call request_research to have the "
+            "orchestrator investigate it and return a brief, instead of guessing or stalling "
+            "(its findings are method knowledge, not source evidence). During long work, call "
+            "progress_update at milestones so the user sees what you are doing."
         )
     if allowed_tools:
         from . import config

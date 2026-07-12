@@ -150,6 +150,12 @@ REVIEW_EVIDENCE_FETCHES = int(os.environ.get("REVIEW_EVIDENCE_FETCHES", "1"))
 # Bounded mid-run loop re-entries: when agents report an unmet OBSERVATION need
 # (report_evidence_gap), the planner may EXTEND the running plan this many times.
 REPLANS_PER_RUN = int(os.environ.get("REPLANS_PER_RUN", "1"))
+# Research delegation: an agent that recognizes it lacks knowledge can ask the
+# orchestrator to research a topic (mediated — the agent never searches inline).
+# Shared per-run budget across ALL requesters (stage agents + developer agents);
+# results are cached by topic so the same question is not re-researched.
+RESEARCH_MAX_REQUESTS = int(os.environ.get("RESEARCH_MAX_REQUESTS", "4"))
+RESEARCH_AGENT_MAX_TURNS = int(os.environ.get("RESEARCH_AGENT_MAX_TURNS", "10"))
 # Bounded failure-driven recoveries: when a stage FAILS (capability could not be
 # acquired, or the stage died before completing), the controller converts the
 # failure into a residual requirement and re-enters strategy adjudication this

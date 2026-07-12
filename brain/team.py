@@ -26,15 +26,18 @@ from typing import Awaitable, Callable, Optional
 from . import config
 
 AskFn = Callable[[str, str], Awaitable[str]]
+ResearchFn = Callable[[str, str, str], Awaitable[str]]
 
 
 class TeamChannel:
     def __init__(self, *, agent_id: str, completed_stages: list[str],
                  ask_fn: AskFn, blackboard=None, tracer=None,
-                 max_questions: Optional[int] = None):
+                 max_questions: Optional[int] = None,
+                 research_fn: Optional[ResearchFn] = None):
         self.agent_id = agent_id
         self.completed = list(completed_stages)
         self._ask_fn = ask_fn
+        self._research_fn = research_fn
         self.blackboard = blackboard
         from .observability import NullTracer
 
@@ -43,6 +46,22 @@ class TeamChannel:
         self.questions_used = 0
         self.blockers: list[dict] = []
         self.gaps: list[dict] = []
+
+    async def research(self, topic: str, why: str = "", specifics: str = "") -> tuple[bool, str]:
+        """Delegate a research request to the orchestrator (mediated — the agent
+        never searches inline). The orchestrator runs a bounded research agent
+        and returns a findings brief. Returns (ok, findings_or_reason). Findings
+        are METHOD KNOWLEDGE / general testimony — they inform HOW to proceed,
+        never source evidence about the task's designated target."""
+        if self._research_fn is None:
+            return False, "research delegation is not available in this session."
+        topic = str(topic or "").strip()
+        if len(topic) < 3:
+            return False, "give a specific research topic (what you need to learn)."
+        self.tracer.event("team.research", self.agent_id, status="info",
+                          topic=topic[:200], why=str(why)[:200])
+        findings = await self._research_fn(topic, str(why or ""), str(specifics or ""))
+        return True, findings
 
     async def ask(self, stage: str, question: str) -> tuple[bool, str]:
         """Returns (ok, answer_or_reason)."""
@@ -96,7 +115,8 @@ class TeamChannel:
 
 
 TEAM_TOOLS = ["mcp__team__ask_upstream", "mcp__team__report_blocker",
-              "mcp__team__report_evidence_gap", "mcp__team__progress_update"]
+              "mcp__team__report_evidence_gap", "mcp__team__progress_update",
+              "mcp__team__request_research"]
 
 
 def build_team_server(channel: TeamChannel):
@@ -157,6 +177,29 @@ def build_team_server(channel: TeamChannel):
         channel.tracer.event("agent.progress", channel.agent_id, status="info", note=note)
         return {"content": [{"type": "text", "text": "noted — continue."}]}
 
+    @tool("request_research",
+          "When you recognize you LACK the KNOWLEDGE to proceed — an unfamiliar library or "
+          "API, an opaque error you don't understand, a technique or design direction you "
+          "need to learn — ask the orchestrator to research it. A research agent investigates "
+          "and returns a findings brief. Do NOT search inline yourself; delegate here. "
+          "Findings are METHOD KNOWLEDGE (how to proceed) and general web testimony — use them "
+          "to choose your approach; they are NOT source evidence about the task's designated "
+          "target and must never be presented as observations of it.",
+          {"type": "object",
+           "properties": {"topic": {"type": "string",
+                                    "description": "the specific thing to learn/investigate"},
+                          "why": {"type": "string",
+                                  "description": "why you need it (what you're stuck on)"},
+                          "specifics": {"type": "string",
+                                        "description": "exact error text, versions, constraints"}},
+           "required": ["topic"]})
+    async def request_research(args):
+        ok, text = await channel.research(str(args.get("topic", "")),
+                                          str(args.get("why", "")),
+                                          str(args.get("specifics", "")))
+        return {"content": [{"type": "text", "text": text}], **({} if ok else {"is_error": True})}
+
     return create_sdk_mcp_server(name="team", version="1.0.0",
                                  tools=[ask_upstream, report_blocker,
-                                        report_evidence_gap, progress_update])
+                                        report_evidence_gap, progress_update,
+                                        request_research])

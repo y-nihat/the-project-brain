@@ -189,13 +189,15 @@ async def acquire(
     tracer=None,
     pre_interaction=None,
     example_input: Optional[dict] = None,
+    research_fn=None,
 ) -> Capability:
     """Acquire the capability for ``need_key`` (recipe if known, else author it).
 
     ``pre_interaction`` (async str -> None) is consulted before any user-facing
     ask, so the supervisor can equip the user first. ``example_input`` carries
     the CONCRETE instance values (a locator, a query) for verification only —
-    the description stays an instance-neutral contract."""
+    the description stays an instance-neutral contract. ``research_fn`` gives the
+    developer agent a channel to request research when it lacks knowledge."""
     tracer = tracer or NullTracer()
     recipe = _RECIPES.get(need_key)
     if recipe is not None:
@@ -206,7 +208,7 @@ async def acquire(
     return await _author_capability(
         need_key, description or need_key, manager=manager, registry=registry, broker=broker,
         model=model, developer=developer, max_attempts=max_attempts, tracer=tracer,
-        pre_interaction=pre_interaction, example_input=example_input,
+        pre_interaction=pre_interaction, example_input=example_input, research_fn=research_fn,
     )
 
 
@@ -605,9 +607,9 @@ def _evidence_contract_check(cap: Capability, data: dict, res) -> tuple[bool, st
 async def _author_capability(
     need_key, description, *, manager, registry, broker, model, developer, max_attempts, tracer,
     seed: Optional[dict] = None, repair_reason: Optional[str] = None, pre_interaction=None,
-    example_input: Optional[dict] = None,
+    example_input: Optional[dict] = None, research_fn=None,
 ) -> Capability:
-    dev = developer or make_developer_agent(model, tracer)
+    dev = developer or make_developer_agent(model, tracer, research_fn=research_fn)
     mode = "repair" if seed else "author"
 
     with tracer.span("capability.acquire", need_key, mode=mode, description=description):
@@ -808,7 +810,7 @@ def _load_seed(registry, cap: Capability) -> Optional[dict]:
 async def repair_capability(
     cap: Capability, reason: str, *, manager, registry, broker,
     model: Optional[str] = None, developer: Optional[Developer] = None,
-    max_attempts: int = 2, tracer=None,
+    max_attempts: int = 2, tracer=None, research_fn=None,
 ) -> Capability:
     """Repair a trusted-but-degraded tool in place: re-author it (seeded with its
     current code + the live failure), re-verify, and re-promote under the same
@@ -818,7 +820,7 @@ async def repair_capability(
     repaired = await _author_capability(
         cap.name, cap.description, manager=manager, registry=registry, broker=broker,
         model=model, developer=developer, max_attempts=max_attempts, tracer=tracer,
-        seed=seed, repair_reason=reason,
+        seed=seed, repair_reason=reason, research_fn=research_fn,
     )
     # Record a bumped version for provenance (image tag stays constant on purpose).
     try:
@@ -1062,7 +1064,8 @@ _SUBMIT_TOOL_SCHEMA = {
 }
 
 
-def make_developer_agent(model: Optional[str] = None, tracer=None) -> Developer:
+def make_developer_agent(model: Optional[str] = None, tracer=None,
+                         research_fn=None) -> Developer:
     tracer = tracer or NullTracer()
 
     async def developer(need_key, description, previous=None, error=None) -> Optional[dict]:
@@ -1086,14 +1089,45 @@ def make_developer_agent(model: Optional[str] = None, tracer=None) -> Developer:
                          note=str(args.get("status", ""))[:200])
             return {"content": [{"type": "text", "text": "noted — continue."}]}
 
-        server = create_sdk_mcp_server(name="dev", version="1.0.0",
-                                       tools=[submit_tool, progress_update])
+        dev_tools = [submit_tool, progress_update]
+        allowed = ["mcp__dev__submit_tool", "mcp__dev__progress_update"]
+        research_hint = ""
+        if research_fn is not None:
+            @tool("request_research",
+                  "When you DON'T UNDERSTAND something you need to build the tool — an "
+                  "unfamiliar library/API, an opaque build or runtime error, the right way to "
+                  "handle a format — ask the orchestrator to research it instead of guessing "
+                  "or blindly retrying. A research agent investigates docs and the web and "
+                  "returns a findings brief (facts, the concrete fix, source URLs). Use it to "
+                  "DIAGNOSE a failure and correct the real cause.",
+                  {"type": "object",
+                   "properties": {"topic": {"type": "string"},
+                                  "why": {"type": "string"},
+                                  "specifics": {"type": "string",
+                                                "description": "exact error text, versions"}},
+                   "required": ["topic"]})
+            async def request_research(args):
+                tracer.event("team.research", f"developer:{need_key}", status="info",
+                             topic=str(args.get("topic", ""))[:200])
+                findings = await research_fn(str(args.get("topic", "")),
+                                             str(args.get("why", "")),
+                                             str(args.get("specifics", "")))
+                return {"content": [{"type": "text", "text": findings}]}
+
+            dev_tools.append(request_research)
+            allowed.append("mcp__dev__request_research")
+            research_hint = (
+                "\nIf you hit an unfamiliar library/API or an error you do not fully understand, "
+                "call request_research BEFORE retrying — diagnose the real cause, then fix it. "
+                "Do not repeat the same failing approach blindly.")
+
+        server = create_sdk_mcp_server(name="dev", version="1.0.0", tools=dev_tools)
         options = factory.locked_session(
             system_prompt=_DEVELOPER_SYSTEM
             + "\nDuring long work, call progress_update at each milestone (approach chosen, "
-              "code written, Dockerfile ready, about to submit).",
+              "code written, Dockerfile ready, about to submit)." + research_hint,
             mcp_servers={"dev": server},
-            allowed_tools=["mcp__dev__submit_tool", "mcp__dev__progress_update"],
+            allowed_tools=allowed,
             model=model,
             max_turns=8,
         )
