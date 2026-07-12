@@ -233,44 +233,95 @@ def test_read_file_returns_images_as_images(tmp_path):
         bb.close()
 
 
-# --- inbox files named by path are attached ------------------------------------ #
-def test_inbox_file_named_by_path_is_attached(tmp_path, monkeypatch):
+# --- files named by path are resolved; unreachable ones are flagged to ASK ----- #
+def test_designated_paths_resolve_or_flag_for_ask(tmp_path, monkeypatch):
     inbox = tmp_path / "data" / "inbox"
     inbox.mkdir(parents=True)
     (inbox / "clip.mp4").write_bytes(b"fake video bytes")
+    (tmp_path / "data" / "report.pdf").write_bytes(b"%PDF")
     monkeypatch.setattr(config, "PROJECT_ROOT", tmp_path)
     monkeypatch.setattr(config, "INBOX_DIR", inbox)
 
-    # Backticked path form.
-    text, paths = files_mod.rewrite_inbox_mentions(
+    # Backticked inbox path resolves and is rewritten to the workspace path.
+    text, resolved, unresolved = files_mod.resolve_local_sources(
         "Analyze the video (`data/inbox/clip.mp4`) frame by frame.")
-    assert paths == [str((inbox / "clip.mp4").resolve())]
+    assert resolved == [str((inbox / "clip.mp4").resolve())]
     assert "input/clip.mp4" in text and "data/inbox/clip.mp4" not in text
-    # Bare basename form also resolves against the inbox.
-    _t2, p2 = files_mod.rewrite_inbox_mentions("process clip.mp4 please")
-    assert p2 == [str((inbox / "clip.mp4").resolve())]
-    # A path NOT in the inbox is left untouched (no arbitrary host paths).
-    t3, p3 = files_mod.rewrite_inbox_mentions("read `/etc/hostname` now")
-    assert p3 == [] and t3 == "read `/etc/hostname` now"
-    # An already-rewritten @mention token is not re-processed.
-    _t4, p4 = files_mod.rewrite_inbox_mentions("see input/clip.mp4")
-    assert p4 == []
+    assert unresolved == []
+    # Bare basename resolves against the inbox; project-relative path resolves too.
+    _t, r2, _u = files_mod.resolve_local_sources("process clip.mp4 and data/report.pdf")
+    assert str((inbox / "clip.mp4").resolve()) in r2
+    assert str((tmp_path / "data" / "report.pdf").resolve()) in r2
+    # A designated file that does NOT resolve is flagged for the ask, not
+    # silently dropped and not materialized.
+    _t3, r3, u3 = files_mod.resolve_local_sources("summarize `data/missing/gone.pdf`")
+    assert r3 == [] and u3 == ["data/missing/gone.pdf"]
+    # Non-file tokens (counts, abbreviations, URLs) are never treated as files.
+    for benign in ("write exactly 3.12 lines", "e.g. do the thing",
+                   "see https://x.test/a.pdf now"):
+        _tt, rr, uu = files_mod.resolve_local_sources(benign)
+        assert rr == [] and uu == []
+    # Already-rewritten workspace tokens are left alone.
+    _t4, r4, u4 = files_mod.resolve_local_sources("see input/clip.mp4")
+    assert r4 == [] and u4 == []
 
 
-def test_inbox_materialization_end_to_end(tmp_path, monkeypatch):
-    """The dropped file lands in the run workspace as input/<name> and the
-    objective the planner sees points there."""
-    from brain import files as fm
+def test_missing_file_triggers_interactive_ask(tmp_path, monkeypatch):
+    """The credential-style gate, for files: an unreachable designated file
+    prompts the user for an accessible path; a good answer is materialized and
+    the objective is repointed at the workspace copy."""
+    from brain.approval import ApprovalBroker
+    from brain.session import BrainSession
+
     inbox = tmp_path / "data" / "inbox"
     inbox.mkdir(parents=True)
-    (inbox / "clip.mp4").write_bytes(b"fake video bytes")
+    (inbox / "real.mp4").write_bytes(b"actual bytes")
     monkeypatch.setattr(config, "PROJECT_ROOT", tmp_path)
     monkeypatch.setattr(config, "INBOX_DIR", inbox)
 
-    obj, paths = fm.rewrite_inbox_mentions("Analyze `data/inbox/clip.mp4` frame by frame.")
-    ws = tmp_path / "runs" / "sess" / "workspace"
-    manifest = fm.materialize(paths, ws)
-    assert (ws / "input" / "clip.mp4").is_file()
-    assert manifest[0]["path"] == "input/clip.mp4"
-    note = fm.manifest_note(manifest)
-    assert "input/clip.mp4" in note
+    answers = iter(["data/inbox/real.mp4"])   # the user supplies a good path
+    sess = object.__new__(BrainSession)        # bypass __init__ (no Docker/tracer)
+    sess.broker = ApprovalBroker(input_fn=lambda _p: next(answers, ""),
+                                 output_fn=lambda _t: None)
+
+    obj, resolved, missing = sess._resolve_missing_files(
+        "Analyze the video at data/original/clip.mp4 please",
+        ["data/original/clip.mp4"], [])
+    assert missing == []
+    assert resolved == [str((inbox / "real.mp4").resolve())]
+    assert "input/real.mp4" in obj                 # objective repointed to the loaded file
+
+
+def test_missing_file_ask_declined_is_reported_not_retried(tmp_path, monkeypatch):
+    from brain.approval import ApprovalBroker
+    from brain.session import BrainSession
+
+    monkeypatch.setattr(config, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(config, "INBOX_DIR", tmp_path / "inbox")
+    prompts: list[str] = []
+    sess = object.__new__(BrainSession)
+    # User declines (empty answer) -> the file stays missing, no blind retry.
+    sess.broker = ApprovalBroker(input_fn=lambda p: prompts.append(p) or "",
+                                 output_fn=lambda _t: None)
+
+    obj, resolved, missing = sess._resolve_missing_files(
+        "Summarize gone.pdf", ["gone.pdf"], [])
+    assert resolved == [] and missing == ["gone.pdf"]
+    assert len(prompts) == 1                        # asked once, accepted the decline
+    # An automated (auto-deny) session never blocks on the prompt.
+    sess.broker = ApprovalBroker(auto="deny")
+    _o, _r, m2 = sess._resolve_missing_files("Summarize gone.pdf", ["gone.pdf"], [])
+    assert m2 == ["gone.pdf"]
+
+
+def test_broker_collect_value_is_visible_and_unstored(tmp_path):
+    from brain.approval import ApprovalBroker
+    seen = {}
+    b = ApprovalBroker(input_fn=lambda p: "data/inbox/x.mp4",
+                       output_fn=lambda t: seen.setdefault("out", t))
+    val = b.collect_value("a path", "the file could not be accessed",
+                          help_text="put it in data/inbox/")
+    assert val == "data/inbox/x.mp4"
+    assert b.secrets == {}                          # NOT stored as a secret
+    # Automated sessions decline free-form asks.
+    assert ApprovalBroker(auto="deny").collect_value("p", "why") is None
