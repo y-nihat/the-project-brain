@@ -5,6 +5,37 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
 [Semantic Versioning](https://semver.org/) — `0.x` while the core algorithm
 and behavior are still expected to change between releases.
 
+## [0.9.0] — 2026-07-12
+
+The accessible-source release. A file named plainly in the objective (not via
+`@`) never reached the run, and when a designated file could not be accessed
+the system authored a doomed, file-starved pipeline instead of asking. The deep
+reason is isolation, by design: sandboxed tools receive files ONLY through the
+engine's `put_archive` into `/work/in/` — there is no host mount — so a path
+the engine does not resolve into the workspace can never reach a tool, however
+the agent spells it.
+
+### Added
+- **Files designated by path are resolved and attached** — not only `@`-mentions.
+  `files.resolve_local_sources` detects a file the user named (backticked or
+  bare, with a real extension), resolves it against the project, the brain's
+  mount, and the sanctioned inbox, rewrites the reference to `input/<name>`, and
+  materializes it. URLs, `input/` tokens, and non-file shapes (`e.g.`, `v3.12`)
+  are left alone; only files the engine can actually reach are copied
+  (isolation-safe).
+- **Interactive "accessible file" gate (the credential gate, for files)**: when
+  a designated file cannot be accessed, the run ASKS the user for a correct path
+  via a new visible-input broker channel (`ApprovalBroker.collect_value` —
+  shown on screen, never stored as a secret), bounded by `FILE_ASK_ATTEMPTS`. A
+  good answer is materialized and the objective repointed at it; a decline (or
+  an automated session) proceeds with the file marked unavailable — explicitly,
+  never by silent retry.
+- **Honest starvation instead of doomed work**: a file that stays unavailable is
+  annotated in the objective ("could NOT be accessed … report a fatal blocker …
+  never fabricate"), and the runtime's not-found message now steers an agent to
+  a single fatal blocker rather than guessing paths — so a missing required
+  file ends the run BLOCKED with a clear ask, not an expensive dead-end pipeline.
+
 ## [0.8.0] — 2026-07-12
 
 The autonomous-observation release. Two runs of the video task exposed the gap:
