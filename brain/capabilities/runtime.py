@@ -189,13 +189,17 @@ def build_caps_server(
             if file_refs and ws is not None:
                 missing = [str(r) for r in file_refs if not (ws / str(r)).is_file()]
                 if missing:
-                    available = sorted(
+                    allf = sorted(
                         str(p.relative_to(ws)) for p in ws.rglob("*")
-                        if p.is_file() and p.relative_to(ws).parts[0] != "prior")[:40]
+                        if p.is_file() and p.relative_to(ws).parts[0] != "prior")
+                    # The cap is a DISPLAY limit — say so, so an agent never reads
+                    # "first 40 shown" as "only 40 files exist" (a worker concluded
+                    # the video had 40 frames when 402 were extracted).
+                    more = f" (showing first 40 of {len(allf)})" if len(allf) > 40 else ""
                     return {
                         "content": [{"type": "text", "text": (
                             f"file(s) not found in the workspace: {missing}. The tool was NOT "
-                            f"run. Files that actually exist: {available}. Use these exact "
+                            f"run. Files that actually exist{more}: {allf[:40]}. Use these exact "
                             "workspace-relative paths. If a file the task REQUIRES is not among "
                             "them, it was never provided to this run — report a fatal blocker "
                             "naming it (report_blocker, severity='fatal'); do NOT retry with "

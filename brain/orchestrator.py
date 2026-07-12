@@ -757,29 +757,40 @@ class Orchestrator:
     def _read_workspace(self, workspace: Path, rel: str) -> dict:
         """Image-aware workspace file read (the read_file tool body, split out so
         it is directly testable). Images -> image content block; text -> excerpt;
-        path traversal and missing files -> honest error."""
+        path traversal and missing files -> honest error. The whole body is
+        guarded: an engine bug here must fail LOUDLY as a clearly-labeled
+        internal error the agent will not grind on, never a silent retry sink
+        (a `kind=` kwarg collision with Tracer.event made every image read
+        return an opaque error and 12 workers retried it into the session cap)."""
         from .capabilities.runtime import image_blocks
 
-        root = Path(workspace).resolve()
-        rel = str(rel or "").strip().lstrip("/")
-        p = (root / rel).resolve()
-        if not str(p).startswith(str(root)) or not p.is_file():
-            avail = sorted(str(x.relative_to(root)) for x in root.rglob("*")
-                           if x.is_file() and x.relative_to(root).parts[:1] != ("prior",))[:40]
-            return {"content": [{"type": "text", "text":
-                    f"no such workspace file: {rel!r}. Files that exist: {avail}"}],
-                    "is_error": True}
-        imgs = image_blocks([str(p.relative_to(root))], root, 1,
-                            config.OBSERVATION_MAX_IMAGE_BYTES)
-        self.tracer.event("agent.read_file", "workspace", status="info",
-                          path=rel[:160], kind="image" if imgs else "text")
-        if imgs:
-            return {"content": [{"type": "text", "text": f"[{rel} — shown as image]"}] + imgs}
         try:
+            root = Path(workspace).resolve()
+            rel = str(rel or "").strip().lstrip("/")
+            p = (root / rel).resolve()
+            if not str(p).startswith(str(root)) or not p.is_file():
+                files = [str(x.relative_to(root)) for x in sorted(root.rglob("*"))
+                         if x.is_file() and x.relative_to(root).parts[:1] != ("prior",)]
+                shown = files[:40]
+                more = f" (showing first 40 of {len(files)})" if len(files) > 40 else ""
+                return {"content": [{"type": "text", "text":
+                        f"no such workspace file: {rel!r}. Files that exist{more}: "
+                        f"{shown}"}], "is_error": True}
+            imgs = image_blocks([str(p.relative_to(root))], root, 1,
+                                config.OBSERVATION_MAX_IMAGE_BYTES)
+            self.tracer.event("agent.read_file", "workspace", status="info",
+                              path=rel[:160], file_kind="image" if imgs else "text")
+            if imgs:
+                return {"content": [{"type": "text",
+                                     "text": f"[{rel} — shown as image]"}] + imgs}
             text = p.read_text(errors="ignore")
-        except OSError as e:
-            return {"content": [{"type": "text", "text": f"unreadable: {e}"}],
-                    "is_error": True}
+        except Exception as e:  # noqa: BLE001 — an engine bug must not become a retry loop
+            self.tracer.event("agent.read_file.error", "workspace", status="failed",
+                              path=str(rel)[:160], error=f"{type(e).__name__}: {str(e)[:200]}")
+            return {"content": [{"type": "text", "text": (
+                    f"INTERNAL ERROR reading {rel!r} ({type(e).__name__}). This is an "
+                    "engine fault, not a bad path — do NOT retry this file or others; "
+                    "report a blocker so the run can recover.")}], "is_error": True}
         more = f"\n[…{len(text) - 8000:,} more chars]" if len(text) > 8000 else ""
         return {"content": [{"type": "text", "text": f"[{rel}]\n{text[:8000]}{more}"}]}
 
@@ -1465,7 +1476,14 @@ class Orchestrator:
                     spec, caps, objective, {}, history, workspace, task_context=ctx,
                     extra_servers=evidence_server, extra_tools=evidence_tools)
                 m = _VERDICT_RE.search(critique or "")
-                verdict = m.group(1).lower() if m else "approved"
+                # An UNPARSEABLE verdict is a protocol violation, not an
+                # approval: default to 'revise', never 'approved' (observed: a
+                # synthesis grounded in ZERO observed frames was auto-approved
+                # because the reviewer's prose lacked the exact verdict token).
+                verdict = m.group(1).lower() if m else "revise"
+                if not m:
+                    self.tracer.event("review.verdict.unparsed", stage.id, status="failed",
+                                      round=rnd, note="no VERDICT line -> defaulted to revise")
                 per_criterion = _parse_criteria_verdicts(critique)
 
                 # DETERMINISTIC APPROVAL GATE: a parsed 'approved' cannot
