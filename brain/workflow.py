@@ -27,6 +27,50 @@ from .models import MAP, REDUCE, REVIEW, SINGLE, STAGE_PATTERNS, StageSpec
 MANIFEST_FENCE = "manifest"
 _MANIFEST_RE = re.compile(r"```" + MANIFEST_FENCE + r"\s*\n(.*?)```", re.DOTALL)
 
+DELIVERABLE_FENCE = "deliverable"
+_DELIVERABLE_RE = re.compile(r"```" + DELIVERABLE_FENCE + r"\s*\n(.*?)```", re.DOTALL)
+
+
+def deliverable_instruction() -> str:
+    """Appended to any stage that produces the artifact-of-record: the exact
+    deliverable must be machine-separable from working notes. Observed failure
+    this closes: 'exactly one paragraph' shipped as preamble + separator +
+    paragraph + sentence-count note + change list, and format criteria were
+    judged against the embedded fragment instead of the saved deliverable."""
+    return (
+        "\nDELIVERABLE PAYLOAD (hard rule): your output produces the run's "
+        "deliverable. Wrap the EXACT deliverable content — and nothing else — in a "
+        "fenced block:\n```" + DELIVERABLE_FENCE + "\n<the deliverable, verbatim>\n```\n"
+        "Everything outside the fence is working notes (explanations, counts, change "
+        "lists) and will NOT be delivered. Format constraints ('exactly one "
+        "paragraph', 'under 40 words', '3 sections') are measured against the "
+        "fenced payload alone, by machine."
+    )
+
+
+def extract_deliverable(text: str):
+    """The LAST fenced deliverable block, or None when the stage did not emit
+    one (caller falls back to the whole output — degraded, never lossy)."""
+    if not text:
+        return None
+    matches = _DELIVERABLE_RE.findall(text)
+    if not matches:
+        return None
+    payload = matches[-1].strip()
+    return payload or None
+
+
+def deliverable_stage_ids(stages: list["StageSpec"]) -> set[str]:
+    """Stages whose output IS the artifact-of-record: the draft each review
+    verifies (deps[0]) and the terminal stage of the graph."""
+    ids = {s.depends_on[0] for s in stages if s.pattern == REVIEW and s.depends_on}
+    ordered = topo_order(stages)
+    for s in reversed(ordered):
+        if s.pattern != REVIEW:
+            ids.add(s.id)
+            break
+    return ids
+
 
 def manifest_instruction() -> str:
     """Standard instruction appended to any stage whose output feeds a map."""

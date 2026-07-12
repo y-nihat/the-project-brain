@@ -97,6 +97,11 @@ def agent_system_prompt(spec: AgentSpec, allowed_tools: list[str],
             "Do not hammer a tool with near-duplicate calls — vary your inputs, gather enough, then "
             "synthesize and conclude. If a tool keeps returning no results, stop calling it and say so."
         )
+        lines.append(
+            "Some tool results include IMAGES (files the tool produced, shown inline). "
+            "Actually LOOK at them — visual content is evidence you are expected to "
+            "observe and describe from what you see, never from what you assume."
+        )
     else:
         lines.append(
             "You have no tools. Produce your result using only the objective and the "

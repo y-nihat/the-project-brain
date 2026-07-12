@@ -26,6 +26,8 @@ from pathlib import Path
 from typing import Awaitable, Callable, Optional
 
 from . import config, factory, workflow
+from . import criteria as criteria_mod
+from . import evidence as evidence_mod
 from .acquisition import (AcquisitionError, acquire, generalize_description,
                           make_builder_agent)
 from .acquisition import repair_capability as acquire_repair
@@ -35,10 +37,36 @@ from .models import (CREATE, MAP, REDUCE, REUSE, REVIEW, AgentSpec, Capability,
 from .team import TEAM_TOOLS, TeamChannel, build_team_server
 
 _VERDICT_RE = re.compile(r"VERDICT:\s*(approved|revise|needs-evidence)", re.IGNORECASE)
+_CRITERIA_BLOCK_RE = re.compile(r"```criteria\s*\n(.*?)```", re.DOTALL)
 # A remote locator in the objective is user-referenced evidence, exactly like an
-# attached file — format-neutral detection (any scheme://host or www.host), never
-# a service or task pattern.
-_EXTERNAL_LOCATOR = re.compile(r"\b\w{2,10}://\S+|\bwww\.\S+\.\S+", re.IGNORECASE)
+# attached file (defined in the evidence module; re-exported for callers/tests).
+_EXTERNAL_LOCATOR = evidence_mod.EXTERNAL_LOCATOR
+
+
+def _parse_criteria_verdicts(critique: str) -> list[dict]:
+    """The reviewer's per-criterion table (fenced ```criteria JSON): each
+    criterion carries its own met/unmet/unknown state and the evidence
+    reference that settles it — 'the reviewer approves' is a verdict about
+    the SET, and was observed papering over an individually failed count."""
+    import json as _json
+
+    matches = _CRITERIA_BLOCK_RE.findall(critique or "")
+    for raw in reversed(matches):
+        try:
+            items = _json.loads(raw.strip())
+        except ValueError:
+            continue
+        if isinstance(items, list):
+            out = []
+            for it in items:
+                if isinstance(it, dict) and it.get("criterion"):
+                    status = str(it.get("status", "unknown")).lower()
+                    out.append({"criterion": str(it["criterion"])[:300],
+                                "status": status if status in ("met", "unmet", "unknown")
+                                else "unknown",
+                                "evidence": str(it.get("evidence", ""))[:300]})
+            return out
+    return []
 
 
 def _stage_dict(s: StageSpec) -> dict:
@@ -386,6 +414,9 @@ class Orchestrator:
         self._recovery_state = "not-needed"
         self._cap_needs: dict[str, dict] = {}
         self._suppressed_caps: set[str] = set()
+        self._locators: list[str] = []
+        self._source_derived = False
+        self._format_violations: list = []
 
     # ------------------------------------------------------------------ #
     # run
@@ -408,7 +439,12 @@ class Orchestrator:
         # observed shipping as 'grounded' with nothing ever checking its claims.
         has_user_evidence = (workspace / "input").is_dir() and \
             any((workspace / "input").iterdir())
-        has_external_evidence = bool(_EXTERNAL_LOCATOR.search(objective or ""))
+        self._locators = evidence_mod.designated_locators(objective)
+        has_external_evidence = bool(self._locators)
+        # Source-derived runs (designated sources exist: attached files or
+        # remote locators) are held to the retained-evidence gate; depth-only
+        # risk is not — a pure synthesis chain has no payloads to retain.
+        self._source_derived = has_user_evidence or has_external_evidence
         planned, appended = workflow.append_review_if_needed(
             plan.stages, has_user_evidence=has_user_evidence,
             has_external_evidence=has_external_evidence)
@@ -470,6 +506,7 @@ class Orchestrator:
         self._recoveries = 0            # bounded failure-driven strategy re-entries
         self._recovery_state = "not-needed"
         self._suppressed_caps = set()   # methods that failed this run; need new rationale
+        self._format_violations = []    # engine-measured count-criteria failures
 
         last_done: Optional[str] = None
         failure_note: Optional[str] = None
@@ -566,11 +603,23 @@ class Orchestrator:
         if last_done is not None:
             answer = outputs.get(last_done, "")
             # The PURE deliverable — before any engine banner/note/appendix — gets
-            # its own channel: "exactly one paragraph" must have a file that IS
-            # exactly one paragraph, whatever the terminal envelope shows.
+            # its own channel, and it is the fenced PAYLOAD when the stage emitted
+            # one: "exactly one paragraph" must have a file that IS exactly one
+            # paragraph, not preamble + paragraph + change log (observed V060).
+            payload = workflow.extract_deliverable(answer) or answer
             deliverable_dir = Path(config.RUNS_DIR) / self.session / "outputs"
             deliverable_dir.mkdir(parents=True, exist_ok=True)
-            (deliverable_dir / "DELIVERABLE.md").write_text(answer or "")
+            (deliverable_dir / "DELIVERABLE.md").write_text(payload or "")
+            # Countable format criteria are MEASURED against the payload — a
+            # measured violation is authoritative over any verdict prose.
+            checks = criteria_mod.check_counts(self._criteria, payload)
+            self._format_violations = criteria_mod.violations(checks)
+            if checks:
+                self.tracer.event(
+                    "criteria.measured", "run", status="info",
+                    checks=[f"{c.op} {c.bound} {c.unit}: measured {c.measured} "
+                            f"({'ok' if c.ok else 'VIOLATED' if c.gating else 'advisory'})"
+                            for c in checks])
             if failure_note:
                 answer = (answer + "\n\n" + failure_note).strip()
         else:
@@ -738,6 +787,27 @@ class Orchestrator:
             stages.insert(insert_at + off, s)
             self._stages_by_id[s.id] = s
         self._retarget_pending_review(stages, insert_at + len(new_stages), new_stages)
+        # Re-verify after new observation: when the extension lands AFTER a
+        # review that did not approve (e.g. its unmet evidence demand is what
+        # drove this replan), append a fresh review over the new terminal —
+        # new evidence without re-verification would ship unreviewed.
+        if self._review_ran and not self._review_approved and \
+                not any(s.pattern == REVIEW for s in stages[i + 1:]):
+            src = next((s for s in reversed(stages[:i + 1]) if s.pattern == REVIEW), None)
+            if src is not None:
+                rid = f"{src.id}-recheck"
+                while rid in self._stages_by_id:
+                    rid += "x"
+                recheck = StageSpec(
+                    id=rid, pattern=REVIEW, role=src.role, goal=src.goal,
+                    capabilities=list(src.capabilities),
+                    depends_on=[new_stages[-1].id]
+                    + [d for d in src.depends_on if d != new_stages[-1].id],
+                    rounds=src.rounds)
+                stages.append(recheck)
+                self._stages_by_id[rid] = recheck
+                self.tracer.event("review.reappended", rid, status="info",
+                                  draft=new_stages[-1].id, after=src.id)
         self.tracer.event("plan.extended", "planner", status="info",
                           added=[s.id for s in new_stages],
                           needs=[g.get("need", "")[:120] for g in gaps])
@@ -934,7 +1004,8 @@ class Orchestrator:
             "grounding": ("approved" if self._review_approved
                           else "not-approved" if self._review_ran
                           else "not-required" if not self._high_risk else "missing"),
-            "criteria": ("approved" if self._review_approved
+            "criteria": ("violated-measured" if self._format_violations
+                         else "approved" if self._review_approved
                          else "assessed-not-approved" if self._review_ran
                          else "not-assessed" if self._criteria else "none-compiled"),
             "artifact": "defective" if issues else "ok",
@@ -970,6 +1041,12 @@ class Orchestrator:
             return "partial", ("grounded_but_artifact_defective — the content is grounded, but "
                                "the artifact has unresolved mechanical defects: "
                                + "; ".join(issues[:3]))
+        if self._format_violations:
+            heads = "; ".join(f"required {v.op} {v.bound} {v.unit}(s), measured {v.measured}"
+                              for v in self._format_violations[:3])
+            return "partial", ("criteria_format_violation — engine-measured against the "
+                               f"deliverable payload: {heads}. A reviewer verdict cannot "
+                               "override a measured count.")
         if self._review_approved:
             return "succeeded", "grounding and success criteria approved by review."
         return "succeeded", ("operationally complete; no user-referenced evidence was "
@@ -1000,6 +1077,8 @@ class Orchestrator:
         self._stage_caps[stage.id] = dict(caps)
         upstream = {d: outputs[d] for d in stage.depends_on if d in outputs}
         task_context = workflow.manifest_instruction() if workflow.feeds_a_map(stage.id, stages) else None
+        if stage.id in workflow.deliverable_stage_ids(list(self._stages_by_id.values())):
+            task_context = (task_context or "") + workflow.deliverable_instruction()
         out = await self._run_agent_with_reflection(
             spec, caps, objective, upstream, history, workspace, task_context=task_context)
         self._stage_notes[stage.id] = {stage.id: out}
@@ -1144,6 +1223,8 @@ class Orchestrator:
         ctx = ("Notes from the workers (merge faithfully; keep source attributions; "
                "flag disagreements between workers rather than papering over them):\n"
                + _notes_block(notes, limit))
+        if stage.id in workflow.deliverable_stage_ids(list(self._stages_by_id.values())):
+            ctx += workflow.deliverable_instruction()
         out = await self._run_agent_with_reflection(
             spec, caps, objective, {}, history, workspace, task_context=ctx)
         self._stage_notes[stage.id] = {stage.id: out}
@@ -1189,7 +1270,7 @@ class Orchestrator:
             "against EACH; an unmet criterion is grounds to revise):\n"
             + "\n".join(f"- {c}" for c in self._criteria) if self._criteria else "")
         evidence_server = {"evidence": self._evidence_server(workspace)}
-        evidence_tools = ["mcp__evidence__locate_evidence"]
+        evidence_tools = ["mcp__evidence__locate_evidence", "mcp__evidence__view_evidence"]
         try:
             for rnd in range(1, max(1, stage.rounds) + 1):
                 spec = AgentSpec(id=f"{stage.id}.r{rnd}", role=stage.role, goal=stage.goal,
@@ -1208,8 +1289,24 @@ class Orchestrator:
                              "this block exists to prevent: your verdict MUST be "
                              "'needs-evidence' (name the observation/extraction needed — a "
                              "courier will fetch and RETAIN it) or 'revise' — never 'approved'.\n\n")
+                # The deliverable PAYLOAD is what ships — judge it, not the
+                # stage's narration around it; countable criteria arrive as
+                # engine measurements, not eyeballing.
+                payload = workflow.extract_deliverable(draft) or draft
+                payload_note = ("" if payload == draft else
+                                "\n(The stage's working notes outside the fenced deliverable "
+                                "block were stripped — THIS payload is what ships and what "
+                                "format criteria are measured against.)")
+                checks = criteria_mod.check_counts(self._criteria, payload)
+                facts = criteria_mod.describe(checks)
+                ledger_entries = evidence_mod.ledger(workspace, self._reader_dirs(),
+                                                     self._locators)
+                ledger_block = evidence_mod.describe(ledger_entries, self._locators)
                 ctx = (
-                    "DRAFT under review:\n---\n" + draft + "\n---\n\n"
+                    "DRAFT under review (the deliverable payload):\n---\n" + payload
+                    + "\n---" + payload_note + "\n\n"
+                    + ledger_block + "\n\n"
+                    + (facts + "\n\n" if facts else "")
                     + (f"ORIGINAL SOURCE EVIDENCE (the user's actual inputs / raw extraction — the "
                        f"ground truth every claim must ultimately trace to):\n{source}\n\n"
                        if source else "")
@@ -1242,24 +1339,81 @@ class Orchestrator:
                       "the exact string — FOUND means grounded (cite the location); NOT FOUND after "
                       "lookup means unsupported. Never settle a claim's presence by asking the stage "
                       "that produced it: a follow-up agent answers from memory, not the files. "
+                      "EVIDENCE TIERS: ground your verdict in the RETAINED EVIDENCE LEDGER — "
+                      "'target'-tier entries are observation of the designated source; "
+                      "'proxy'-tier entries are retained testimony ABOUT it (grounding in proxy "
+                      "alone is a stated limitation, only acceptable when the criteria admit it); "
+                      "an agent's or courier's PROSE — however organized or confident — is "
+                      "narration, NEVER evidence, whatever it calls itself. Use view_evidence to "
+                      "open retained files (images are shown as images — look at visual artifacts "
+                      "before judging claims about them). "
                       "Your FIRST line must be exactly one of: 'VERDICT: approved' — "
                       "'VERDICT: revise' (problems fixable from the existing evidence) — "
                       "'VERDICT: needs-evidence' (a load-bearing claim can only be settled by fetching "
                       "a specific missing source; then list EXACTLY what to fetch). A load-bearing "
                       "source fact that is UNKNOWN from the evidence shown (e.g. the source's actual "
                       "title/identity) is exactly the 'needs-evidence' case. If revising, follow "
-                      "with a numbered list of specific, actionable fixes."
+                      "with a numbered list of specific, actionable fixes. "
+                      "AFTER the verdict line, emit a fenced ```criteria block: a JSON array with "
+                      "one entry PER SUCCESS CRITERION — {\"criterion\": \"...\", \"status\": "
+                      "\"met\"|\"unmet\"|\"unknown\", \"evidence\": \"the ledger file/lookup/"
+                      "measurement that settles it, or why it is unknown\"}. A criterion you "
+                      "cannot ground in retained evidence or an engine measurement is 'unknown', "
+                      "never 'met'."
                 )
                 critique = await self._run_agent_with_reflection(
                     spec, caps, objective, {}, history, workspace, task_context=ctx,
                     extra_servers=evidence_server, extra_tools=evidence_tools)
                 m = _VERDICT_RE.search(critique or "")
                 verdict = m.group(1).lower() if m else "approved"
-                record.append({"round": rnd, "verdict": verdict,
-                               "critique": (critique or "").strip()[:4000]})
-                self._review_verdicts.append(verdict)
+                per_criterion = _parse_criteria_verdicts(critique)
+
+                # DETERMINISTIC APPROVAL GATE: a parsed 'approved' cannot
+                # override the engine's own facts. Observed V060 failure: the
+                # reviewer acknowledged an empty evidence plane in round 1,
+                # then approved in round 2 on courier narration, with all 17
+                # lookups NOT FOUND — and the engine took the regex at its
+                # word. Facts that void approval: a source-derived run with an
+                # EMPTY retained-evidence ledger, or a measured violation of a
+                # countable criterion.
+                void = ""
+                if verdict == "approved":
+                    if self._source_derived and not evidence_mod.ledger(
+                            workspace, self._reader_dirs(), self._locators):
+                        void = ("empty evidence ledger: this run derives claims from "
+                                "designated sources but NO payload was retained — "
+                                "narration was approved, not evidence")
+                    else:
+                        gate = criteria_mod.violations(criteria_mod.check_counts(
+                            self._criteria, workflow.extract_deliverable(draft) or draft))
+                        if gate:
+                            v = gate[0]
+                            void = (f"engine-measured format violation: required {v.op} "
+                                    f"{v.bound} {v.unit}(s), measured {v.measured} in the "
+                                    "deliverable payload")
+                if void:
+                    self.tracer.event("review.approval.voided", stage.id, status="failed",
+                                      round=rnd, reason=void)
+                    verdict = "needs-evidence" if (
+                        couriers_left > 0 and "ledger" in void) else "revise"
+                    critique += (
+                        f"\n\n[ENGINE GATE] The 'approved' verdict was VOIDED: {void}. "
+                        "Approval requires load-bearing claims to trace to RETAINED "
+                        "evidence files (tools must retain payloads; prose does not "
+                        "count) and the deliverable payload to satisfy every measured "
+                        "count constraint.")
+                    record.append({"round": rnd, "verdict": "approved-voided",
+                                   "criteria": per_criterion,
+                                   "critique": (critique or "").strip()[:4000]})
+                    self._review_verdicts.append("approved-voided")
+                else:
+                    record.append({"round": rnd, "verdict": verdict,
+                                   "criteria": per_criterion,
+                                   "critique": (critique or "").strip()[:4000]})
+                    self._review_verdicts.append(verdict)
                 self.tracer.event("review.verdict", stage.id, status="info",
-                                  round=rnd, verdict=verdict, parsed=bool(m))
+                                  round=rnd, verdict=self._review_verdicts[-1],
+                                  parsed=bool(m), criteria=len(per_criterion))
                 if verdict == "approved":
                     self._review_approved = True
                     self._write_review_record(stage.id, record, "approved")
@@ -1270,9 +1424,12 @@ class Orchestrator:
                     couriers_left -= 1
                     courier = AgentSpec(
                         id=f"{stage.id}.evidence", role="Evidence courier",
-                        goal="Obtain EXACTLY the missing evidence the reviewer listed; return it "
-                             "with full source attribution. Fetch nothing else.",
+                        goal="Obtain EXACTLY the missing evidence the reviewer listed, using "
+                             "tools that RETAIN payloads (retained files are the deliverable "
+                             "of this errand — your prose is not evidence). Fetch nothing else.",
                         capabilities=self._evidence_capabilities(draft_stage))
+                    before = {e.file for e in evidence_mod.ledger(
+                        workspace, self._reader_dirs(), self._locators)}
                     with self.tracer.span("review.evidence", stage.id):
                         fetched = await self._run_agent_with_reflection(
                             courier, await self._acquire_caps(courier), objective, {},
@@ -1280,7 +1437,20 @@ class Orchestrator:
                             task_context="The reviewer needs this evidence:\n" + critique,
                             extra_servers=evidence_server, extra_tools=evidence_tools)
                     evidence[courier.id] = fetched
-                    extra = "\n\nNEWLY FETCHED EVIDENCE (courier):\n" + fetched[:20000]
+                    # Label the courier's text by the LEDGER's fact, not the
+                    # courier's own account: the engine calling narration
+                    # "NEWLY FETCHED EVIDENCE" was itself a laundering channel.
+                    gained = sorted({e.file for e in evidence_mod.ledger(
+                        workspace, self._reader_dirs(), self._locators)} - before)
+                    if gained:
+                        extra = ("\n\nNEWLY RETAINED EVIDENCE (courier; files: "
+                                 + ", ".join(gained[:8]) + "):\n" + fetched[:20000])
+                    else:
+                        self.tracer.event("courier.ineffective", stage.id, status="failed",
+                                          note="courier retained no files — report is narration")
+                        extra = ("\n\nCOURIER REPORT (the courier retained NO evidence "
+                                 "files — this is narration, NOT evidence; claims cannot "
+                                 "be grounded in it):\n" + fetched[:20000])
 
                 redo = self._redo.get(draft_id)
                 if redo is None or rnd >= stage.rounds:
@@ -1299,6 +1469,25 @@ class Orchestrator:
                             f"({type(e).__name__}: {str(e)[:200]}); this draft is delivered UNVERIFIED.")
 
         self.tracer.event("review.exhausted", stage.id, status="failed", rounds=stage.rounds)
+        # Escalate past the review's own toolbox: an unresolved evidence demand
+        # on a source-derived run with an EMPTY ledger is an unmet OBSERVATION
+        # need — the same signal agents report — so the planner can author
+        # retention-capable observation the courier structurally lacked (the
+        # V060 courier could only re-run the very tools whose insufficiency
+        # caused the demand). Bounded by REPLANS_PER_RUN like every replan.
+        if self.blackboard is not None and self._source_derived and \
+                not evidence_mod.ledger(workspace, self._reader_dirs(), self._locators):
+            gaps = self.blackboard.get("evidence.gaps", []) or []
+            gaps.append({
+                "agent": stage.id,
+                "need": ("retained observation of the designated source(s) "
+                         f"{self._locators[:2] or ''} sufficient to ground the deliverable's "
+                         "load-bearing claims — retained payload files, not prose reports"),
+                "attempted": "review demanded evidence; the courier retained nothing "
+                             "(its report was narration)"})
+            self.blackboard.put("evidence.gaps", gaps)
+            self.tracer.event("review.evidence_gap", stage.id, status="info",
+                              note="unmet evidence demand escalated to the adaptive loop")
         self._write_review_record(
             stage.id, record,
             f"{verdict} — rounds exhausted; the final round's critique was NOT applied "
@@ -1316,8 +1505,15 @@ class Orchestrator:
         lines = [f"# {stage_id} [review] — verdict record (authoritative)", "",
                  f"**FINAL: {final}**", ""]
         for r in record:
-            lines += [f"## round {r['round']} — VERDICT: {r['verdict']}", "",
-                      r["critique"], ""]
+            lines += [f"## round {r['round']} — VERDICT: {r['verdict']}", ""]
+            crits = r.get("criteria") or []
+            if crits:
+                lines += ["Per-criterion state:", ""]
+                lines += [f"- [{c['status']}] {c['criterion']}"
+                          + (f" — {c['evidence']}" if c.get("evidence") else "")
+                          for c in crits]
+                lines.append("")
+            lines += [r["critique"], ""]
         agg.write_text("\n".join(lines))
 
     def _digest(self, pending: Optional[str] = None,
@@ -1449,8 +1645,38 @@ class Orchestrator:
                               found=result.startswith("FOUND"))
             return {"content": [{"type": "text", "text": result}]}
 
+        @tool("view_evidence",
+              "Open a file the run retained or produced (workspace-relative path, as "
+              "listed in the evidence ledger / file lists). Images are returned AS "
+              "IMAGES — look at visual evidence and visual artifacts before judging "
+              "claims about them; text files return an excerpt.",
+              {"type": "object", "properties": {"path": {"type": "string"}},
+               "required": ["path"]})
+        async def view_evidence(args):
+            from .capabilities.runtime import image_blocks
+
+            rel = str(args.get("path", "")).strip()
+            p = (Path(workspace) / rel).resolve()
+            if not str(p).startswith(str(Path(workspace).resolve())) or not p.is_file():
+                return {"content": [{"type": "text", "text":
+                        f"no such workspace file: {rel!r}"}], "is_error": True}
+            imgs = image_blocks([rel], Path(workspace), 1,
+                                config.OBSERVATION_MAX_IMAGE_BYTES)
+            self.tracer.event("review.view", "evidence", status="info",
+                              path=rel[:160], kind="image" if imgs else "text")
+            if imgs:
+                return {"content": [{"type": "text",
+                                     "text": f"[{rel} — shown as image]"}] + imgs}
+            try:
+                text = p.read_text(errors="ignore")[:6000]
+            except OSError as e:
+                return {"content": [{"type": "text", "text": f"unreadable: {e}"}],
+                        "is_error": True}
+            return {"content": [{"type": "text",
+                                 "text": f"[{rel} — first 6000 chars]\n{text}"}]}
+
         return create_sdk_mcp_server(name="evidence", version="1.0.0",
-                                     tools=[locate_evidence])
+                                     tools=[locate_evidence, view_evidence])
 
     async def _run_agent_with_reflection(self, spec, caps, objective, upstream, history,
                                          workspace, task_context: Optional[str] = None,
