@@ -29,7 +29,7 @@ RUNS_DIR = DATA_DIR / "runs"          # per-run trace exports + created-tool art
 # change invalidates promoted capabilities even without a release bump).
 # KEEP IN LOCKSTEP WITH THE RELEASE TAG — a stale label here let a biased reader
 # skip revalidation for a whole release cycle.
-ENGINE_VERSION = "0.6.0"
+ENGINE_VERSION = "0.7.0"
 
 
 def _git_commit() -> str:

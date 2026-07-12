@@ -5,6 +5,77 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
 [Semantic Versioning](https://semver.org/) — `0.x` while the core algorithm
 and behavior are still expected to change between releases.
 
+## [0.7.0] — 2026-07-12
+
+The trusted-evidence release, from the v0.6.0 rerun of the remote-source test.
+The exposed failure class: the run's "evidence plane" existed only as prompt
+assembly — a reviewer acknowledged an empty plane, then approved on courier
+narration with all 17 deterministic lookups NOT FOUND, and the engine took the
+parsed verdict over its own facts. Proxy-first strategy persisted because
+proxy-first still got rewarded, and the strategy space never contained the
+target's own signals: the system could not perceive non-text observations, so
+plans never proposed producing them.
+
+### Added
+- **The evidence ledger** (`brain/evidence.py`): deterministic typed state of
+  what the run has ACTUALLY retained. The capability runtime records each tool
+  call's retention + reported provenance (`evidence.jsonl`); entries are
+  tiered `target` (payload from a DESIGNATED source — objective locators or
+  attached inputs), `proxy` (payload from elsewhere: testimony ABOUT the
+  target), or `retained` (unknown lineage). Agent prose is never in the
+  ledger, whatever it calls itself. Review context carries the tier-labeled
+  ledger.
+- **Deterministic approval gate**: a parsed `approved` cannot override engine
+  facts — voided (traced, recorded as `approved-voided`) when a source-derived
+  run has an EMPTY ledger, or when a MEASURED count criterion is violated.
+  Courier output is labeled by the ledger diff: `NEWLY RETAINED EVIDENCE`
+  only when files actually appeared, else `COURIER REPORT (narration, NOT
+  evidence)` — the engine itself was the laundering channel before.
+- **Escalation past the courier's toolbox**: an unresolved evidence demand on
+  a source-derived run with an empty ledger becomes an evidence gap for the
+  adaptive loop (the courier can only re-run the tools whose insufficiency
+  caused the demand — it can never author new observation); a post-review
+  extension re-appends a FRESH review over the new terminal, so new evidence
+  is never shipped unreviewed. Bounded by `REPLANS_PER_RUN`.
+- **One evidence contract for every observer**: the recipe/bootstrap path now
+  runs the same generic verification (yield fields, lineage, retention) as
+  authored tools — the most trusted path had the weakest contract. The
+  web_search recipe retains raw payloads, reports the index it ACTUALLY
+  accessed as `source_refs`, and declares snippet yield `partial` with the
+  unfetched pages as unresolved needs.
+- **Typed deliverable payload**: deliverable-producing stages emit a fenced
+  payload block; `DELIVERABLE.md` is the payload verbatim; review judges the
+  payload; countable criteria (paragraphs, words, sections, items) are
+  MEASURED by the engine against it (`brain/criteria.py`) — measured
+  violations void approvals, surface as `criteria_format_violation`, and are
+  authoritative over verdict prose. Sentence counts stay advisory.
+- **Per-criterion state**: the reviewer emits a fenced `criteria` JSON table
+  (met/unmet/unknown + the evidence reference that settles each); it lands in
+  the authoritative verdict record. Planner is barred from compiling circular
+  criteria ("the review approves…").
+- **Perception for non-text observation**: image files a tool produces return
+  to the agent as image content blocks (bounded count/size), and
+  verification-role agents get `view_evidence` (images shown AS images, text
+  as excerpts) — visual observation strategies (rendering, screenshots,
+  frames, scans, charts) become executable instead of "(N bytes, binary)"
+  black holes.
+- **Strategy space anchored to the target, not the toolbox**: planning starts
+  from a TARGET SIGNAL MODEL (what the target IS; which of its constituent
+  signals carry each required property); the candidate comparison MUST
+  include direct observation and a property-preserving derived representation
+  (rejecting them requires naming the concrete blocker, recorded as a
+  limitation); candidates are graded on an evidence-tier ladder (direct >
+  derived > primary testimony > index snippets > secondary testimony >
+  memory), lower tiers win only with recorded justification; BELIEF HYGIENE —
+  prior conclusions/world knowledge are hypotheses that may order channels
+  but never rule them out unverified.
+
+### Deferred (tracked)
+Resolution of redirects/mirrors in target-tier matching (degrades to proxy,
+never the reverse); deterministic sentence segmentation; audio/other
+modalities in perception (images first); retained-payload deduplication for
+courier reuse.
+
 ## [0.6.0] — 2026-07-12
 
 The failure-recovery release, from the v0.5.1 rerun of the remote-source test.
