@@ -5,6 +5,51 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
 [Semantic Versioning](https://semver.org/) — `0.x` while the core algorithm
 and behavior are still expected to change between releases.
 
+## [0.8.0] — 2026-07-12
+
+The autonomous-observation release. Two runs of the video task exposed the gap:
+given explicit human-style steps the planner built the correct pipeline
+(extract frames → describe → synthesize), proving the capability exists — but
+on the generic phrasing it declared "no video-playback tool is available; this
+is a concrete blocker" and fell back to web search. It treated tool-absence as
+impossibility in a system whose premise is authoring tools, and separately it
+tried to BUILD a vision model (which OOM-killed at the 2 GB sandbox ceiling)
+when the reasoning model is already multimodal.
+
+### Added
+- **Tool-absence is never a blocker (proactive tool creation)**: the planner
+  emits an accountable `direct_observation` declaration — `planned` (a stage
+  observes the designated source, authoring the tool if needed) or `infeasible`
+  with a `blocker_class` from a CLOSED enum (`requires_credential`,
+  `resource_ceiling`, `no_free_means`, `physical_access`, `user_authority`).
+  "No tool exists" is not a member, so it cannot justify a proxy. A
+  source-derived plan that skipped direct observation with no legitimate
+  blocker is detected deterministically and re-planned ONCE with a pointed
+  corrective (bounded, fail-open) — the system builds the needed capability
+  instead of settling for a weaker channel.
+- **Observation is decomposed into authorable sub-steps**: acquire the object
+  → convert its carrying signal into files → perceive those files. The planner
+  names the atomic tools (a downloader, a frame/segment/page extractor) for the
+  system to build.
+- **Multimodal perception is the agent's own ability**: every stage agent gets
+  an image-aware `read_file` tool — images come back as image content blocks —
+  so "describe these frames / screenshots / scans / charts" is the agent's
+  native ability (like summarizing), NOT a capability. The planner is barred
+  from authoring VLM/OCR/caption/vision-model tools (they duplicate the agent's
+  sight and blow the sandbox ceiling) and instead authors the cheap tool that
+  PRODUCES the files to look at. Generalizes v0.7.0's review-only image viewing
+  to all stages; `view_evidence` is subsumed by `read_file`.
+- **Inbox files named by path are attached**: a file dropped in the sanctioned
+  `data/inbox` and named in the objective by path (backticked or bare) is
+  materialized into the run like an `@`-mention — a first-class way to
+  designate a source directly, alongside `@`-mentions and remote locators.
+  Only files that resolve inside the inbox are touched.
+
+### Deferred (tracked)
+Fail-fast when a named local file is neither attached nor in the inbox (today:
+proceeds without it); per-frame map-sharding heuristics for long media;
+resource-ceiling method failures auto-pivoting to agent-native perception.
+
 ## [0.7.0] — 2026-07-12
 
 The trusted-evidence release, from the v0.6.0 rerun of the remote-source test.
