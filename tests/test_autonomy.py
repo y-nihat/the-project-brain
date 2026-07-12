@@ -233,6 +233,56 @@ def test_read_file_returns_images_as_images(tmp_path):
         bb.close()
 
 
+def test_read_file_works_with_a_real_tracer(tmp_path):
+    """REGRESSION (the bug that killed the video run): read_file passed
+    kind='image' to Tracer.event, colliding with its positional `kind`
+    parameter — every image read returned 'got multiple values for argument
+    kind', and 12 map workers retried it into the 40-session cap ($10.27, run
+    blocked, zero frames ever seen). The perception path MUST be exercised with
+    a REAL Tracer; NullTracer (which swallows **kwargs) hid the collision and
+    gave 202 green tests false confidence."""
+    from brain.observability import Tracer
+
+    tracer = Tracer(tmp_path / "t.db", tmp_path / "runs")
+    try:
+        orch = Orchestrator(session="rt", manager=None, ledger=None, registry=None,
+                            blackboard=None, broker=None, planner=None, resolver=None,
+                            tracer=tracer)
+        ws = tmp_path / "ws"
+        (ws / "f").mkdir(parents=True)
+        (ws / "f" / "frame.png").write_bytes(b"\x89PNG real-enough bytes")
+        res = orch._read_workspace(ws, "f/frame.png")
+        assert not res.get("is_error"), res
+        assert any(b.get("type") == "image" for b in res["content"])
+        # A capped listing says "first 40 of N", never implying only 40 exist.
+        for i in range(45):
+            (ws / "f" / f"g{i:03d}.txt").write_text("x")
+        miss = orch._read_workspace(ws, "nope.png")
+        assert miss.get("is_error") and "showing first 40 of" in miss["content"][0]["text"]
+    finally:
+        tracer.close()
+
+
+def test_read_file_internal_error_is_not_a_retry_sink(tmp_path, monkeypatch):
+    """An engine fault inside read_file must fail LOUD and self-labeled ('do
+    NOT retry … report a blocker'), never an opaque error agents grind on."""
+    bb = Blackboard(tmp_path / "b.db", "err")
+    orch = Orchestrator(session="err", manager=None, ledger=None, registry=None,
+                        blackboard=bb, broker=None, planner=None, resolver=None)
+    ws = tmp_path / "ws"
+    (ws / "f").mkdir(parents=True)
+    (ws / "f" / "frame.png").write_bytes(b"\x89PNG")
+    monkeypatch.setattr("brain.capabilities.runtime.image_blocks",
+                        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom")))
+    try:
+        res = orch._read_workspace(ws, "f/frame.png")
+        assert res.get("is_error")
+        assert "INTERNAL ERROR" in res["content"][0]["text"]
+        assert "do NOT retry" in res["content"][0]["text"]
+    finally:
+        bb.close()
+
+
 # --- files named by path are resolved; unreachable ones are flagged to ASK ----- #
 def test_designated_paths_resolve_or_flag_for_ask(tmp_path, monkeypatch):
     inbox = tmp_path / "data" / "inbox"

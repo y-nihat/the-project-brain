@@ -311,6 +311,35 @@ def test_lingering_measured_violation_classifies_partial(tmp_path, monkeypatch):
     assert "measured 3" in answer
 
 
+def test_unparsed_review_verdict_does_not_auto_approve(tmp_path, monkeypatch):
+    """A review whose prose lacks the exact VERDICT token is a protocol
+    violation — it must default to 'revise', never 'approved' (observed: a
+    synthesis grounded in ZERO observed frames was auto-approved on an
+    unparsed verdict)."""
+    monkeypatch.setattr(config, "RUNS_DIR", tmp_path / "runs")
+
+    async def runner(_t, name, prompt, options):
+        if name == "gather":
+            d = tmp_path / "runs" / "unp" / "workspace" / "obs"
+            d.mkdir(parents=True, exist_ok=True)
+            (d / "p.txt").write_text("payload")
+            return "observed"
+        if name.startswith("review.r"):
+            return "This looks basically fine to me — nice work overall."  # no VERDICT line
+        return "x"
+
+    planner = StubPlanner([StageSpec(id="gather", pattern="single", role="G",
+                                     goal="summarize the source")])
+    orch, bb = _orch(tmp_path, runner, planner, "unp")
+    try:
+        asyncio.run(orch.run("Explain what happens in https://example.test/v/abc"))
+    finally:
+        bb.close()
+    assert not orch._review_approved
+    assert orch.classification == "unverified"
+    assert "revise" in orch._review_verdicts
+
+
 def test_per_criterion_verdicts_parse_into_the_record(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "RUNS_DIR", tmp_path / "runs")
     table = json.dumps([{"criterion": "one paragraph", "status": "met",
