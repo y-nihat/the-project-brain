@@ -113,6 +113,11 @@ class Plan:
     # so task policy (a URL, "one paragraph", synthesis instructions) never
     # compiles into reusable mechanism code: {key: {contract, example_input}}.
     capability_needs: dict = field(default_factory=dict)
+    # Accountable decision on observing the designated source:
+    # {decision: planned|infeasible|unstated, blocker_class, capability,
+    # explanation}. The controller corrects a proxy-first plan that skipped
+    # direct observation with no legitimate blocker (tool-absence is not one).
+    direct_observation: dict = field(default_factory=dict)
 
 
 @dataclass

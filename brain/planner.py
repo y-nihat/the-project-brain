@@ -51,9 +51,17 @@ _SYSTEM = (
     "\n"
     "Capabilities are EXTERNAL tools an agent runs in a sandbox — e.g. searching the web, "
     "fetching/parsing/generating files, or running code — things a plain LLM cannot do by "
-    "itself. Writing, summarizing, analyzing, comparing, synthesizing, recommending, and "
-    "reasoning are an agent's OWN abilities, NOT capabilities: such stages MUST have an "
-    "empty `capabilities` list.\n"
+    "itself. Writing, summarizing, analyzing, comparing, synthesizing, recommending, "
+    "reasoning, and PERCEIVING files the run already holds — reading their text AND LOOKING "
+    "AT images (frames, screenshots, scans, rendered pages, charts, photos) — are an agent's "
+    "OWN abilities, NOT capabilities: the reasoning model is natively multimodal and opens "
+    "retained files with the always-available read_file tool. Such stages have an EMPTY "
+    "`capabilities` list. Therefore do NOT author an image-captioning / VLM / OCR / "
+    "describe-image / vision-model tool — that rebuilds sight the agent already has and will "
+    "blow the sandbox's memory/compute ceiling. Author instead the CHEAP tool that PRODUCES "
+    "the files to look at (a downloader, a converter, a frame/segment/page extractor that "
+    "writes PNG/JPEG/text), then give the images to an ordinary agent stage that describes "
+    "what it sees.\n"
     "When the user PROVIDES FILES (listed in the objective as workspace paths), design stages "
     "that actually OPEN and process them via file-handling capabilities — agents pass the "
     "listed paths through a tool's `files` argument; never assume a file's contents. A format "
@@ -107,12 +115,28 @@ _SYSTEM = (
     "the deliverable needs. The property lives in the target's own signals; convenience "
     "channels (captions, indexes, docs, summaries) are derivatives of them.\n"
     "2. CANDIDATE METHODS — the comparison MUST include (a) DIRECT OBSERVATION of the "
-    "designated target itself, and (b) a PROPERTY-PRESERVING DERIVED REPRESENTATION: "
-    "obtain/open/render/instrument the object and convert the carrying signal into an "
-    "analyzable form (the system BUILDS such tools at runtime, and tool-produced images "
-    "are directly perceivable by agents and reviewers). Rejecting (a) or (b) requires "
-    "naming the CONCRETE blocker — access, resource ceilings, no feasible conversion — "
-    "which is recorded as a limitation of the run; silent omission is a planning defect.\n"
+    "designated target itself, and (b) a PROPERTY-PRESERVING DERIVED REPRESENTATION. "
+    "DECOMPOSE observation into acquirable sub-steps — ACQUIRE the object (download / open / "
+    "connect) → CONVERT its carrying signal into files (extract frames, segment audio, "
+    "render pages, dump state, export rows) → PERCEIVE those files (an agent reads text and "
+    "LOOKS AT images natively). Each sub-step is either a capability YOU AUTHOR at runtime "
+    "or the agent's own ability; the system builds any tool you name, so name the specific "
+    "atomic tools the pipeline needs (e.g. a downloader, a frame extractor) in "
+    "`capability_needs`. THE ABSENCE OF AN EXISTING TOOL IS NEVER A BLOCKER — if the tool "
+    "does not exist yet, NAME IT and the system builds it; you must NOT downgrade to a "
+    "weaker proxy (search snippets, third-party write-ups, metadata) merely because the "
+    "direct tool is not already installed. A proxy is admissible only as a SUPPLEMENT to "
+    "direct observation, or when direct observation is truly infeasible for one of the "
+    "reasons below. Reject direct observation ONLY for a genuine, intrinsic blocker, and "
+    "record it in `direct_observation` (see below) with a `blocker_class` of: "
+    "requires_credential (needs an account/key only the user can provide), resource_ceiling "
+    "(needs compute beyond the sandbox's memory/CPU/time ceiling AND no lighter variant "
+    "exists — note that PERCEPTION is the agent's own ability and needs no heavy model), "
+    "no_free_means (no free, keyless software or library can acquire or convert the signal), "
+    "physical_access (needs real-world or interactive access the sandbox cannot reach), or "
+    "user_authority (needs permission only the user can grant). 'No tool is installed / "
+    "available / ready' is NOT a blocker_class and never justifies a proxy. Silent omission "
+    "of direct observation is a planning defect.\n"
     "3. TIER GRADING — grade every candidate by evidence tier: direct observation > "
     "property-preserving derived representation > primary-source testimony > search-index "
     "snippets > secondary testimony > memory/inference. Choose by EPISTEMIC FIT FIRST, "
@@ -201,6 +225,24 @@ _PLAN_SCHEMA = {
         # The comparison of candidate methods and why the chosen one best
         # observes the required properties (persisted and audited).
         "strategy_rationale": {"type": "string"},
+        # Accountable decision on observing the designated source. `planned`
+        # (a stage in this plan observes it directly / via a property-preserving
+        # representation, authoring the tool if needed) is the default for any
+        # source-derived objective; `infeasible` is admissible ONLY with a
+        # blocker_class from the closed enum — "no tool exists" is not one, so
+        # tool-absence can never justify skipping direct observation.
+        "direct_observation": {
+            "type": "object",
+            "properties": {
+                "decision": {"type": "string", "enum": ["planned", "infeasible"]},
+                "capability": {"type": "string",
+                               "description": "the stage/capability that observes the source"},
+                "blocker_class": {"type": "string", "enum": [
+                    "requires_credential", "resource_ceiling", "no_free_means",
+                    "physical_access", "user_authority"]},
+                "explanation": {"type": "string"},
+            },
+        },
         # Instance-neutral authoring contract per NEW capability key; the
         # concrete task values ride separately as example_input (verification
         # only) so task policy never compiles into reusable mechanism code.
@@ -219,6 +261,39 @@ _PLAN_SCHEMA = {
     },
     "required": ["stages"],
 }
+
+
+_LEGIT_BLOCKERS = {"requires_credential", "resource_ceiling", "no_free_means",
+                   "physical_access", "user_authority"}
+
+
+def _normalize_direct_observation(raw) -> dict:
+    """Coerce the planner's direct-observation declaration into a stable shape.
+    A missing/garbled declaration defaults to 'unstated' so the source-derived
+    guard can catch it — silence is not consent to a proxy."""
+    raw = raw if isinstance(raw, dict) else {}
+    decision = str(raw.get("decision") or "unstated").strip().lower()
+    if decision not in ("planned", "infeasible"):
+        decision = "unstated"
+    blocker = str(raw.get("blocker_class") or "").strip().lower()
+    if blocker not in _LEGIT_BLOCKERS:
+        blocker = ""
+    return {"decision": decision, "blocker_class": blocker,
+            "capability": str(raw.get("capability") or "")[:120],
+            "explanation": str(raw.get("explanation") or "")[:600]}
+
+
+def observation_is_accountable(direct: dict) -> bool:
+    """True when the plan either observes the designated source directly or
+    names a LEGITIMATE intrinsic blocker. False = a proxy-first plan that
+    skipped direct observation without a real reason (tool-absence is not one),
+    which the controller must correct."""
+    d = direct or {}
+    if d.get("decision") == "planned":
+        return True
+    if d.get("decision") == "infeasible" and d.get("blocker_class") in _LEGIT_BLOCKERS:
+        return True
+    return False
 
 
 def _normalize_needs(raw) -> dict[str, dict]:
@@ -250,7 +325,8 @@ class Planner:
 
         self.tracer = tracer or NullTracer()
 
-    async def plan(self, objective: str, history: Optional[str] = None) -> Plan:
+    async def plan(self, objective: str, history: Optional[str] = None,
+                   corrective: Optional[str] = None) -> Plan:
         from claude_agent_sdk import create_sdk_mcp_server, tool
 
         from .factory import locked_session
@@ -286,6 +362,8 @@ class Planner:
                 "can be seeded into the current workspace, and its capabilities are reusable):\n"
                 + history
             )
+        if corrective:
+            prompt += "\n\n" + corrective
         await trace_query(self.tracer, "planner", prompt, options)
 
         stages, warnings = normalize_stages(captured.get("stages", []))
@@ -303,9 +381,12 @@ class Planner:
                           status="info" if rationale else "failed",
                           rationale=rationale[:1500] or "(none recorded — availability "
                           "may have functioned as the implicit rule)")
+        direct = _normalize_direct_observation(captured.get("direct_observation"))
+        self.tracer.event("plan.direct_observation", "planner", status="info", **direct)
         return Plan(objective=objective, stages=stages, success_criteria=criteria,
                     strategy_rationale=rationale,
-                    capability_needs=_normalize_needs(captured.get("capability_needs")))
+                    capability_needs=_normalize_needs(captured.get("capability_needs")),
+                    direct_observation=direct)
 
     async def extend(self, objective: str, completed: str, gaps: list[dict],
                      existing_ids: list[str]):
@@ -384,14 +465,23 @@ class StubPlanner:
     """Deterministic planner for tests; returns the workflow it was given."""
 
     def __init__(self, stages: list[StageSpec], success_criteria: Optional[list[str]] = None,
-                 strategy_rationale: str = "", capability_needs: Optional[dict] = None):
+                 strategy_rationale: str = "", capability_needs: Optional[dict] = None,
+                 direct_observation: Optional[dict] = None):
         self._stages = stages
         self._criteria = success_criteria or []
         self._rationale = strategy_rationale
         self._needs = dict(capability_needs or {})
+        self._direct = dict(direct_observation or {})
+        self.plan_calls = 0
+        self.correctives: list[str] = []
 
-    async def plan(self, objective: str, history: Optional[str] = None) -> Plan:
+    async def plan(self, objective: str, history: Optional[str] = None,
+                   corrective: Optional[str] = None) -> Plan:
+        self.plan_calls += 1
+        if corrective:
+            self.correctives.append(corrective)
         return Plan(objective=objective, stages=list(self._stages),
                     success_criteria=list(self._criteria),
                     strategy_rationale=self._rationale,
-                    capability_needs=dict(self._needs))
+                    capability_needs=dict(self._needs),
+                    direct_observation=dict(self._direct))
