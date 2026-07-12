@@ -5,6 +5,40 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
 [Semantic Versioning](https://semver.org/) — `0.x` while the core algorithm
 and behavior are still expected to change between releases.
 
+## [0.10.0] — 2026-07-12
+
+The problem-solver release: two approved capabilities that move the system from
+"fail honestly" toward "research and persist toward success" — built ON the
+honesty core, not against it.
+
+### Added
+- **Research delegation channel**: an agent that recognizes it lacks KNOWLEDGE
+  (an unfamiliar library/API, an opaque error, a technique or design direction)
+  can ask the orchestrator to research it via `request_research` — mediated (the
+  agent never searches inline), reusing the proven `ask_upstream`
+  request→delegate→return pattern. A bounded research agent (web_search)
+  investigates and returns a findings brief; a shared per-run budget
+  (`RESEARCH_MAX_REQUESTS`) and a topic cache keep it bounded and traced. The
+  channel reaches **developer/repair agents too** — which previously had no
+  orchestrator channel at all — so a developer can diagnose a build/runtime
+  error through research instead of re-authoring blindly. Honesty guardrail:
+  findings are labeled METHOD KNOWLEDGE / testimony and can never become
+  source evidence about the designated target (web_search payloads stay
+  proxy-tier in the ledger by construction).
+- **Brain-decided persistence + structured help request**: at a failure/recovery
+  boundary the SUPERVISOR judges — from the attempt history and the
+  expectation-vs-observation gap — whether to `keep_trying` (a materially
+  different approach remains and attempts are still making progress),
+  `stop_and_ask` (approaches exhausted / progress plateaued / the user must
+  provide something), or `stop` (no admissible path). This replaces a flat
+  counter with a human-like judgment; it can only make the run stop EARLIER,
+  and a raised-but-finite `RECOVERIES_PER_RUN` plus the per-run session cap
+  remain hard safety rails (fail-open to `keep_trying`). The planner now emits
+  a per-stage `expectation` (what a successful observation should yield) that
+  feeds the judgment. When it stops for input, the run emits a structured help
+  request — how far it got, what it tried, why it stopped, and exactly what it
+  needs from you — and classifies `blocked` (needs-you), not a dead end.
+
 ## [0.9.1] — 2026-07-12
 
 Bug-fix release from the two final runs of the video task. The frame pipeline
