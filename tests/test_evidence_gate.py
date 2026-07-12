@@ -415,10 +415,13 @@ def test_planner_demands_signal_model_tiers_and_belief_hygiene():
     assert "TARGET SIGNAL MODEL" in s
     assert "DIRECT OBSERVATION of the designated target" in s
     assert "PROPERTY-PRESERVING DERIVED REPRESENTATION" in s
-    assert "naming the CONCRETE blocker" in s
+    assert "ABSENCE OF AN EXISTING TOOL IS NEVER A BLOCKER" in s
     assert "direct observation > " in s                # the tier ladder
     assert "BELIEF HYGIENE" in s and "never RULE OUT an observation channel" in s
     assert "circular" in s                             # review-approves criteria banned
-    # No domain residue in what every planner call reads.
-    for residue in ("youtube", "video", "transcript", "frame", "audio track"):
-        assert residue not in s.lower()
+    # No TASK-specific residue from the diagnostic trials. (Generic multimodal
+    # vocabulary — vlm/ocr/caption/frame — is allowed: it teaches a general
+    # rule that applies to charts, scans, screenshots, any image task.)
+    for residue in ("youtube", "youtu", "transcript", ".mp4", "ffmpeg",
+                    "smolvlm", "video", "audio track"):
+        assert residue not in s.lower(), f"trial residue {residue!r} in planner prompt"
