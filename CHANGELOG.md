@@ -5,6 +5,73 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
 [Semantic Versioning](https://semver.org/) — `0.x` while the core algorithm
 and behavior are still expected to change between releases.
 
+## [0.6.0] — 2026-07-12
+
+The failure-recovery release, from the v0.5.1 rerun of the remote-source test.
+The exposed boundary: the loop could adapt only after a RUNNING agent reported
+an evidence gap — when capability construction itself failed, no agent ever
+existed, three same-method rebuild attempts escaped as a raw traceback, and no
+alternative strategy was considered. Tool authoring was a terminal
+precondition, not an action inside the cognitive feedback loop.
+
+### Added
+- **Method failures are controller observations (P0-A/E/F)**: any stage
+  failure — including acquisition dying before an agent starts — is classified
+  into a typed `MethodOutcome` (phase, failure class, per-attempt history,
+  retained partial evidence), recorded on the blackboard, and routed to the
+  SAME strategy adjudicator that serves evidence gaps. Replacement stages are
+  grafted transactionally: dependents and any pending review rewire to the new
+  terminal producer; the failed node survives as failure history, never as
+  evidence; partial observations are preserved and surfaced, never
+  re-established blindly. An empty extension is a calibrated stop. Bounded by
+  `RECOVERIES_PER_RUN`; a failed method is suppressed for the recovery cycle
+  unless the planner re-justifies it with a new contract.
+- **`CapabilityNeed` separated from the stage goal (P0-B)**: the planner
+  compiles an instance-neutral authoring contract per new capability
+  (`capability_needs`), with the concrete task values riding separately as
+  verification inputs; the fallback path scrubs the stage goal of task residue.
+  A URL and a ten-sentence output policy were observed compiled into three
+  generations of an unusable observer-and-summarizer. Planner is instructed to
+  atomic roles — never fetch-and-summarize monoliths.
+- **Operational verification ≠ instance yield (P0-C)**: honest negative
+  observation (exit 0, `coverage='none'`, unresolved needs named) is a valid
+  result by contract; deterministic evidence checks reject contradictory
+  yield (`complete` + unresolved needs), observation-role output missing yield
+  fields, and remote observers claiming positive yield without `source_refs`
+  or retained raw payloads — at initial authoring, not only revalidation
+  (P0-D). Attempt 3 would have relabeled description metadata as transcript
+  text with length-based `coverage=complete`.
+- **Strategy adjudication at initial planning (P0-F)**: the initial
+  `strategy_rationale` is required, persisted to the blackboard, and traced —
+  the initial method choice was largely unauditable.
+- **Failure-aware negative memory (P1-A, scoped)**: exhausted authoring
+  records the need key, failure class, and reason in the registry; per-attempt
+  history rides on `AcquisitionError` so recovery sees whether attempts were
+  still learning anything.
+- **Catalog qualified before planning (P1-B)**: the planner's known-capability
+  view excludes quarantined tools, labels stale contracts, normalizes residue,
+  and lists previously-failed needs with their failure — re-selecting a dead
+  end becomes a deliberate act, not amnesia. Quarantine now normalizes the
+  stored description on the failure path too.
+- **Transactional capability builds (P1-C)**: candidates build under
+  attempt-scoped tags and take over the canonical tag only by atomic retag
+  after verification (unverified attempts were overwriting the canonical local
+  image); Dockerfile downloads must assert their results by contract.
+- **One authoritative terminal state (P1-E)**: classification starts
+  `unassessed`; a run where nothing completed finalizes through
+  `run.dimensions`/`run.classification` as `FAILED` with recovery and
+  deliverable dimensions, and the user receives a controller diagnosis — what
+  was tried, what remains open, why execution stopped — while the raw
+  traceback stays in the trace. No `DELIVERABLE.md` is written when no
+  deliverable exists.
+- **Decision-aware model routing (P1-D, first step)**: seeded capability
+  repairs route to the fast tier; strategy/authoring stay on strong.
+
+### Deferred (tracked)
+Automatic residual-requirement conversion of mid-agent partial yield (today:
+engine note + agent-declared gaps), cross-run retry-rationale enforcement
+beyond the qualified-catalog label, full model-identity telemetry.
+
 ## [0.5.1] — 2026-07-11
 
 Corrections from the v0.5.0 rerun of the remote-source test (the loop worked:
