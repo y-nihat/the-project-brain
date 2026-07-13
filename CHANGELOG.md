@@ -5,6 +5,70 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
 [Semantic Versioning](https://semver.org/) — `0.x` while the core algorithm
 and behavior are still expected to change between releases.
 
+## [0.11.0] — 2026-07-13
+
+The provable-certificate release (Phase A of the 1.0 roadmap, plus approved
+hygiene and core-strengthening items). The exposed failure class: a run derived
+its answer from genuine property-preserving transformations of the designated
+target, yet its formal ledger held only proxy items and approval passed on mere
+non-emptiness — a TRUE success with a HOLLOW certificate, which is the same
+structural hole that once let a FALSE success through. Separately, an
+extraction failure was indistinguishable from a demonstrated absence.
+
+### Added
+- **Lineage flows through transformations**: the runtime records, per tool
+  call, the files retained, the locators ACTUALLY accessed, the workspace files
+  ACTUALLY consumed, the reported yield/state, the producing role, and a
+  content hash per payload. The ledger propagates lineage to a fixpoint:
+  `target` (direct access of a designated source, or user input) → `derived`
+  (produced by consuming target-lineage inputs — samples of a recording, pages
+  of a document, rows of a dump, output of a program under test) — whatever
+  role the producing tool self-declared. Consuming only proxy inputs stays
+  proxy; unknown provenance stays `retained` and is never proof. Review's
+  evidence packet and `locate_evidence` now include target-lineage payloads.
+- **Claim-support gating**: on source-derived runs the reviewer must emit a
+  typed ```claims table (direct / derived / inferred / negative / proxy /
+  unsupported, each citing its evidence file). The engine deterministically
+  voids an approval with: no table, any unsupported claim, no direct/derived
+  support at all (inference and testimony cannot certify the source), or a
+  direct/derived/negative claim whose citation does not resolve to a
+  target-lineage ledger file. A NON-EMPTY but proxy-only ledger now voids —
+  closing the hollow-certificate hole. `run.dimensions` gains
+  `target_evidence`.
+- **Standardized observation states**: observation-role tools must report
+  `observation_state` — observed_present / observed_absent / not_detected /
+  ambiguous / observation_failed — with deterministic contradiction checks
+  (present∧none, absent-or-failed∧complete). The contract's hard rule: a
+  processing failure must NEVER produce the same output as genuine emptiness,
+  and only `observed_absent` can support an absence claim ('negative' claims
+  are gated on it; agents are steered to "no X was detected", never "there is
+  no X"). The runtime's yield note carries the state and the absence
+  discipline.
+- **Deeper research**: the research agent now fetches and reads authoritative
+  pages (`fetch_page_text`, authored on first use under a clean instance-
+  neutral contract) instead of trusting search snippets, marks findings by
+  confidence, proposes a verification step for brittle claims, and its brief
+  warns against compiling snippet-only claims into expensive retries.
+  `RESEARCH_AGENT_MAX_TURNS` is now actually enforced (it was declared and
+  unused — a 19-turn live session proved it).
+- **Persistence judgment upgraded**: failure-boundary decisions route to the
+  STRONG model tier and draw on their own budget (`PERSISTENCE_MAX_CALLS`) so
+  routine consultations can never starve them.
+- **Semantic criteria decomposition**: the planner compiles criteria per
+  requested dimension of understanding (events, mechanism/causes, topic/theme,
+  evaluation, chronology) — an accurate event inventory no longer satisfies a
+  request to explain subject or meaning — and interpretation must be presented
+  as interpretation, distinct from observation.
+- **Stage expectations persist** into the traced plan roster;
+  `capability.recovered` traces success-after-retries with per-attempt history.
+
+### Fixed
+- Retained payloads use unique filenames by contract (repeated observations no
+  longer overwrite earlier evidence; the search recipe complies and reports
+  `observation_state`); tool self-reports reference bare filenames instead of
+  sandbox-local paths; the repo secret-shape scan excludes managed virtual
+  environments (a `.venv` false positive, not a leak).
+
 ## [0.10.0] — 2026-07-12
 
 The problem-solver release: two approved capabilities that move the system from
