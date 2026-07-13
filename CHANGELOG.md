@@ -5,6 +5,18 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
 [Semantic Versioning](https://semver.org/) — `0.x` while the core algorithm
 and behavior are still expected to change between releases.
 
+## [0.13.1] — 2026-07-13
+
+### Fixed
+- **v0.13.0 was dead on arrival — every run crashed at the first plan call**
+  with `KeyError: 'topic, why'`: the new planner prompt sections contained
+  literal `{topic, why}` / `{of_run, …}` braces, and the template goes through
+  `str.format()`, which parsed them as replacement fields. Braces escaped; a
+  regression test now RENDERS every formatted prompt template and asserts its
+  declared fields are exactly the ones the engine supplies — the suite had
+  stayed green because nothing executed the real template (the same
+  stub-confidence gap as the v0.9.1 perception crash).
+
 ## [0.13.0] — 2026-07-13
 
 The quality-loop release, from the first full artifact-production trial. That
