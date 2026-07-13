@@ -1057,6 +1057,18 @@ class Orchestrator:
         self.tracer.event("review.retargeted", pending.id, status="info",
                           draft=terminal, evidence=evidence)
 
+    def _input_files(self, workspace: Path) -> list[str]:
+        """The files the USER provided to this run (workspace/input/), with
+        sizes. Any judgment about a file-related failure must see this
+        inventory: a persistence decision was observed asking the user to
+        're-upload' a file that was sitting in the workspace all along —
+        because its digest could not see input/."""
+        inp = Path(workspace) / "input"
+        if not inp.is_dir():
+            return []
+        return [f"input/{p.relative_to(inp)} ({p.stat().st_size:,} bytes)"
+                for p in sorted(inp.rglob("*")) if p.is_file()][:12]
+
     def _workspace_files(self, workspace: Path) -> list[str]:
         """Files this run ACTUALLY produced so far — the partial evidence that
         must survive a failed method: preserved, listed, never re-established
@@ -1126,6 +1138,7 @@ class Orchestrator:
                     "tried": [f"{f.stage_id} [{f.phase}/{f.failure_class}]"
                               for f in self._failures[-6:]],
                     "retained": self._workspace_files(self._run_ctx[2]) if self._run_ctx else [],
+                    "inputs": self._input_files(self._run_ctx[2]) if self._run_ctx else [],
                 }
                 self._recovery_state = "stopped to ask the user (approaches explored)"
                 self.tracer.event("recovery.ask_user", failed.id, status="info",
@@ -1216,6 +1229,12 @@ class Orchestrator:
                          f"x{max(1, f.attempts)}: {f.detail[:200]}")
             for h in f.attempt_history[:3]:
                 lines.append(f"    · {h[:160]}")
+        inputs = self._input_files(self._run_ctx[2]) if self._run_ctx else []
+        if inputs:
+            lines.append("\nUSER-PROVIDED INPUT FILES (present and readable in the run "
+                         "workspace — the user does NOT need to re-provide these; a "
+                         "failure to reach them is a method/engine problem, not a "
+                         "missing-file problem): " + ", ".join(inputs))
         retained = self._workspace_files(self._run_ctx[2]) if self._run_ctx else []
         if retained:
             lines.append("\nPARTIAL OBSERVATIONS retained so far: " + ", ".join(retained[:10]))
@@ -1233,7 +1252,7 @@ class Orchestrator:
         how far it got, what it tried, why it stopped, and exactly what it needs."""
         h = self._help_request or {}
         retained = h.get("retained") or []
-        return "\n".join([
+        lines = [
             "--- I need your input to continue ---",
             f"What I was trying to establish: {str(h.get('requirement', ''))[:300]}",
             "How far I got: " + (", ".join(retained[:8]) if retained
@@ -1241,7 +1260,11 @@ class Orchestrator:
             "What I tried: " + ("; ".join(h.get("tried") or []) or "(see the run trace)"),
             f"Why I stopped: {str(h.get('why', ''))[:300]}",
             f"What I need from you: {str(h.get('needed', ''))[:400]}",
-        ])
+        ]
+        if h.get("inputs"):
+            lines.insert(2, "Your provided files (already in the run, no re-upload "
+                            "needed): " + ", ".join(h["inputs"][:8]))
+        return "\n".join(lines)
 
     def _failure_report(self, workspace: Path) -> str:
         """Concise controller diagnosis for a run that completed nothing: what
@@ -2163,6 +2186,7 @@ class Orchestrator:
                             broker=self.broker,
                             model=config.model_for("repair") or self.model,
                             tracer=self.tracer, research_fn=self._research,
+                            workspace=workspace,
                         )
                     caps[name] = new_cap
                     repaired_any = True
@@ -2277,6 +2301,8 @@ class Orchestrator:
                         pre_interaction=self._consult_interaction,
                         example_input=need_spec.get("example_input") or None,
                         research_fn=self._research,
+                        workspace=(self._run_ctx[2] if getattr(self, "_run_ctx", None)
+                                   else None),
                     )
                     caps[cap.name] = cap
         return caps

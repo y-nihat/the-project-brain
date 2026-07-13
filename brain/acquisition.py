@@ -195,6 +195,7 @@ async def acquire(
     pre_interaction=None,
     example_input: Optional[dict] = None,
     research_fn=None,
+    workspace=None,
 ) -> Capability:
     """Acquire the capability for ``need_key`` (recipe if known, else author it).
 
@@ -214,6 +215,7 @@ async def acquire(
         need_key, description or need_key, manager=manager, registry=registry, broker=broker,
         model=model, developer=developer, max_attempts=max_attempts, tracer=tracer,
         pre_interaction=pre_interaction, example_input=example_input, research_fn=research_fn,
+        workspace=workspace,
     )
 
 
@@ -495,16 +497,25 @@ def revalidate_capability(cap: Capability, manager, registry) -> tuple[bool, str
 
 
 def _generic_verify(cap: Capability, sample_input: dict, sample_files: dict, manager,
-                    extra_env: Optional[dict] = None):
+                    extra_env: Optional[dict] = None, workspace=None):
     """Generic acceptance: run the tool on a sample input (plus optional sample
     files placed under /work/in); success = exit 0 and a parseable, non-error JSON
     object on the last stdout line. Returns (ok, detail, run_result) — detail
     carries the TAIL of stderr (the end is where tracebacks live).
 
     ``extra_env`` carries session secrets (credential env vars) so a
-    credentialed tool can be verified for real; values are never traced."""
+    credentialed tool can be verified for real; values are never traced.
+
+    ``workspace`` enables REAL-INPUT verification: `sample_input.files`
+    (workspace-relative paths — the actual files this run holds) are mounted
+    under /work/in at their basename, exactly as the runtime does. Without
+    this, a tool whose genuine input is a real/binary file (an archive, a
+    spreadsheet, a recording, a database dump) could never see its input at
+    verification — the file references used to be silently DISCARDED here, so
+    every such tool failed 'file not found' three times regardless of code
+    quality, and the run died on a healthy input sitting in the workspace."""
     args = dict(sample_input or {})
-    args.pop("files", None)  # reserved runtime arg, not an env input
+    file_refs = args.pop("files", None)   # workspace paths to mount, not an env input
     env = {}
     for key, val in args.items():
         if key in cap.env_map:
@@ -521,6 +532,30 @@ def _generic_verify(cap: Capability, sample_input: dict, sample_files: dict, man
         name: (content.encode("utf-8") if isinstance(content, str) else bytes(content))
         for name, content in (sample_files or {}).items()
     }
+    if file_refs:
+        from pathlib import Path as _Path
+        # A ref whose basename a synthetic fixture already covers is satisfied
+        # (developers echo the schema's `files` arg alongside sample_files).
+        unresolved = [r for r in file_refs
+                      if _Path(str(r)).name not in input_files]
+        if unresolved and workspace is None:
+            return (False,
+                    "SAMPLE FILES UNAVAILABLE: sample_input.files references run files, "
+                    "but no workspace is attached to this verification. Use sample_files "
+                    "(synthetic text fixtures) instead, or drop the references.", None)
+        root = _Path(workspace).resolve() if workspace is not None else None
+        for ref in unresolved:
+            p = (root / str(ref)).resolve()
+            if not str(p).startswith(str(root)) or not p.is_file():
+                return (False,
+                        f"SAMPLE FILE NOT FOUND: sample_input.files references {str(ref)!r}, "
+                        "which does not exist in the run workspace — reference a REAL "
+                        "provided file (e.g. one listed under input/), exactly as spelled "
+                        "in the task.", None)
+            try:
+                input_files[p.name] = p.read_bytes()
+            except OSError as e:
+                return (False, f"SAMPLE FILE UNREADABLE: {str(ref)!r}: {e}", None)
     pol = policy.for_capability(cap.memory_mb, cap.cpus, cap.timeout_seconds, cap.network)
     res = manager.run_ephemeral(
         cap.image_tag, cap.command, policy=pol, capability=cap.name, environment=env,
@@ -638,7 +673,7 @@ def _evidence_contract_check(cap: Capability, data: dict, res) -> tuple[bool, st
 async def _author_capability(
     need_key, description, *, manager, registry, broker, model, developer, max_attempts, tracer,
     seed: Optional[dict] = None, repair_reason: Optional[str] = None, pre_interaction=None,
-    example_input: Optional[dict] = None, research_fn=None,
+    example_input: Optional[dict] = None, research_fn=None, workspace=None,
 ) -> Capability:
     dev = developer or make_developer_agent(model, tracer, research_fn=research_fn)
     mode = "repair" if seed else "author"
@@ -775,6 +810,7 @@ async def _author_capability(
                 ok, detail, run_res = await asyncio.to_thread(
                     _generic_verify, cap, sub.get("sample_input") or {},
                     sub.get("sample_files") or {}, manager, secret_env or None,
+                    workspace,
                 )
                 if ok:
                     # Fabrication probe: a tool that DECLARES inputs but still
@@ -841,7 +877,7 @@ def _load_seed(registry, cap: Capability) -> Optional[dict]:
 async def repair_capability(
     cap: Capability, reason: str, *, manager, registry, broker,
     model: Optional[str] = None, developer: Optional[Developer] = None,
-    max_attempts: int = 2, tracer=None, research_fn=None,
+    max_attempts: int = 2, tracer=None, research_fn=None, workspace=None,
 ) -> Capability:
     """Repair a trusted-but-degraded tool in place: re-author it (seeded with its
     current code + the live failure), re-verify, and re-promote under the same
@@ -851,7 +887,7 @@ async def repair_capability(
     repaired = await _author_capability(
         cap.name, cap.description, manager=manager, registry=registry, broker=broker,
         model=model, developer=developer, max_attempts=max_attempts, tracer=tracer,
-        seed=seed, repair_reason=reason, research_fn=research_fn,
+        seed=seed, repair_reason=reason, research_fn=research_fn, workspace=workspace,
     )
     # Record a bumped version for provenance (image tag stays constant on purpose).
     try:
@@ -950,9 +986,17 @@ _DEVELOPER_SYSTEM = (
     "  * input_schema: JSON schema of the tool's arguments (include `files` if it consumes files).\n"
     "  * env_map: object mapping each scalar argument name to its ENV_VAR_NAME.\n"
     "  * network: \"none\" if the tool needs no internet while running, \"bridge\" if it does.\n"
-    "  * sample_input: concrete arguments that should make the tool succeed (used to verify it).\n"
+    "  * sample_input: concrete arguments that should make the tool succeed (used to verify it). "
+    "If the tool consumes files and the CURRENT TASK provides real ones, include "
+    "`files`: a list of their workspace-relative paths exactly as given in your task "
+    "(e.g. paths under input/) — the engine mounts those REAL files under /work/in at "
+    "their basename during verification, exactly as at run time. This is the ONLY way "
+    "to verify against real/binary inputs (archives, spreadsheets, media, databases): "
+    "never fabricate a binary fixture, and never assume a file is present unless you "
+    "referenced it here.\n"
     "  * sample_files: an optional map {filename: text_content} placed under /work/in/ so a "
-    "file-consuming tool can be verified.\n"
+    "file-consuming tool can be verified with a small SYNTHETIC TEXT fixture when the "
+    "task provides no real file.\n"
     "  * resources: optional {memory_mb, cpus, timeout_seconds} — declare HONESTLY what the tool "
     "needs. Defaults are 256 MB / 0.5 CPU / 120 s; the engine clamps declarations to hard ceilings "
     "(2048 MB / 2 CPU / 300 s). Memory is a HARD cap with no swap: exceeding it means the kernel "
