@@ -5,6 +5,37 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
 [Semantic Versioning](https://semver.org/) — `0.x` while the core algorithm
 and behavior are still expected to change between releases.
 
+## [0.12.0] — 2026-07-13
+
+The real-input verification release, from the first archive-input trial. The
+run's control plane worked — the persistence judgment fired live for the first
+time, correctly detected a three-identical-failures plateau, stopped, and asked
+— but the underlying failure was an engine gap, and the ask was misdiagnosed.
+
+### Added
+- **Verification against REAL run files**: `sample_input.files` (workspace-
+  relative paths) are now mounted into the verification sandbox at their
+  basename, exactly as at run time. Previously those references were silently
+  DISCARDED — the only fixture channel was text-only `sample_files` — so any
+  tool whose genuine input is a real/binary file (archives, spreadsheets,
+  recordings, database dumps) could never see its input at verification and
+  failed 'file not found' regardless of code quality, while a healthy input
+  sat in the workspace. Missing/traversal/unreadable references fail with
+  instructive errors; refs covered by a synthetic fixture are satisfied by it.
+  The developer contract and the planner's `example_input` guidance now route
+  file-consuming tools to reference the task's real files; the workspace is
+  threaded through `acquire`/`repair_capability`.
+- **REPL multi-line objectives**: `readline` is enabled (bracketed paste — a
+  multi-line paste lands as ONE objective instead of submitting at the first
+  newline, plus history/editing), and a terminal-agnostic `\"\"\"` block form
+  reads until a closing `\"\"\"`.
+
+### Fixed
+- **File-related judgments can now see the user's files**: the persistence
+  digest and the structured help request include the `input/` inventory (with
+  sizes) — a stop-and-ask was observed telling the user to re-upload a file
+  that was present all along, because its digest excluded `input/`.
+
 ## [0.11.0] — 2026-07-13
 
 The provable-certificate release (Phase A of the 1.0 roadmap, plus approved
