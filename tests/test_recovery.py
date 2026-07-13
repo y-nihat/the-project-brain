@@ -84,9 +84,20 @@ def test_first_stage_acquisition_failure_triggers_recovery_plan(tmp_path, monkey
 
     async def runner(tracer, name, prompt, options):
         if name == "observe_alt":
+            # Real retention shape: payload + provenance (the gate checks lineage).
+            from brain import evidence
+            d = tmp_path / "runs" / "rec1" / "workspace" / "alt_observer"
+            d.mkdir(parents=True, exist_ok=True)
+            (d / "obs.txt").write_text("A then B")
+            evidence.record(tmp_path / "runs" / "rec1", "alt_observer",
+                            ["alt_observer/obs.txt"], ["https://example.test/v/abc"],
+                            "complete")
             return "observed via the alternative method: A then B"
         if name.startswith("review.r"):
-            return "VERDICT: approved"
+            return ("VERDICT: approved\n```claims\n"
+                    + json.dumps([{"claim": "the account of the source",
+                                   "support": "direct",
+                                   "evidence": "alt_observer/obs.txt"}]) + "\n```")
         raise AssertionError(f"unexpected session: {name}")
 
     planner = RecoveringPlanner(
@@ -359,6 +370,7 @@ def test_negative_observation_yield_is_operational_success():
     exit 0, coverage 'none', the unresolved property named — never a broken
     tool."""
     out = json.dumps({"coverage": "none", "unresolved_needs": ["the requested property"],
+                      "observation_state": "observed_absent",
                       "source_refs": [], "consumed_inputs": []})
     ok, detail, _ = acquisition._generic_verify(_obs_cap(), {}, {}, OneShotManager(_res(out)))
     assert ok, detail
@@ -384,17 +396,20 @@ def test_observation_role_requires_yield_fields():
 
 def test_remote_positive_yield_requires_lineage_and_retention():
     # Positive yield with no source_refs -> rejected.
-    out1 = json.dumps({"coverage": "complete", "unresolved_needs": []})
+    out1 = json.dumps({"coverage": "complete", "unresolved_needs": [],
+                       "observation_state": "observed_present"})
     ok1, d1, _ = acquisition._generic_verify(
         _obs_cap(), {}, {}, OneShotManager(_res(out1, files={"payload.txt": b"x"})))
     assert not ok1 and "MISSING SOURCE LINEAGE" in d1
     # Positive yield with no retained raw payload -> rejected.
     out2 = json.dumps({"coverage": "partial", "unresolved_needs": ["rest"],
+                       "observation_state": "observed_present",
                        "source_refs": ["https://x"]})
     ok2, d2, _ = acquisition._generic_verify(_obs_cap(), {}, {}, OneShotManager(_res(out2)))
     assert not ok2 and "UNRETAINED OBSERVATION" in d2
     # A LOCAL observer (no network) is not held to remote retention rules.
-    out3 = json.dumps({"coverage": "complete", "unresolved_needs": []})
+    out3 = json.dumps({"coverage": "complete", "unresolved_needs": [],
+                       "observation_state": "observed_present"})
     ok3, d3, _ = acquisition._generic_verify(
         _obs_cap(network="none"), {}, {}, OneShotManager(_res(out3)))
     assert ok3, d3
@@ -471,6 +486,7 @@ def test_remote_authoring_requires_full_evidence_contract(tmp_path):
     mgr = ScriptedManager([
         _res(json.dumps({"data": "adjacent text"})),               # attempt 2 verify
         _res(json.dumps({"coverage": "none", "unresolved_needs": ["target content"],
+                         "observation_state": "not_detected",
                          "source_refs": []})),                     # attempt 3 verify
     ])
     cap = asyncio.run(acquisition._author_capability(

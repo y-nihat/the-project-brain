@@ -58,12 +58,21 @@ def _run(tmp_path, monkeypatch, session, planner, supervisor):
 
     async def runner(_t, name, prompt, options):
         if name == "observe_alt":
+            # Simulate a REAL retention: payload + provenance, as the runtime
+            # records it (stubs must honor the contract the gate checks).
+            from brain import evidence
             d = tmp_path / "runs" / session / "workspace" / "obs"
             d.mkdir(parents=True, exist_ok=True)
             (d / "payload.txt").write_text("observed")
+            evidence.record(tmp_path / "runs" / session, "obs", ["obs/payload.txt"],
+                            ["https://example.test/v/abc"], "complete")
             return "observed via the alternative method"
         if name.startswith("review"):
-            return "VERDICT: approved"
+            import json as _json
+            return ("VERDICT: approved\n```claims\n"
+                    + _json.dumps([{"claim": "the load-bearing claim",
+                                    "support": "direct",
+                                    "evidence": "obs/payload.txt"}]) + "\n```")
         return f"out({name})"
 
     orch = Orchestrator(session=session, manager=None, ledger=None, registry=None,

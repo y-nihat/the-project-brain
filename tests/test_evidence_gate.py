@@ -40,6 +40,26 @@ def _orch(tmp_path, runner, planner, session, tracer=None):
     return orch, bb
 
 
+def _retain(tmp_path, session, cap, name, refs, content=b"retained payload"):
+    """Simulate what the capability runtime does for a real retention: write
+    the payload AND record its provenance — stubs must honor the real contract
+    (a stub that skips the ledger is how a broken certificate ships green)."""
+    d = tmp_path / "runs" / session / "workspace" / cap
+    d.mkdir(parents=True, exist_ok=True)
+    (d / name).write_bytes(content)
+    evidence.record(tmp_path / "runs" / session, cap, [f"{cap}/{name}"], refs, "complete")
+    return f"{cap}/{name}"
+
+
+def _approved(evidence_file):
+    """A protocol-complete approval: verdict + typed claim-support table citing
+    the target-lineage file (the gate voids approvals without one)."""
+    return ("VERDICT: approved\n```claims\n"
+            + json.dumps([{"claim": "the deliverable's load-bearing claim",
+                           "support": "direct", "evidence": evidence_file}])
+            + "\n```")
+
+
 # --- the ledger ----------------------------------------------------------------- #
 def test_ledger_tiers_retained_evidence(tmp_path):
     ws = tmp_path / "run" / "workspace"
@@ -69,9 +89,9 @@ def test_ledger_tiers_retained_evidence(tmp_path):
     assert "[target] fetch_page/page.html" in text and "[proxy]" in text
     # Empty ledger states the fact that matters.
     assert "EMPTY" in evidence.describe([], locators)
-    # No target-tier evidence -> the limitation is stated.
+    # No target-lineage evidence -> the limitation is stated.
     only_proxy = [e for e in entries if e.tier == "proxy"]
-    assert "no target-tier evidence" in evidence.describe(only_proxy, locators)
+    assert "no target-lineage evidence" in evidence.describe(only_proxy, locators)
 
 
 def test_ledger_falls_back_to_all_tool_dirs_without_reader_dirs(tmp_path):
@@ -127,12 +147,11 @@ def test_approval_stands_with_retained_evidence(tmp_path, monkeypatch):
 
     async def runner(_t, name, prompt, options):
         if name == "gather":
-            d = tmp_path / "runs" / "ok1" / "workspace" / "observer"
-            d.mkdir(parents=True, exist_ok=True)
-            (d / "payload.txt").write_text("retained payload")
+            _retain(tmp_path, "ok1", "observer", "payload.txt",
+                    ["https://example.test/v/abc"])
             return "observed"
         if name.startswith("review.r"):
-            return "VERDICT: approved"
+            return _approved("observer/payload.txt")
         return "x"
 
     planner = StubPlanner([StageSpec(id="gather", pattern="single", role="G",
@@ -150,14 +169,13 @@ def test_effective_courier_is_labeled_by_the_ledger(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "RUNS_DIR", tmp_path / "runs")
     prompts: dict[str, str] = {}
     verdicts = iter(["VERDICT: needs-evidence\n1. fetch and retain the source page.",
-                     "VERDICT: approved"])
+                     _approved("fetcher/page.html")])
 
     async def runner(_t, name, prompt, options):
         prompts[name] = prompt
         if name == "review.evidence":
-            d = tmp_path / "runs" / "cour1" / "workspace" / "fetcher"
-            d.mkdir(parents=True, exist_ok=True)
-            (d / "page.html").write_text("<html>the page</html>")
+            _retain(tmp_path, "cour1", "fetcher", "page.html",
+                    ["https://example.test/v/abc"], b"<html>the page</html>")
             return "fetched and RETAINED the page"
         if name.startswith("review.r"):
             return next(verdicts)
@@ -195,12 +213,11 @@ def test_unmet_evidence_demand_escalates_to_extension_and_recheck(tmp_path, monk
     async def runner(_t, name, prompt, options):
         ran.append(name)
         if name == "observe_direct":
-            d = tmp_path / "runs" / "esc1" / "workspace" / "direct_observer"
-            d.mkdir(parents=True, exist_ok=True)
-            (d / "payload.bin").write_bytes(b"observed bytes")
+            _retain(tmp_path, "esc1", "direct_observer", "payload.bin",
+                    ["https://example.test/v/abc"], b"observed bytes")
             return "direct observation retained"
         if name.startswith("review-recheck"):
-            return "VERDICT: approved"
+            return _approved("direct_observer/payload.bin")
         if name.startswith("review."):
             return "VERDICT: needs-evidence\n1. retain observation of the source."
         return f"out({name})"
@@ -399,6 +416,7 @@ def test_recipe_web_search_holds_the_full_evidence_contract(tmp_path):
                        "results": [{"title": "t", "href": "h", "body": "b"}],
                        "source_refs": ["search-index://duckduckgo/?q=q"],
                        "coverage": "partial",
+                       "observation_state": "observed_present",
                        "unresolved_needs": ["full content of the result pages"],
                        "consumed_inputs": []})
     mgr = ScriptedManager([
@@ -415,7 +433,8 @@ def test_recipe_web_search_holds_the_full_evidence_contract(tmp_path):
     assert stamped == acquisition.validation_epoch()
     # The shipped recipe program itself complies (retention + lineage + yield).
     p = acquisition.WEB_SEARCH_PROGRAM
-    assert "/work/out/search-results.json" in p
+    assert "search-results-" in p                       # unique per call: no overwrite
+    assert "observation_state" in p
     assert "source_refs" in p and "coverage" in p and "unresolved_needs" in p
     assert len(acquisition._RECIPES["web_search"]) == 4  # sample_input drives generic verify
 

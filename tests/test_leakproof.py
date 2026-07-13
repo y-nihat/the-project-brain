@@ -76,7 +76,11 @@ def test_tracer_writes_are_leakproof(tmp_path):
 # --- repo hygiene: no tracked file carries a secret shape ------------------------ #
 def test_repo_files_carry_no_secret_shapes():
     root = Path(__file__).resolve().parent.parent
-    excluded = {".git", "data", "__pycache__", ".githooks", ".pytest_cache"}
+    # Managed environments and caches are third-party content, not repository
+    # source — scanning .venv flagged secret-shaped strings inside installed
+    # dependencies (a test-environment false positive, not a leak).
+    excluded = {".git", "data", "__pycache__", ".githooks", ".pytest_cache",
+                ".venv", "venv", "node_modules", ".tox", ".mypy_cache"}
     hits = []
     for p in root.rglob("*"):
         if not p.is_file() or any(part in excluded for part in p.parts):

@@ -158,12 +158,21 @@ def test_extension_lands_before_pending_review_and_feeds_it(tmp_path, monkeypatc
             bb.put("evidence.gaps", [{"agent": "draft", "need": "content, not metadata"}])
             return "metadata-only draft"
         if name == "gather":
+            # A real retention: payload + provenance (the gate checks lineage).
+            from brain import evidence
             obs = tmp_path / "runs" / "rev" / "workspace" / "observer"
             obs.mkdir(parents=True, exist_ok=True)
             (obs / "content.txt").write_text("observed content: A then B then C")
+            evidence.record(tmp_path / "runs" / "rev", "observer",
+                            ["observer/content.txt"], ["https://example.test/v/abc"],
+                            "complete")
             return "observed content: A then B then C"
         if name.startswith("review.r"):
-            return "VERDICT: approved"
+            import json as _json
+            return ("VERDICT: approved\n```claims\n"
+                    + _json.dumps([{"claim": "the summary describes the content",
+                                    "support": "direct",
+                                    "evidence": "observer/content.txt"}]) + "\n```")
         return f"{name} ok"
 
     planner = ExtendingPlanner(
