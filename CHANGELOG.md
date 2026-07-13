@@ -5,6 +5,70 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
 [Semantic Versioning](https://semver.org/) — `0.x` while the core algorithm
 and behavior are still expected to change between releases.
 
+## [0.13.0] — 2026-07-13
+
+The quality-loop release, from the first full artifact-production trial. That
+run validated v0.12 (first-try tool verification over real binary inputs, a
+mid-run capability gap closed by authoring) yet shipped an amateur deliverable
+UNVERIFIED — every adaptation trigger in the engine was failure-shaped, so a
+run that was grounded and criteria-clean but mediocre triggered nothing:
+"what does good look like?" was never asked, no one ever LOOKED at the
+audience-facing artifact, and the review died wholesale when one of its tools
+failed to build. This release gives the loop a quality sense and a session a
+memory.
+
+### Added
+- **Knowledge needs — define GOOD before building**: plans now declare
+  `knowledge_needs` ({topic, why}) for audience-judged deliverable forms whose
+  quality standards the objective does not spell out. The engine resolves them
+  through the existing research channel (same per-run budget) and re-invokes
+  the planner ONCE with the briefs; the informed plan encodes the researched
+  standards as checkable success criteria. The briefs also reach the
+  deliverable-producing stages as "RESEARCHED QUALITY STANDARDS" — the bar the
+  work is judged against. One pass, fail-open, fully traced
+  (`knowledge.researching` / `knowledge.informed` / `knowledge.replan_failed`).
+- **Perceptual review — if an audience will look at it, the reviewer must look
+  at it**: files whose producing tool DECLARED `emits: artifact` (never
+  classified by extension — retained evidence like a fetched page is input to
+  judgment, not the thing judged) put the review stage in perceptual mode. A
+  generic `render_artifact_pages` capability need (document/page-layout file →
+  one PNG per page) is seeded engine-side and authored on first use like any
+  tool; the reviewer must render, open EVERY page, and judge craft: layout
+  integrity, data-graphic honesty, consistency, audience-copy discipline.
+- **Rendered page count is authoritative**: the engine measures slide/page
+  count criteria from the latest render's provenance record — the payload-text
+  heuristic stands only when nothing was rendered. Both directions matter: a
+  stray separator cannot void a correct artifact, and clean prose cannot
+  excuse an 11-page artifact against an explicit 10. Wired into the review
+  approval gate, the reviewer's measured-facts block, and terminal
+  classification.
+- **Session revision memory**: the interactive session now remembers its
+  previous run (objective, result, deliverable payload head, produced files)
+  and passes it to the planner as SESSION CONTEXT; the previous run of THIS
+  session outranks the relevance-picked cross-run seed, so its artifacts are
+  seeded under `prior/<run_id>/`. The planner judges whether the new input is
+  FEEDBACK on that deliverable and, if so, plans a `revision` ({of_run,
+  feedback, preserve}): load the prior artifacts, change only what the
+  feedback targets, keep what the user already accepted, carry the original
+  criteria plus the feedback as new ones. Auditable via the `plan.revision`
+  trace and blackboard entry.
+- **Self-check before handoff**: the deliverable contract now requires the
+  producing agent to perceive its own artifact the way the audience will
+  (render or open images) and fix what it sees before finishing.
+
+### Fixed
+- **Review capability failures degrade instead of killing the review**:
+  capabilities for verification-role sessions are acquired per-tool,
+  best-effort; a failed authoring becomes a `review.capability_degraded` trace
+  plus an explicit note to the reviewer naming what is missing — observed: one
+  failed tool build aborted the entire review and the draft shipped UNVERIFIED
+  with no substantive critique. Same treatment on the evidence-courier path.
+- **Authoring file-reference errors now enumerate the workspace**: a
+  `sample_input.files` reference that does not resolve lists the files that DO
+  exist (prior-run seeds excluded) — observed: a developer guessed the same
+  wrong path three times and died, with the real file sitting one listing
+  away.
+
 ## [0.12.0] — 2026-07-13
 
 The real-input verification release, from the first archive-input trial. The
