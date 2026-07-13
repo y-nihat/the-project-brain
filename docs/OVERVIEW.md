@@ -146,12 +146,18 @@ without losing exported traces. It runs resource-capped (1 GB / 1 CPU) like ever
 
 ## Status & roadmap
 
-- **Done:** Phase 0 (sandbox + safety substrate), Milestone 1 (`web_search`
-  capability, sandboxed/verified/reusable), Observability (tracer + viewer),
-  Git conventions.
-- **Capabilities available:** `web_search` (DuckDuckGo via `ddgs`, no API key).
-- **Next:** evaluation harness → M2 package + `brain` CLI → workspace-writing
-  implementer (build real projects in a folder) → multi-agent teams.
+- **Done (through engine 0.11.0):** sandbox + safety substrate; staged
+  workflows (single/map/reduce/review) with runtime fan-out; capability
+  authoring→verify→promote with revalidation/quarantine and atomic promotion;
+  evidence-grounded review; the lineage ledger + deterministic approval gates;
+  adaptive control (evidence-gap extension, method-failure recovery,
+  brain-decided persistence, research delegation); multimodal perception
+  (agents read retained images natively); eval harness; observability.
+  `CHANGELOG.md` is the authoritative release record.
+- **Capabilities:** `web_search` ships as a bootstrap recipe; everything else
+  is authored at runtime per objective and promoted into `data/capabilities/`.
+- **Next:** the 1.0 line (see `docs/ARCHITECTURE.md` §11 for the open gaps) →
+  M2 package + `brain` CLI → workspace-writing implementer → multi-agent teams.
 
-See also: `README.md`, `CONTRIBUTING.md` (git workflow), and the plan file in
-`~/.claude/plans/`.
+See also: `docs/ARCHITECTURE.md` (how the core algorithm thinks — diagrams of
+the loop, planes, and gates), `README.md`, and `CONTRIBUTING.md` (git workflow).
