@@ -9,7 +9,19 @@ from __future__ import annotations
 import asyncio
 import signal
 import time
-from typing import Optional
+from typing import Callable, Optional
+
+try:
+    # GNU readline (>=8.1 has bracketed paste ON by default): a multi-line
+    # PASTE lands in one edit buffer — newlines included — and only a real
+    # Enter submits. Without this, plain input() submitted at the first
+    # pasted newline, so long objectives had to be flattened to one line.
+    # Also gives history and line editing for free. Best-effort import:
+    # environments without a readline module just keep the old behavior
+    # (the triple-quote block below still works everywhere).
+    import readline  # noqa: F401
+except ImportError:  # pragma: no cover — platform without readline
+    pass
 
 # Compact glyphs for the live stream.
 _ICON = {"ok": "✓", "succeeded": "✓", "granted": "✓", "passed": "✓",
@@ -156,9 +168,43 @@ def format_event(record: dict) -> Optional[str]:
     return None
 
 
+def read_objective(first: str, input_fn: Callable[[str], str] = input) -> str:
+    """Assemble a possibly multi-line objective from REPL input.
+
+    Two ways to get multiple lines in:
+      * paste directly — with readline's bracketed paste the whole paste is
+        one buffer (newlines included), returned as-is;
+      * open a triple-quoted block: a first line starting with \"\"\" reads
+        until a line that is (or ends with) \"\"\" — works in any terminal,
+        including ones without bracketed paste.
+    """
+    if not first.startswith('"""'):
+        return first
+    body = first[3:]
+    stripped_body = body.rstrip()
+    if len(stripped_body) >= 3 and stripped_body.endswith('"""'):
+        return stripped_body[:-3].strip()      # one-line form: """text"""
+    lines = [body] if body else []
+    while True:
+        try:
+            nxt = input_fn("  ... ")
+        except EOFError:
+            break
+        stripped = nxt.rstrip()
+        if stripped == '"""':
+            break
+        if stripped.endswith('"""'):
+            lines.append(stripped[:-3])
+            break
+        lines.append(nxt)
+    return "\n".join(lines).strip()
+
+
 _HELP = """commands:
   <text>        run an objective (watch it work live)
                 mention files inline with @path (e.g. @data/inbox/report.pdf)
+                multi-line: paste directly (kept as one objective), or type
+                \"\"\" then your lines, then \"\"\" on its own line
   /attach <p>   attach a file for ALL following objectives (/detach to remove)
   /files        list attached files
   /runs         list recent runs
@@ -211,7 +257,7 @@ async def _repl() -> int:
     try:
         while True:
             try:
-                raw = input("brain> ").strip()
+                raw = read_objective(input("brain> ").strip())
             except EOFError:
                 print()
                 break
