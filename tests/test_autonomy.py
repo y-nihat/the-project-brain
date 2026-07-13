@@ -67,7 +67,8 @@ class CorrectingPlanner(StubPlanner):
         self._direct_stages = direct_stages
         self._direct_needs = direct_needs or {}
 
-    async def plan(self, objective, history=None, corrective=None):
+    async def plan(self, objective, history=None, corrective=None,
+                   session_context=None):
         self.plan_calls += 1
         if corrective:
             self.correctives.append(corrective)
