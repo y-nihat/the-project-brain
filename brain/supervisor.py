@@ -131,6 +131,10 @@ class Supervisor:
         self._decide = decide_fn
         self.max_calls = max_calls if max_calls is not None else config.SUPERVISOR_MAX_CALLS
         self.calls = 0
+        # Failure-boundary judgments get their OWN budget: routine stage
+        # consultations must never starve the decision that governs whether the
+        # run keeps exploring or asks for help.
+        self.persist_calls = 0
 
     async def consult(self, moment: str, digest: str, allowed: tuple = ACTIONS) -> Decision:
         if not config.SUPERVISOR_ENABLED:
@@ -159,9 +163,10 @@ class Supervisor:
         only make the system stop EARLIER, never remove the safety rail."""
         if not config.SUPERVISOR_ENABLED:
             return Decision(action="keep_trying", reason="supervision disabled")
-        if self.calls >= self.max_calls:
-            return Decision(action="keep_trying", reason="supervisor budget exhausted")
-        self.calls += 1
+        if self.persist_calls >= config.PERSISTENCE_MAX_CALLS:
+            return Decision(action="keep_trying",
+                            reason="persistence-decision budget exhausted")
+        self.persist_calls += 1
         try:
             raw = await (self._decide("persistence", digest) if self._decide
                          else self._llm_persistence(digest))
@@ -184,10 +189,15 @@ class Supervisor:
                                 "supervisor")
 
     async def _llm_persistence(self, digest: str) -> dict:
+        # Persistence is a strategy-heavy judgment (compare approaches, judge
+        # progress, decide whether to ask the user) — it gets the STRONG tier,
+        # unlike routine supervision moments which stay fast.
         return await self._emit(_PERSIST_SYSTEM, _PERSIST_SCHEMA, digest,
-                                "supervisor.persistence")
+                                "supervisor.persistence",
+                                model=config.model_for("persistence"))
 
-    async def _emit(self, system_prompt: str, schema: dict, prompt: str, label: str) -> dict:
+    async def _emit(self, system_prompt: str, schema: dict, prompt: str, label: str,
+                    model=None) -> dict:
         from claude_agent_sdk import create_sdk_mcp_server, tool
 
         from .factory import locked_session
@@ -205,7 +215,7 @@ class Supervisor:
             system_prompt=system_prompt,
             mcp_servers={"sup": server},
             allowed_tools=["mcp__sup__emit_decision"],
-            model=self.model or config.model_for("supervisor"),
+            model=self.model or model or config.model_for("supervisor"),
             max_turns=3,
         )
         await trace_query(self.tracer, label, prompt, options,

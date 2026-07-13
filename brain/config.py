@@ -73,7 +73,8 @@ def model_for(role: str):
     """Pick the model tier for an engine role: high-frequency, small-context
     roles ('worker', 'supervisor') and tightly-scoped mechanics ('repair' — a
     seeded fix with the live traceback in hand) -> fast; judgment-heavy roles
-    (planning, strategy adjudication, authoring, synthesis) -> strong."""
+    (planning, strategy adjudication, 'persistence' failure-boundary decisions,
+    'research', authoring, synthesis) -> strong."""
     if role in ("worker", "supervisor", "repair"):
         return BRAIN_MODEL_FAST or BRAIN_MODEL
     return BRAIN_MODEL_STRONG or BRAIN_MODEL
@@ -168,6 +169,10 @@ RECOVERIES_PER_RUN = int(os.environ.get("RECOVERIES_PER_RUN", "5"))
 # (pre-user-interaction, stage completions). Fail-open, budget-capped.
 SUPERVISOR_ENABLED = os.environ.get("SUPERVISOR_ENABLED", "1").lower() not in ("0", "false", "no")
 SUPERVISOR_MAX_CALLS = int(os.environ.get("SUPERVISOR_MAX_CALLS", "12"))
+# Failure-boundary persistence decisions have their OWN budget (routine
+# consultations must never starve the keep-trying/stop-and-ask/stop judgment)
+# and route to the STRONG model tier — they are strategy, not mechanics.
+PERSISTENCE_MAX_CALLS = int(os.environ.get("PERSISTENCE_MAX_CALLS", "6"))
 
 # User-provided files (@mentions / attach): copied into the run workspace.
 FILE_ATTACH_MAX_MB = int(os.environ.get("FILE_ATTACH_MAX_MB", "50"))

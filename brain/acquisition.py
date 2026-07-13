@@ -100,18 +100,23 @@ def main():
     except Exception as e:  # noqa: BLE001
         print(json.dumps({"error": f"search failed: {e}", "query": query}))
         return 1
-    # Evidence contract, same as every observer: retain the raw payload,
+    # Evidence contract, same as every observer: retain the raw payload under
+    # a UNIQUE name (repeated searches must never overwrite earlier evidence),
     # report what was ACTUALLY accessed (the search index, never the linked
-    # pages), and report yield honestly — snippets are index excerpts, so
-    # coverage of any deeper property is at most partial.
+    # pages), and report yield + observation state honestly — snippets are
+    # index excerpts, so coverage of any deeper property is at most partial.
+    import time
     os.makedirs("/work/out", exist_ok=True)
-    with open("/work/out/search-results.json", "w") as fh:
+    payload_name = "search-results-%d.json" % int(time.time() * 1000)
+    with open("/work/out/" + payload_name, "w") as fh:
         json.dump({"query": query, "results": results}, fh, indent=2)
     print(json.dumps({
         "query": query,
         "results": results,
+        "payload_file": payload_name,
         "source_refs": ["search-index://duckduckgo/?q=" + query],
         "coverage": "partial" if results else "none",
+        "observation_state": "observed_present" if results else "not_detected",
         "unresolved_needs": (
             ["full content of the result pages (snippets are search-index "
              "excerpts; the linked pages were NOT fetched)"] if results
@@ -431,7 +436,9 @@ def _irrelevant_input_probe(cap: Capability, manager, extra_env: Optional[dict])
 # is fingerprinted automatically; the probes are code, so they need a manual epoch).
 # 3: evidence-contract checks (contradictory yield, observation-role yield fields,
 #    remote lineage + retention) joined verification.
-_PROBE_SUITE_VERSION = "3"
+# 4: observation_state required for observation-role tools + state/coverage
+#    contradiction checks (absence and failure must never share an output shape).
+_PROBE_SUITE_VERSION = "4"
 
 
 def validation_epoch() -> str:
@@ -589,6 +596,30 @@ def _evidence_contract_check(cap: Capability, data: dict, res) -> tuple[bool, st
                     "`coverage` ('complete'|'partial'|'none' for the REQUESTED property) and "
                     "`unresolved_needs` (a list; empty if nothing) in its final JSON — "
                     "without them its output cannot be routed as evidence.")
+        state = str(data.get("observation_state", "")).strip().lower()
+        if state not in ("observed_present", "observed_absent", "not_detected",
+                         "ambiguous", "observation_failed"):
+            return (False,
+                    "MISSING/INVALID OBSERVATION STATE: an observation-role tool must report "
+                    "`observation_state` — one of 'observed_present' (the requested property "
+                    "was observed), 'observed_absent' (the channel was adequately examined "
+                    "and the property is NOT there), 'not_detected' (this method found "
+                    "nothing, but its sensitivity/coverage cannot rule the property out), "
+                    "'ambiguous', or 'observation_failed' (the observation itself failed). "
+                    "Absence and failure-to-observe are DIFFERENT facts and must never share "
+                    "an output shape.")
+        if state == "observed_present" and coverage == "none":
+            return (False,
+                    "CONTRADICTORY STATE: observation_state='observed_present' cannot "
+                    "coexist with coverage='none' — if the property was observed, some of "
+                    "it was covered.")
+        if state in ("observed_absent", "not_detected", "observation_failed") and \
+                coverage == "complete":
+            return (False,
+                    "CONTRADICTORY STATE: coverage measures the YIELD of the requested "
+                    f"property, so observation_state='{state}' cannot coexist with "
+                    "coverage='complete' — an absent/undetected/failed property yields "
+                    "coverage 'none'.")
         if (cap.network or "none") != "none":
             refs = data.get("source_refs")
             if not (isinstance(refs, list) and refs) and coverage in ("complete", "partial"):
@@ -967,11 +998,23 @@ _DEVELOPER_SYSTEM = (
     "(empty list if nothing). Exit 0 with partial yield is CORRECT behavior — a tool that "
     "quietly substitutes adjacent data (metadata for content, an index for the document) "
     "poisons every downstream conclusion.\n"
+    "OBSERVATION STATE (hard rule): the final JSON MUST also report `observation_state`, "
+    "one of: 'observed_present' (the requested property WAS observed), 'observed_absent' "
+    "(the channel was adequately examined and the property is genuinely NOT there), "
+    "'not_detected' (this method found nothing, but its sensitivity or coverage cannot "
+    "rule the property out), 'ambiguous', or 'observation_failed' (the observation itself "
+    "failed — could not open/parse/reach the input). ABSENCE AND FAILURE ARE DIFFERENT "
+    "FACTS: a processing/extraction failure must NEVER produce the same output as genuine "
+    "emptiness — never write an empty result file on a failure path; report "
+    "observation_failed (or exit non-zero with an error) so downstream reasoning can "
+    "never mistake a broken observation for a demonstrated absence.\n"
     "NEGATIVE OBSERVATION IS A VALID RESULT (hard rule): finding that the requested "
     "property does not exist or is not retrievable at the designated target ('the source "
     "exposes no such channel', 'the record has no such field', 'the document has no such "
-    "section') is a SUCCESSFUL observation: exit 0, coverage='none', name it in "
-    "`unresolved_needs`, and report what WAS observed. "
+    "section') is a SUCCESSFUL observation: exit 0, coverage='none', "
+    "observation_state='observed_absent' ONLY when your examination genuinely covered the "
+    "channel ('not_detected' otherwise), name it in `unresolved_needs`, and report what "
+    "WAS observed. "
     'Reserve {"error": ...} + non-zero exit for the tool itself failing to operate '
     "(crash, unreachable service, invalid input) — never for an honest empty yield.\n"
     "CHANNEL LINEAGE (hard rule): every output field and file must name the channel "
@@ -988,7 +1031,12 @@ _DEVELOPER_SYSTEM = (
     "accessed — in its final JSON, and MUST write the raw retrieved content it relied on to "
     "/work/out as files (verbatim payloads, not only your summary of them): downstream "
     "verification traces claims to THAT retained evidence, and an unretained observation "
-    "cannot support a claim later.\n"
+    "cannot support a claim later. If your tool may be invoked repeatedly in one run, write "
+    "retained payloads to UNIQUE filenames (a counter or timestamp component) — a later "
+    "observation must never overwrite earlier retained evidence. In your final JSON, refer "
+    "to output files by BARE filename (they are delivered to the shared workspace under "
+    "<tool-name>/<filename>; sandbox-local paths like /work/out/... are meaningless to "
+    "anyone downstream).\n"
     "OUTPUT ROLE (hard rule): declare `emits` — what your tool's output IS, epistemically: "
     "'observation' (the output contains the VERBATIM content/structure extracted from the "
     "given inputs — this is the right role even when separate `inferences` are included "
