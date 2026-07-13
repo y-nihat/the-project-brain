@@ -69,10 +69,86 @@ def _parse_criteria_verdicts(critique: str) -> list[dict]:
     return []
 
 
+_CLAIMS_BLOCK_RE = re.compile(r"```claims\s*\n(.*?)```", re.DOTALL)
+_CLAIM_SUPPORT = ("direct", "derived", "inferred", "negative", "proxy", "unsupported")
+
+
+def _parse_claims(critique: str) -> list[dict]:
+    """The reviewer's claim-support table (fenced ```claims JSON): each
+    load-bearing claim typed by HOW it is supported — direct observation,
+    target-derived transformation, inference between observations, negative
+    (absence), proxy testimony, or unsupported — with the evidence file that
+    carries it. The gate checks this table deterministically; an unknown
+    support type coerces to 'unsupported' (fail closed, never open)."""
+    import json as _json
+
+    matches = _CLAIMS_BLOCK_RE.findall(critique or "")
+    for raw in reversed(matches):
+        try:
+            items = _json.loads(raw.strip())
+        except ValueError:
+            continue
+        if isinstance(items, list):
+            out = []
+            for it in items:
+                if isinstance(it, dict) and it.get("claim"):
+                    support = str(it.get("support", "")).strip().lower()
+                    out.append({"claim": str(it["claim"])[:300],
+                                "support": support if support in _CLAIM_SUPPORT
+                                else "unsupported",
+                                "evidence": str(it.get("evidence", ""))[:300]})
+            return out
+    return []
+
+
+def _claims_gate(claims: list[dict], lineage) -> str:
+    """Deterministic claim-support check for an approval on a source-derived
+    run. Returns a void reason, or '' when the table passes. Rules:
+
+      * the table must exist — an approval without typed claim support is the
+        hollow-certificate failure;
+      * no claim may be 'unsupported';
+      * at least one claim must be supported 'direct' or 'derived' — a
+        deliverable resting entirely on inference and proxy testimony cannot
+        be certified as grounded in the source;
+      * every 'direct'/'derived'/'negative' claim must cite an evidence file
+        that actually resolves to a TARGET-LINEAGE ledger entry (matched by
+        path or basename) — a citation the engine cannot resolve is a
+        miscitation, not support.
+    """
+    if not claims:
+        return ("approval without a claim-support table: emit the ```claims block "
+                "typing each load-bearing claim and the target-lineage file that "
+                "supports it")
+    unsupported = [c for c in claims if c["support"] == "unsupported"]
+    if unsupported:
+        return (f"unsupported load-bearing claim: {unsupported[0]['claim'][:120]!r} — "
+                "revise the deliverable, qualify the claim, or obtain evidence")
+    grounded = [c for c in claims if c["support"] in ("direct", "derived")]
+    if not grounded:
+        return ("no claim is supported by target-lineage evidence: everything rests on "
+                "inference or proxy testimony, which cannot certify claims about the "
+                "designated source")
+    paths = {e.file for e in lineage}
+    basenames = {Path(e.file).name for e in lineage}
+    for c in claims:
+        if c["support"] not in ("direct", "derived", "negative"):
+            continue
+        cited = c.get("evidence", "").strip()
+        hit = any(p in cited for p in paths) or \
+            any(b and b in cited for b in basenames)
+        if not hit:
+            return (f"miscited support: claim {c['claim'][:100]!r} is typed "
+                    f"'{c['support']}' but its citation {cited[:120]!r} does not resolve "
+                    "to any target-lineage ledger file")
+    return ""
+
+
 def _stage_dict(s: StageSpec) -> dict:
     return {"id": s.id, "pattern": s.pattern, "role": s.role, "goal": s.goal,
             "capabilities": s.capabilities, "depends_on": s.depends_on,
-            "shard_size": s.shard_size, "shard_from": s.shard_from, "rounds": s.rounds}
+            "shard_size": s.shard_size, "shard_from": s.shard_from, "rounds": s.rounds,
+            "expectation": s.expectation}
 
 
 def _persist_agent(runs_dir, session: str, spec: AgentSpec, system_prompt: str, output: str) -> None:
@@ -232,102 +308,121 @@ def artifact_issues(workspace: Path, *, definite_only: bool = False) -> list[str
     return issues[:12]
 
 
+def _evidence_files(workspace: Path, reader_dirs: tuple,
+                    extra_paths: Optional[list] = None) -> list[Path]:
+    """The files that count as ORIGINAL evidence for lookup/packet assembly:
+    user inputs, observation-role extractions, PLUS target-lineage payloads
+    from the ledger (a property-preserving derivative is evidence of the
+    source whatever role its producing tool declared)."""
+    root = Path(workspace)
+    out: list[Path] = []
+    seen: set = set()
+    for sub in ("input", *reader_dirs):
+        d = root / sub
+        if not d.is_dir():
+            continue
+        for p in sorted(d.rglob("*")):
+            if p.is_file() and p not in seen:
+                seen.add(p)
+                out.append(p)
+    for rel in extra_paths or []:
+        p = root / str(rel)
+        if p.is_file() and p not in seen:
+            seen.add(p)
+            out.append(p)
+    return out
+
+
 def _locate_evidence(workspace: Path, reader_dirs: tuple, query: str,
-                     context: int = 240, max_matches: int = 8) -> str:
+                     context: int = 240, max_matches: int = 8,
+                     extra_paths: Optional[list] = None) -> str:
     """Deterministic claim lookup over the run's ORIGINAL evidence (user inputs
-    + observation-role extractions — never artifacts, which would let a draft
-    confirm itself). A reviewer must adjudicate 'is this number/quote in the
-    source?' by DIRECT LOOKUP, not by asking the stage that produced the draft:
-    a tool-less follow-up agent answers from its own prose memory and was
-    observed testifying a verbatim source figure was 'possibly hallucinated' —
-    a true claim got removed on false testimony."""
+    + observation-role extractions + target-lineage payloads — never authored
+    artifacts, which would let a draft confirm itself). A reviewer must
+    adjudicate 'is this number/quote in the source?' by DIRECT LOOKUP, not by
+    asking the stage that produced the draft: a tool-less follow-up agent
+    answers from its own prose memory and was observed testifying a verbatim
+    source figure was 'possibly hallucinated' — a true claim got removed on
+    false testimony."""
     q = " ".join(str(query or "").split())
     if len(q) < 3:
         return "query too short — give the exact number/phrase/quote to locate."
     root = Path(workspace)
     hits: list[str] = []
     searched = 0
-    for sub in ("input", *reader_dirs):
-        d = root / sub
-        if not d.is_dir():
+    for p in _evidence_files(workspace, reader_dirs, extra_paths):
+        if len(hits) >= max_matches:
+            break
+        try:
+            raw = p.read_text(errors="strict")
+        except (UnicodeDecodeError, OSError):
             continue
-        for p in sorted(d.rglob("*")):
-            if not p.is_file() or len(hits) >= max_matches:
-                continue
-            try:
-                raw = p.read_text(errors="strict")
-            except (UnicodeDecodeError, OSError):
-                continue
-            searched += 1
-            # Evidence files wrap mid-sentence (PDF extraction), so match on
-            # whitespace-collapsed text and map back for line numbers.
-            flat, positions = [], []
-            last_ws = True
-            for i, ch in enumerate(raw):
-                if ch.isspace():
-                    if not last_ws:
-                        flat.append(" ")
-                        positions.append(i)
-                    last_ws = True
-                else:
-                    flat.append(ch)
+        searched += 1
+        # Evidence files wrap mid-sentence (PDF extraction), so match on
+        # whitespace-collapsed text and map back for line numbers.
+        flat, positions = [], []
+        last_ws = True
+        for i, ch in enumerate(raw):
+            if ch.isspace():
+                if not last_ws:
+                    flat.append(" ")
                     positions.append(i)
-                    last_ws = False
-            flat_s = "".join(flat).lower()
-            start = 0
-            while len(hits) < max_matches:
-                j = flat_s.find(q.lower(), start)
-                if j < 0:
-                    break
-                orig = positions[j]
-                line = raw.count("\n", 0, orig) + 1
-                lo, hi = max(0, j - context), min(len(flat_s), j + len(q) + context)
-                snippet = "".join(flat[lo:hi]).strip()
-                hits.append(f"[{p.relative_to(root)}:{line}] …{snippet}…")
-                start = j + max(1, len(q))
+                last_ws = True
+            else:
+                flat.append(ch)
+                positions.append(i)
+                last_ws = False
+        flat_s = "".join(flat).lower()
+        start = 0
+        while len(hits) < max_matches:
+            j = flat_s.find(q.lower(), start)
+            if j < 0:
+                break
+            orig = positions[j]
+            line = raw.count("\n", 0, orig) + 1
+            lo, hi = max(0, j - context), min(len(flat_s), j + len(q) + context)
+            snippet = "".join(flat[lo:hi]).strip()
+            hits.append(f"[{p.relative_to(root)}:{line}] …{snippet}…")
+            start = j + max(1, len(q))
     if not hits:
-        return (f"NOT FOUND: {q!r} does not occur in any evidence file "
-                f"(searched {searched} file(s) under input/ and "
-                f"{list(reader_dirs) or 'no extraction dirs'}). If a draft asserts it "
-                "as a source fact, it is unsupported.")
+        return (f"NOT FOUND: {q!r} does not occur in any of the run's evidence files "
+                f"(searched {searched} readable file(s): user inputs, extractions, and "
+                "target-lineage payloads). If a draft asserts it as a source fact, it "
+                "is unsupported.")
     return f"FOUND {len(hits)} match(es) for {q!r}:\n" + "\n".join(hits)
 
 
-def _source_evidence(workspace: Path, reader_dirs: tuple = (), limit: int = 6000) -> str:
-    """The run's ACTUAL source evidence: user inputs plus the outputs of
-    reader-class capabilities (identified by their declared contract — any tool
-    that declares `accepts` consumes files, so its output is extraction, not
-    synthesis). Review must trace claims to THIS, so a theme hallucinated in an
-    intermediate analysis but absent from the source is caught."""
+def _source_evidence(workspace: Path, reader_dirs: tuple = (), limit: int = 6000,
+                     extra_paths: Optional[list] = None) -> str:
+    """The run's ACTUAL source evidence: user inputs, the outputs of
+    reader-class capabilities, and target-lineage payloads from the ledger
+    (``extra_paths``) — a property-preserving derivative is source evidence
+    whatever role its producing tool declared. Review must trace claims to
+    THIS, so a theme hallucinated in an intermediate analysis but absent from
+    the source is caught."""
     root = Path(workspace)
     if not root.is_dir():
         return ""
     parts: list[str] = []
     used = 0
-    for sub in ("input", *reader_dirs):
-        d = root / sub
-        if not d.is_dir():
+    for p in _evidence_files(workspace, reader_dirs, extra_paths):
+        try:
+            text = p.read_text(errors="strict")
+        except (UnicodeDecodeError, OSError):
             continue
-        for p in sorted(d.rglob("*")):
-            if not p.is_file():
-                continue
-            try:
-                text = p.read_text(errors="strict")
-            except (UnicodeDecodeError, OSError):
-                continue
-            # Budget-aware assembly: the header counts INSIDE the budget and an
-            # oversize first file is included PARTIALLY, never skipped — the old
-            # break-on-overflow returned an EMPTY packet exactly when the
-            # extraction was substantial, so review ran with no ground truth.
-            header = f"[source: {p.relative_to(root)}]\n"
-            room = limit - used - len(header) - 1
-            if room < 200:
-                return "\n".join(parts)
-            body = text[:room]
-            if len(text) > room:
-                body += f"\n[…evidence continues: {len(text) - room:,} more chars in this file]"
-            parts.append(header + body + "\n")
-            used += len(header) + len(body) + 2
+        # Budget-aware assembly: the header counts INSIDE the budget and an
+        # oversize first file is included PARTIALLY, never skipped — the old
+        # break-on-overflow returned an EMPTY packet exactly when the
+        # extraction was substantial, so review ran with no ground truth.
+        header = f"[source: {p.relative_to(root)}]\n"
+        room = limit - used - len(header) - 1
+        if room < 200:
+            return "\n".join(parts)
+        body = text[:room]
+        if len(text) > room:
+            body += f"\n[…evidence continues: {len(text) - room:,} more chars in this file]"
+        parts.append(header + body + "\n")
+        used += len(header) + len(body) + 2
     return "\n".join(parts)
 
 
@@ -1210,6 +1305,10 @@ class Orchestrator:
             "deliverable": "absent" if nothing_completed else "present",
             "method_failures": [f"{f.stage_id}:{f.phase}/{f.failure_class}"
                                 for f in self._failures[:4]],
+            # Certificate substance: how much retained evidence is OF the
+            # designated source (target lineage) vs testimony about it.
+            "target_evidence": len(evidence_mod.target_lineage(
+                evidence_mod.ledger(workspace, self._reader_dirs(), self._locators))),
         }
         self.tracer.event("run.dimensions", "run", status="info", **dims,
                           artifact_issues=issues[:6])
@@ -1481,7 +1580,12 @@ class Orchestrator:
                                  capabilities=stage.capabilities, depends_on=stage.depends_on)
                 caps = await self._acquire_caps(spec)
                 observed = _observed_artifacts(workspace)
-                source = _source_evidence(workspace, self._reader_dirs())
+                ledger_entries = evidence_mod.ledger(workspace, self._reader_dirs(),
+                                                     self._locators)
+                lineage_paths = [e.file for e in
+                                 evidence_mod.target_lineage(ledger_entries)]
+                source = _source_evidence(workspace, self._reader_dirs(),
+                                          extra_paths=lineage_paths)
                 _art_issues = artifact_issues(workspace)
                 inp = workspace / "input"
                 evidence_expected = self._high_risk or (inp.is_dir() and any(inp.iterdir()))
@@ -1503,8 +1607,6 @@ class Orchestrator:
                                 "format criteria are measured against.)")
                 checks = criteria_mod.check_counts(self._criteria, payload)
                 facts = criteria_mod.describe(checks)
-                ledger_entries = evidence_mod.ledger(workspace, self._reader_dirs(),
-                                                     self._locators)
                 ledger_block = evidence_mod.describe(ledger_entries, self._locators)
                 ctx = (
                     "DRAFT under review (the deliverable payload):\n---\n" + payload
@@ -1563,7 +1665,21 @@ class Orchestrator:
                       "\"met\"|\"unmet\"|\"unknown\", \"evidence\": \"the ledger file/lookup/"
                       "measurement that settles it, or why it is unknown\"}. A criterion you "
                       "cannot ground in retained evidence or an engine measurement is 'unknown', "
-                      "never 'met'."
+                      "never 'met'. "
+                      "THEN emit a fenced ```claims block: a JSON array covering the "
+                      "deliverable's LOAD-BEARING claims — {\"claim\": \"...\", \"support\": "
+                      "\"direct\"|\"derived\"|\"inferred\"|\"negative\"|\"proxy\"|"
+                      "\"unsupported\", \"evidence\": \"the exact ledger file that supports "
+                      "it\"}. Type honestly: 'direct'/'derived' ONLY when a target-lineage "
+                      "ledger file you actually opened or located supports the claim (cite "
+                      "that file); an event asserted BETWEEN observations (motion, "
+                      "transitions, causation bridging samples) is 'inferred', not direct; "
+                      "'negative' (an absence claim) requires observed_absent evidence — "
+                      "not_detected or observation_failed NEVER support absence, demand "
+                      "qualified wording instead; 'proxy' means only testimony about the "
+                      "target supports it. The engine deterministically checks this table: "
+                      "an approval with unsupported claims, miscited lineage, or no "
+                      "direct/derived support at all will be VOIDED."
                 )
                 critique = await self._run_agent_with_reflection(
                     spec, caps, objective, {}, history, workspace, task_context=ctx,
@@ -1578,23 +1694,33 @@ class Orchestrator:
                     self.tracer.event("review.verdict.unparsed", stage.id, status="failed",
                                       round=rnd, note="no VERDICT line -> defaulted to revise")
                 per_criterion = _parse_criteria_verdicts(critique)
+                claims = _parse_claims(critique)
 
                 # DETERMINISTIC APPROVAL GATE: a parsed 'approved' cannot
-                # override the engine's own facts. Observed V060 failure: the
-                # reviewer acknowledged an empty evidence plane in round 1,
-                # then approved in round 2 on courier narration, with all 17
-                # lookups NOT FOUND — and the engine took the regex at its
-                # word. Facts that void approval: a source-derived run with an
-                # EMPTY retained-evidence ledger, or a measured violation of a
-                # countable criterion.
+                # override the engine's own facts. Observed failures this
+                # gate closes: approval on narration over an empty ledger
+                # (V060), and approval whose formal ledger contained no
+                # target-lineage support at all — a hollow certificate over a
+                # real success (V0100). Facts that void approval on a
+                # source-derived run: no target-lineage evidence, a missing or
+                # failing claim-support table, a miscited lineage claim, or a
+                # measured violation of a countable criterion.
                 void = ""
                 if verdict == "approved":
-                    if self._source_derived and not evidence_mod.ledger(
-                            workspace, self._reader_dirs(), self._locators):
+                    fresh = evidence_mod.ledger(workspace, self._reader_dirs(),
+                                                self._locators)
+                    if self._source_derived and not fresh:
                         void = ("empty evidence ledger: this run derives claims from "
                                 "designated sources but NO payload was retained — "
                                 "narration was approved, not evidence")
-                    else:
+                    elif self._source_derived and not evidence_mod.target_lineage(fresh):
+                        void = ("no target-lineage evidence: every retained payload is "
+                                "proxy-tier or unknown lineage — testimony ABOUT the "
+                                "designated source cannot certify claims about the "
+                                "source itself")
+                    elif self._source_derived:
+                        void = _claims_gate(claims, evidence_mod.target_lineage(fresh))
+                    if not void:
                         gate = criteria_mod.violations(criteria_mod.check_counts(
                             self._criteria, workflow.extract_deliverable(draft) or draft))
                         if gate:
@@ -1606,20 +1732,21 @@ class Orchestrator:
                     self.tracer.event("review.approval.voided", stage.id, status="failed",
                                       round=rnd, reason=void)
                     verdict = "needs-evidence" if (
-                        couriers_left > 0 and "ledger" in void) else "revise"
+                        couriers_left > 0 and ("ledger" in void or "lineage" in void)
+                    ) else "revise"
                     critique += (
                         f"\n\n[ENGINE GATE] The 'approved' verdict was VOIDED: {void}. "
-                        "Approval requires load-bearing claims to trace to RETAINED "
-                        "evidence files (tools must retain payloads; prose does not "
-                        "count) and the deliverable payload to satisfy every measured "
-                        "count constraint.")
+                        "Approval requires the load-bearing claims to trace — via the "
+                        "```claims table — to RETAINED target-lineage evidence files "
+                        "(tools must retain payloads; prose does not count), and the "
+                        "deliverable payload to satisfy every measured count constraint.")
                     record.append({"round": rnd, "verdict": "approved-voided",
-                                   "criteria": per_criterion,
+                                   "criteria": per_criterion, "claims": claims,
                                    "critique": (critique or "").strip()[:4000]})
                     self._review_verdicts.append("approved-voided")
                 else:
                     record.append({"round": rnd, "verdict": verdict,
-                                   "criteria": per_criterion,
+                                   "criteria": per_criterion, "claims": claims,
                                    "critique": (critique or "").strip()[:4000]})
                     self._review_verdicts.append(verdict)
                 self.tracer.event("review.verdict", stage.id, status="info",
@@ -1723,6 +1850,13 @@ class Orchestrator:
                 lines += [f"- [{c['status']}] {c['criterion']}"
                           + (f" — {c['evidence']}" if c.get("evidence") else "")
                           for c in crits]
+                lines.append("")
+            claims = r.get("claims") or []
+            if claims:
+                lines += ["Claim support (typed; checked against target lineage):", ""]
+                lines += [f"- [{c['support']}] {c['claim']}"
+                          + (f" — {c['evidence']}" if c.get("evidence") else "")
+                          for c in claims]
                 lines.append("")
             lines += [r["critique"], ""]
         agg.write_text("\n".join(lines))
@@ -1842,14 +1976,31 @@ class Orchestrator:
         n = self._research_used
         spec = AgentSpec(
             id=f"research.{n}", role="Research agent",
-            goal=("Investigate the requested topic using web search and return a CONCISE, "
-                  "actionable findings brief: the key facts, the concrete how-to or fix, and "
-                  "the source URLs. If sources disagree or are thin, say so. Do not pad."),
-            capabilities=["web_search"])
+            goal=("Investigate the requested topic and return a CONCISE, actionable "
+                  "findings brief: the key facts, the concrete how-to or fix, your "
+                  "CONFIDENCE in each finding, and the source URLs. Prefer AUTHORITATIVE "
+                  "sources: when search snippets are thin or you need exact API/behavior "
+                  "details, FETCH and read the actual documentation/release-notes page "
+                  "rather than trusting index excerpts. If sources disagree or are thin, "
+                  "say so, and state what quick check would verify a brittle claim before "
+                  "anyone builds on it. Do not pad."),
+            capabilities=["web_search", "fetch_page_text"])
         ctx = (f"A teammate needs to learn this to proceed.\nTOPIC: {topic}\n"
                + (f"WHY (what they're stuck on): {why}\n" if why else "")
                + (f"SPECIFICS (error text / versions / constraints): {specifics}\n" if specifics else "")
-               + "\nResearch it now and return the brief. Cite the URLs you used.")
+               + "\nResearch it now and return the brief. Cite the URLs you used and mark "
+                 "each key finding with confidence (confirmed-from-authoritative-page / "
+                 "snippet-only / inferred).")
+        # A page fetcher is authored on first use; give it a clean
+        # instance-neutral contract instead of the stage-goal fallback.
+        self._cap_needs.setdefault("fetch_page_text", {
+            "contract": ("Fetch the page or document at a provided URL and extract its "
+                         "readable text content. Inputs: the URL (and optionally a byte/char "
+                         "limit). Output: the extracted text, retained as a payload file, "
+                         "with source_refs naming the URL actually fetched, honest "
+                         "coverage/observation_state reporting, and unresolved needs for "
+                         "content that could not be rendered or extracted."),
+            "example_input": {}})
         try:
             caps = await self._acquire_caps(spec)
         except Exception as e:  # noqa: BLE001 — research is best-effort, never fatal
@@ -1860,10 +2011,13 @@ class Orchestrator:
         with self.tracer.span("research", spec.id, topic=key[:120]):
             findings = await self._run_agent_with_reflection(
                 spec, caps, objective, {}, history, workspace, task_context=ctx,
-                model=config.model_for("research"), team=False)
+                model=config.model_for("research"), team=False,
+                max_turns=config.RESEARCH_AGENT_MAX_TURNS)
         brief = ("[research findings — METHOD KNOWLEDGE / general web testimony, NOT source "
                  "evidence about your task's designated target; use it to choose your "
-                 "approach, never present it as an observation of the target]\n\n"
+                 "approach, never present it as an observation of the target. Before an "
+                 "EXPENSIVE retry (a rebuild, a long run), verify any snippet-only claim "
+                 "the brief flags]\n\n"
                  + (findings or "(no findings returned)"))
         self._research_cache[key] = brief
         return brief
@@ -1888,20 +2042,27 @@ class Orchestrator:
     def _evidence_server(self, workspace: Path):
         """In-process MCP server giving verification-role agents deterministic,
         engine-side claim lookup over the original evidence — cheap perception
-        (look it up) instead of social epistemology (ask a colleague's memory)."""
+        (look it up) instead of social epistemology (ask a colleague's memory).
+        The searched surface is recomputed PER CALL so evidence a courier
+        retains mid-review is immediately findable, and it includes
+        target-lineage payloads whatever role their producing tools declared."""
         from claude_agent_sdk import create_sdk_mcp_server, tool
 
         reader_dirs = self._reader_dirs()
 
         @tool("locate_evidence",
-              "Search the run's ORIGINAL evidence (user inputs + raw extractions) for an "
+              "Search the run's ORIGINAL evidence (user inputs + raw extractions + "
+              "target-lineage payloads) for an "
               "exact number/phrase/quote. Returns each match with file, line, and context, "
               "or an authoritative NOT FOUND. Use it to settle any disputed claim by "
               "direct lookup before calling it unverified or fabricated.",
               {"type": "object", "properties": {"query": {"type": "string"}},
                "required": ["query"]})
         async def locate_evidence(args):
-            result = _locate_evidence(workspace, reader_dirs, args.get("query", ""))
+            entries = evidence_mod.ledger(workspace, reader_dirs, self._locators)
+            lineage_paths = [e.file for e in evidence_mod.target_lineage(entries)]
+            result = _locate_evidence(workspace, reader_dirs, args.get("query", ""),
+                                      extra_paths=lineage_paths)
             self.tracer.event("review.lookup", "evidence", status="info",
                               query=str(args.get("query", ""))[:120],
                               found=result.startswith("FOUND"))
@@ -1915,6 +2076,7 @@ class Orchestrator:
     async def _run_agent_with_reflection(self, spec, caps, objective, upstream, history,
                                          workspace, task_context: Optional[str] = None,
                                          model: Optional[str] = None, team: bool = True,
+                                         max_turns: Optional[int] = None,
                                          extra_servers: Optional[dict] = None,
                                          extra_tools: Optional[list] = None) -> str:
         """Run an agent; if a tool it relied on degrades at runtime, reflect —
@@ -1970,7 +2132,7 @@ class Orchestrator:
                 mcp_servers=servers,
                 allowed_tools=allowed,
                 model=(model if model is not None else self.model),
-                max_turns=config.AGENT_MAX_TURNS,
+                max_turns=max_turns or config.AGENT_MAX_TURNS,
             )
             out = await runner(
                 self.tracer, spec.id,
