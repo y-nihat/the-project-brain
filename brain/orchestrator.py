@@ -37,6 +37,19 @@ from .models import (CREATE, MAP, REDUCE, REUSE, REVIEW, AgentSpec, Capability,
 from .team import TEAM_TOOLS, TeamChannel, build_team_server
 
 _VERDICT_RE = re.compile(r"VERDICT:\s*(approved|revise|needs-evidence)", re.IGNORECASE)
+# Audience-perceivable artifact formats that need RENDERING before anyone can
+# look at them (images are directly perceivable via read_file). Modality
+# categories, not task types — same standing as the image-extension set.
+_RENDERABLE_EXTS = {".pptx", ".ppt", ".odp", ".docx", ".doc", ".odt", ".pdf",
+                    ".html", ".htm", ".svg", ".rtf"}
+_RENDER_NEED_KEY = "render_artifact_pages"
+_RENDER_CONTRACT = (
+    "Accepts a document/presentation/page-layout file via the files argument. Renders "
+    "EVERY page/slide/frame of it to sequentially numbered PNG images (one image per "
+    "page, at a resolution where body text is readable) in the output directory. "
+    "Returns page_count and the list of image filenames, reports consumed_inputs, and "
+    "fails honestly when the format cannot be rendered. Purely a converter — no content "
+    "interpretation, no editing, no summarizing.")
 _CRITERIA_BLOCK_RE = re.compile(r"```criteria\s*\n(.*?)```", re.DOTALL)
 # A remote locator in the objective is user-referenced evidence, exactly like an
 # attached file (defined in the evidence module; re-exported for callers/tests).
@@ -515,15 +528,29 @@ class Orchestrator:
         self._research_used = 0
         self._research_cache: dict[str, str] = {}
         self._help_request: Optional[dict] = None
+        self._knowledge_briefs = ""
+        self._session_context: Optional[str] = None
 
     # ------------------------------------------------------------------ #
     # run
     # ------------------------------------------------------------------ #
     async def run(self, objective: str, history: Optional[str] = None,
-                  seed_run: Optional[str] = None) -> str:
+                  seed_run: Optional[str] = None,
+                  session_context: Optional[str] = None) -> str:
+        self._session_context = session_context
         with self.tracer.span("plan", "planner"):
-            plan = await self.planner.plan(objective, history=history)
+            plan = await self.planner.plan(objective, history=history,
+                                           session_context=session_context)
         self.blackboard.put("objective", objective)
+        # Session revision: the planner judged the new input to be FEEDBACK on
+        # this session's previous deliverable — auditable state, and the run's
+        # criteria now carry both the original demands and the feedback.
+        if getattr(plan, "revision", None):
+            self.blackboard.put("plan.revision", plan.revision)
+            self.tracer.event("plan.revision", "planner", status="info",
+                              of_run=plan.revision.get("of_run", ""),
+                              feedback=plan.revision.get("feedback", "")[:300],
+                              preserve=plan.revision.get("preserve", "")[:300])
 
         # Shared per-run workspace so file-producing tools can hand files to
         # file-consuming tools across agents.
@@ -543,7 +570,14 @@ class Orchestrator:
         # remote locators) are held to the retained-evidence gate; depth-only
         # risk is not — a pure synthesis chain has no payloads to retain.
         self._source_derived = has_user_evidence or has_external_evidence
+        # Research state resets BEFORE knowledge resolution: the knowledge pass
+        # spends the same per-run budget, and its briefs must survive into
+        # stage execution (resetting later would silently wipe them).
+        self._research_used = 0
+        self._research_cache = {}
+        self._knowledge_briefs = ""
         plan = await self._correct_proxy_first_plan(plan, objective, history)
+        plan = await self._resolve_knowledge_needs(plan, objective, history)
         planned, appended = workflow.append_review_if_needed(
             plan.stages, has_user_evidence=has_user_evidence,
             has_external_evidence=has_external_evidence)
@@ -606,8 +640,6 @@ class Orchestrator:
         self._recovery_state = "not-needed"
         self._suppressed_caps = set()   # methods that failed this run; need new rationale
         self._format_violations = []    # engine-measured count-criteria failures
-        self._research_used = 0         # shared per-run research budget (agents + developers)
-        self._research_cache = {}       # topic -> findings brief (dedup)
         self._help_request = None       # set when the brain decides to stop and ask the user
 
         last_done: Optional[str] = None
@@ -714,7 +746,8 @@ class Orchestrator:
             (deliverable_dir / "DELIVERABLE.md").write_text(payload or "")
             # Countable format criteria are MEASURED against the payload — a
             # measured violation is authoritative over any verdict prose.
-            checks = criteria_mod.check_counts(self._criteria, payload)
+            # (Slide/page counts defer to the rendered artifact when one exists.)
+            checks = self._measured_checks(payload, workspace)
             self._format_violations = criteria_mod.violations(checks)
             if checks:
                 self.tracer.event(
@@ -823,7 +856,9 @@ class Orchestrator:
             "blocker_class (requires_credential / resource_ceiling / no_free_means / "
             "physical_access / user_authority).")
         try:
-            revised = await self.planner.plan(objective, history=history, corrective=corrective)
+            revised = await self.planner.plan(objective, history=history,
+                                              corrective=corrective,
+                                              session_context=self._session_context)
         except Exception as e:  # noqa: BLE001 — correction must never break planning
             self.tracer.event("plan.corrected", "planner", status="failed",
                               error=f"{type(e).__name__}: {str(e)[:160]}")
@@ -832,6 +867,110 @@ class Orchestrator:
             "plan.corrected", "planner", status="info",
             accountable=observation_is_accountable(getattr(revised, "direct_observation", {})),
             stages=[s.id for s in revised.stages])
+        return revised if revised.stages else plan
+
+    def _perceivable_artifacts(self, workspace: Path) -> tuple[list[str], list[str]]:
+        """Files an audience will LOOK at: (renderable, images). Classified by
+        the producing tool's DECLARED role in the provenance log — only
+        'artifact'-role output qualifies. Extension alone must not decide:
+        retained evidence (a fetched page.html, an observed screenshot) is
+        input to judgment, not the thing being judged. Renderable formats need
+        the render capability first; images are directly perceivable."""
+        from .capabilities.runtime import _IMAGE_EXTS
+
+        root = Path(workspace)
+        renderable: list[str] = []
+        images: list[str] = []
+        if not root.is_dir():
+            return renderable, images
+        seen: set[str] = set()
+        for rec in evidence_mod._records(root.parent):
+            if rec.get("role") != "artifact" or rec.get("cap") == _RENDER_NEED_KEY:
+                continue
+            for f in rec.get("files") or []:
+                rel = str(f)
+                if rel in seen or not (root / rel).is_file():
+                    continue
+                seen.add(rel)
+                ext = Path(rel).suffix.lower()
+                if ext in _RENDERABLE_EXTS:
+                    renderable.append(rel)
+                elif ext in _IMAGE_EXTS:
+                    images.append(rel)
+        return renderable[:6], images[:12]
+
+    def _rendered_page_count(self, workspace: Path) -> Optional[int]:
+        """Pages of the artifact's MOST RECENT render (from the provenance log,
+        so stale images from an earlier render round can't skew the count).
+        None when nothing has been rendered."""
+        from .capabilities.runtime import _IMAGE_EXTS
+
+        records = evidence_mod._records(Path(workspace).parent)
+        last = None
+        for rec in records:
+            if rec.get("cap") == _RENDER_NEED_KEY and rec.get("files"):
+                last = rec
+        if last is None:
+            return None
+        return sum(1 for f in last["files"]
+                   if Path(str(f)).suffix.lower() in _IMAGE_EXTS)
+
+    def _measured_checks(self, payload: str, workspace: Path) -> list:
+        """All engine-measured count checks. When the artifact has been
+        RENDERED, the render is authoritative for slide/page counts — the
+        payload-text heuristic (--- separators) only stands when nothing was
+        rendered. Both directions matter: a stray separator must not void a
+        correct artifact, and clean prose must not excuse an 11-page artifact
+        against an explicit 10."""
+        checks = criteria_mod.check_counts(self._criteria, payload)
+        pages = self._rendered_page_count(workspace)
+        if pages is not None:
+            checks = [c for c in checks if c.unit not in ("slide", "page")]
+            checks += criteria_mod.artifact_page_check(self._criteria, pages)
+        return checks
+
+    async def _resolve_knowledge_needs(self, plan, objective: str,
+                                       history: Optional[str]):
+        """Define GOOD before building: the plan declared knowledge gaps —
+        domain standards/conventions the deliverable's quality depends on that
+        the objective does not spell out. Resolve them through the research
+        channel (shared budget), then re-invoke the planner ONCE with the
+        briefs so the final success criteria ENCODE the researched standards
+        as checkable conditions. One pass, fail-open: mediocrity was never a
+        trigger before — a run could be grounded, criteria-clean, and amateur,
+        because 'what does good look like here?' was never asked."""
+        needs = list(getattr(plan, "knowledge_needs", []) or [])
+        if not needs:
+            return plan
+        briefs: list[str] = []
+        for n in needs[:3]:
+            topic, why = n.get("topic", ""), n.get("why", "")
+            self.tracer.event("knowledge.researching", "planner", status="info",
+                              topic=topic[:200], why=why[:200])
+            brief = await self._research(topic, why=why or "informs the plan's "
+                                         "quality criteria for the deliverable")
+            briefs.append(f"### {topic}\n{brief}")
+        self._knowledge_briefs = "\n\n".join(briefs)[:12000]
+        corrective = (
+            "KNOWLEDGE BRIEFS — the standards you asked to research (method knowledge; "
+            "not evidence about the task's designated sources):\n"
+            + self._knowledge_briefs
+            + "\n\nRe-emit the FULL plan now, informed by these briefs: encode the "
+              "researched standards as CHECKABLE success_criteria (alongside the "
+              "objective's own demands), adjust stage goals where the briefs change the "
+              "approach, and do NOT redeclare knowledge_needs — this is the single "
+              "knowledge-informed pass.")
+        try:
+            revised = await self.planner.plan(objective, history=history,
+                                              corrective=corrective,
+                                              session_context=self._session_context)
+        except Exception as e:  # noqa: BLE001 — knowledge must never break planning
+            self.tracer.event("knowledge.replan_failed", "planner", status="failed",
+                              error=f"{type(e).__name__}: {str(e)[:160]}")
+            return plan
+        self.tracer.event("knowledge.informed", "planner", status="info",
+                          topics=[n.get("topic", "")[:80] for n in needs[:3]],
+                          criteria_after=list(getattr(revised, "success_criteria", []))[:12])
         return revised if revised.stages else plan
 
     def _workspace_server(self, workspace: Path):
@@ -1405,6 +1544,10 @@ class Orchestrator:
         task_context = workflow.manifest_instruction() if workflow.feeds_a_map(stage.id, stages) else None
         if stage.id in workflow.deliverable_stage_ids(list(self._stages_by_id.values())):
             task_context = (task_context or "") + workflow.deliverable_instruction()
+            if self._knowledge_briefs:
+                task_context += ("\n\nRESEARCHED QUALITY STANDARDS (the bar your "
+                                 "deliverable is judged against — apply them):\n"
+                                 + self._knowledge_briefs[:6000])
         out = await self._run_agent_with_reflection(
             spec, caps, objective, upstream, history, workspace, task_context=task_context)
         self._stage_notes[stage.id] = {stage.id: out}
@@ -1551,6 +1694,9 @@ class Orchestrator:
                + _notes_block(notes, limit))
         if stage.id in workflow.deliverable_stage_ids(list(self._stages_by_id.values())):
             ctx += workflow.deliverable_instruction()
+            if self._knowledge_briefs:
+                ctx += ("\n\nRESEARCHED QUALITY STANDARDS (the bar your deliverable is "
+                        "judged against — apply them):\n" + self._knowledge_briefs[:6000])
         out = await self._run_agent_with_reflection(
             spec, caps, objective, {}, history, workspace, task_context=ctx)
         self._stage_notes[stage.id] = {stage.id: out}
@@ -1599,9 +1745,23 @@ class Orchestrator:
         evidence_tools = ["mcp__evidence__locate_evidence"]
         try:
             for rnd in range(1, max(1, stage.rounds) + 1):
+                # PERCEPTUAL REVIEW: if an audience will look at the artifact,
+                # the reviewer must look at it. Renderable formats get the
+                # render capability (authored on first use, like any tool).
+                renderable, image_artifacts = self._perceivable_artifacts(workspace)
+                if renderable and _RENDER_NEED_KEY not in stage.capabilities:
+                    self._cap_needs.setdefault(_RENDER_NEED_KEY,
+                                               {"contract": _RENDER_CONTRACT,
+                                                "example_input": {"files": [renderable[0]]}})
+                    stage.capabilities.append(_RENDER_NEED_KEY)
                 spec = AgentSpec(id=f"{stage.id}.r{rnd}", role=stage.role, goal=stage.goal,
                                  capabilities=stage.capabilities, depends_on=stage.depends_on)
-                caps = await self._acquire_caps(spec)
+                # A reviewer's tooling failing to BUILD must not kill the
+                # review wholesale (observed: a reader tool failed authoring
+                # and the whole review errored, shipping the draft with no
+                # substantive review at all). Degrade: review with available
+                # means, the gap stated in context.
+                caps, degraded_note = await self._acquire_caps_best_effort(spec)
                 observed = _observed_artifacts(workspace)
                 ledger_entries = evidence_mod.ledger(workspace, self._reader_dirs(),
                                                      self._locators)
@@ -1628,14 +1788,42 @@ class Orchestrator:
                                 "\n(The stage's working notes outside the fenced deliverable "
                                 "block were stripped — THIS payload is what ships and what "
                                 "format criteria are measured against.)")
-                checks = criteria_mod.check_counts(self._criteria, payload)
+                rendered_pages = self._rendered_page_count(workspace)
+                checks = self._measured_checks(payload, workspace)
                 facts = criteria_mod.describe(checks)
+                if rendered_pages is not None:
+                    facts += (("\n" if facts else "")
+                              + f"ARTIFACT RENDER: the latest render produced "
+                                f"{rendered_pages} page image(s) — authoritative for "
+                                "slide/page counts.")
+                perceptual_block = ""
+                if renderable or image_artifacts:
+                    perceptual_block = (
+                        "PERCEIVABLE ARTIFACTS this run produced (an audience will LOOK "
+                        "at these — you must too):\n"
+                        + "".join(f"- {f}\n" for f in (renderable + image_artifacts))
+                        + ("RENDER + LOOK: call render_artifact_pages on the artifact, "
+                           "then OPEN EVERY rendered page with read_file. "
+                           if renderable else
+                           "LOOK: open every artifact image with read_file. ")
+                        + "Judge the CRAFT against the success criteria and any "
+                          "researched standards: layout integrity (no overflow, "
+                          "clipping, or collisions), data-graphic integrity (honest "
+                          "axes, one visual encoding per series, readable labels), "
+                          "consistency (type, color, alignment), and audience-copy "
+                          "discipline (no editorial notes, placeholders, or "
+                          "meta-references in what the audience reads). Craft defects "
+                          "are grounds to revise — a deliverable can be grounded and "
+                          "still fail its audience. Slide/page counts are measured "
+                          "from the render by the engine; a mismatch voids approval.\n\n")
                 ledger_block = evidence_mod.describe(ledger_entries, self._locators)
                 ctx = (
                     "DRAFT under review (the deliverable payload):\n---\n" + payload
                     + "\n---" + payload_note + "\n\n"
+                    + (degraded_note + "\n\n" if degraded_note else "")
                     + ledger_block + "\n\n"
                     + (facts + "\n\n" if facts else "")
+                    + perceptual_block
                     + (f"ORIGINAL SOURCE EVIDENCE (the user's actual inputs / raw extraction — the "
                        f"ground truth every claim must ultimately trace to):\n{source}\n\n"
                        if source else "")
@@ -1744,13 +1932,21 @@ class Orchestrator:
                     elif self._source_derived:
                         void = _claims_gate(claims, evidence_mod.target_lineage(fresh))
                     if not void:
-                        gate = criteria_mod.violations(criteria_mod.check_counts(
-                            self._criteria, workflow.extract_deliverable(draft) or draft))
+                        gate = criteria_mod.violations(self._measured_checks(
+                            workflow.extract_deliverable(draft) or draft, workspace))
                         if gate:
                             v = gate[0]
+                            # The reviewer renders DURING the round: re-read.
+                            # _measured_checks drops payload slide/page checks
+                            # whenever a render exists, so a surviving one IS
+                            # a render measurement.
+                            where = ("in the RENDERED artifact"
+                                     if v.unit in ("slide", "page")
+                                     and self._rendered_page_count(workspace)
+                                     is not None
+                                     else "in the deliverable payload")
                             void = (f"engine-measured format violation: required {v.op} "
-                                    f"{v.bound} {v.unit}(s), measured {v.measured} in the "
-                                    "deliverable payload")
+                                    f"{v.bound} {v.unit}(s), measured {v.measured} {where}")
                 if void:
                     self.tracer.event("review.approval.voided", stage.id, status="failed",
                                       round=rnd, reason=void)
@@ -1791,11 +1987,14 @@ class Orchestrator:
                         capabilities=self._evidence_capabilities(draft_stage))
                     before = {e.file for e in evidence_mod.ledger(
                         workspace, self._reader_dirs(), self._locators)}
+                    courier_caps, courier_note = \
+                        await self._acquire_caps_best_effort(courier)
                     with self.tracer.span("review.evidence", stage.id):
                         fetched = await self._run_agent_with_reflection(
-                            courier, await self._acquire_caps(courier), objective, {},
+                            courier, courier_caps, objective, {},
                             history, workspace,
-                            task_context="The reviewer needs this evidence:\n" + critique,
+                            task_context=(courier_note + "\n\n" if courier_note else "")
+                            + "The reviewer needs this evidence:\n" + critique,
                             extra_servers=evidence_server, extra_tools=evidence_tools)
                     evidence[courier.id] = fetched
                     # Label the courier's text by the LEDGER's fact, not the
@@ -2199,6 +2398,32 @@ class Orchestrator:
 
         _persist_agent(config.RUNS_DIR, self.session, spec, system_prompt, out)
         return out
+
+    async def _acquire_caps_best_effort(self, spec: AgentSpec) -> tuple[dict, str]:
+        """Acquire what can be acquired, degrading per-capability instead of
+        failing the caller: verification-role sessions must review with the
+        tools that exist rather than die on the one that could not be built.
+        Returns (caps, note) — the note names what is missing and why."""
+        caps: dict[str, Capability] = {}
+        missing: list[str] = []
+        for need in spec.capabilities:
+            single = AgentSpec(id=spec.id, role=spec.role, goal=spec.goal,
+                               capabilities=[need], depends_on=spec.depends_on)
+            try:
+                caps.update(await self._acquire_caps(single))
+            except Exception as e:  # noqa: BLE001 — degrade per-capability, never die
+                fc = getattr(e, "failure_class", type(e).__name__)
+                self.tracer.event("review.capability_degraded", need, status="failed",
+                                  agent=spec.id, error=f"{fc}: {str(e)[:200]}")
+                missing.append(f"'{need}' ({fc}: {str(e)[:120]})")
+        note = ""
+        if missing:
+            note = ("NOTE: these capabilities could NOT be built for this session — "
+                    + "; ".join(missing) + ". Work with the tools you have "
+                    "(locate_evidence, read_file); if something load-bearing cannot be "
+                    "adjudicated without the missing tool, say so explicitly in your "
+                    "verdict rather than guessing.")
+        return caps, note
 
     async def _acquire_caps(self, spec: AgentSpec) -> dict[str, Capability]:
         caps: dict[str, Capability] = {}

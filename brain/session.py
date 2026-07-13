@@ -60,6 +60,10 @@ class BrainSession:
         self.registry = Registry(config.DB_PATH, config.CAPABILITIES_STORE)
         # Interactive gate: real prompts reach the human running the session.
         self.broker = ApprovalBroker(input_fn=input_fn, output_fn=output_fn, tracer=self.tracer)
+        # Session revision memory: the previous objective and its deliverable,
+        # so a follow-up like "I don't like the layout" is understood as
+        # FEEDBACK to revise, not a fresh task to rebuild from scratch.
+        self._last_run: Optional[dict] = None
         self._janitor()
 
     def _janitor(self) -> None:
@@ -155,6 +159,21 @@ class BrainSession:
             self.tracer.event("files.unavailable", "attach", status="failed", tokens=missing)
 
         hist_text, seed_run = history_mod.history_block(config.DB_PATH, config.RUNS_DIR, objective)
+        # Session continuity: the previous run OF THIS SESSION outranks the
+        # relevance-picked seed (a follow-up revises what was just made), and
+        # its summary goes to the planner as SESSION CONTEXT so feedback is
+        # recognized as feedback.
+        session_context = None
+        if self._last_run:
+            seed_run = self._last_run["run_id"]
+            session_context = (
+                f"previous run id: {self._last_run['run_id']}\n"
+                f"previous objective: {self._last_run['objective'][:600]}\n"
+                f"previous result: {self._last_run['status']}\n"
+                f"previous deliverable (payload head):\n---\n"
+                f"{self._last_run['deliverable'][:2500]}\n---\n"
+                f"files it produced (seeded under prior/{self._last_run['run_id']}/ in "
+                f"this run's workspace): {self._last_run['files'][:12]}")
 
         run = self.tracer.start_run(
             objective, model=(config.model_for("orchestrator") or "sdk-default"))
@@ -195,7 +214,9 @@ class BrainSession:
         )
         try:
             try:
-                answer = await orchestrator.run(objective, history=hist_text, seed_run=seed_run)
+                answer = await orchestrator.run(objective, history=hist_text,
+                                                seed_run=seed_run,
+                                                session_context=session_context)
                 # Objective-success class (#17) — operational completion is not
                 # the same as meeting the objective.
                 status = orchestrator.classification
@@ -210,6 +231,23 @@ class BrainSession:
             if leaks:
                 status = "failed"
             run.finish(status, outcome=answer)
+            # Remember this run for the session: the next objective may be
+            # feedback on THIS deliverable.
+            out_dir = Path(config.RUNS_DIR) / session_id / "outputs"
+            ws = Path(config.RUNS_DIR) / session_id / "workspace"
+            try:
+                deliverable = (out_dir / "DELIVERABLE.md").read_text()[:4000] \
+                    if (out_dir / "DELIVERABLE.md").is_file() else (answer or "")[:2000]
+            except OSError:
+                deliverable = (answer or "")[:2000]
+            produced = []
+            if ws.is_dir():
+                produced = [str(p.relative_to(ws)) for p in sorted(ws.rglob("*"))
+                            if p.is_file()
+                            and p.relative_to(ws).parts[0] not in ("prior", "input")][:20]
+            self._last_run = {"run_id": session_id, "objective": objective,
+                              "status": status, "deliverable": deliverable,
+                              "files": produced}
             if self.auto_export:
                 self._export(session_id)
             return RunSummary(

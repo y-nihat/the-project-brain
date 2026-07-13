@@ -44,7 +44,14 @@ def deliverable_instruction() -> str:
         "Everything outside the fence is working notes (explanations, counts, change "
         "lists) and will NOT be delivered. Format constraints ('exactly one "
         "paragraph', 'under 40 words', '3 sections') are measured against the "
-        "fenced payload alone, by machine."
+        "fenced payload alone, by machine.\n"
+        "SELF-CHECK BEFORE HANDOFF: if you produced an artifact file an audience "
+        "will look at, LOOK at it yourself first — render it to images if a "
+        "rendering tool is available, or open produced images with read_file — and "
+        "fix what you see (text overflow or clipping, unreadable or dishonest "
+        "charts, placeholder text, editorial notes addressed to teammates, wrong "
+        "page/slide count) before finishing. Do not hand off work you have not "
+        "perceived the way its audience will."
     )
 
 

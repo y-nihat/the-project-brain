@@ -185,6 +185,30 @@ _SYSTEM = (
     "observations, distinct from the observations themselves. A reviewer will check the "
     "deliverable against them, and countable constraints (paragraphs, words, sections) are "
     "also MEASURED by the engine against the exact deliverable payload.\n"
+    "KNOWLEDGE NEEDS — DEFINE GOOD BEFORE BUILDING: when the deliverable's FORM is "
+    "judged by an audience (a presentation, report, page, dashboard, interface, "
+    "publication-grade figure — any artifact whose quality depends on domain conventions "
+    "the objective does not spell out), you must either (a) encode the applicable "
+    "conventions directly as success_criteria you are CONFIDENT of, or (b) emit "
+    "`knowledge_needs` — the standards to research first ({topic, why}), e.g. the layout, "
+    "structure, and data-graphic conventions of the deliverable's genre. The engine "
+    "researches them and re-invokes you ONCE with the findings; your final criteria must "
+    "then encode the researched standards as CHECKABLE conditions (layout integrity — no "
+    "overflow/clipping; correct data-graphic encoding — honest axes, one encoding per "
+    "series; consistency; no editorial meta-text in audience-facing copy). Mediocrity is "
+    "a failure mode: a deliverable can be grounded and still amateur — the quality bar "
+    "must be DEFINED, never assumed.\n"
+    "REVISION MODE — session continuity: when SESSION CONTEXT (below, if present) shows a "
+    "previous run's deliverable and the new input reads as FEEDBACK on it (dissatisfaction, "
+    "change requests, 'make it deeper/cleaner/shorter', complaints about specific parts), "
+    "plan a REVISION, not a rebuild: set `revision` {of_run, feedback — what the user is "
+    "dissatisfied with, in your words; preserve — what already satisfied them}. Design "
+    "stages that LOAD the prior deliverable and its retained materials (seeded under "
+    "prior/<run_id>/ in the workspace) and change ONLY what the feedback targets; "
+    "re-extracting or re-deriving what already exists wastes the user's time and risks "
+    "regressing approved content. Carry the ORIGINAL objective's demands forward as "
+    "success_criteria — they still bind — and ADD criteria encoding the feedback. If the "
+    "new input is an unrelated task, ignore revision and plan normally.\n"
     "You MUST call `emit_plan` exactly once with the full workflow and must NOT answer in prose."
 )
 
@@ -282,9 +306,52 @@ _PLAN_SCHEMA = {
                 "required": ["key", "contract"],
             },
         },
+        # Knowledge the plan itself lacks: domain standards/conventions that
+        # define what a GOOD deliverable looks like, researched BEFORE building.
+        "knowledge_needs": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "topic": {"type": "string"},
+                    "why": {"type": "string",
+                            "description": "which decision or quality bar it informs"},
+                },
+                "required": ["topic"],
+            },
+        },
+        # Set when this plan REVISES the previous run's deliverable in
+        # response to user feedback (session continuity).
+        "revision": {
+            "type": "object",
+            "properties": {
+                "of_run": {"type": "string"},
+                "feedback": {"type": "string",
+                             "description": "what the user was dissatisfied with"},
+                "preserve": {"type": "string",
+                             "description": "what already satisfied the user and must survive"},
+            },
+        },
     },
     "required": ["stages"],
 }
+
+
+def _normalize_knowledge_needs(raw) -> list[dict]:
+    out = []
+    for n in raw or []:
+        if isinstance(n, dict) and str(n.get("topic", "")).strip():
+            out.append({"topic": str(n["topic"])[:300], "why": str(n.get("why", ""))[:300]})
+    return out[:6]
+
+
+def _normalize_revision(raw) -> dict:
+    raw = raw if isinstance(raw, dict) else {}
+    if not str(raw.get("feedback", "")).strip():
+        return {}
+    return {"of_run": str(raw.get("of_run", ""))[:120],
+            "feedback": str(raw.get("feedback", ""))[:500],
+            "preserve": str(raw.get("preserve", ""))[:500]}
 
 
 _LEGIT_BLOCKERS = {"requires_credential", "resource_ceiling", "no_free_means",
@@ -350,7 +417,8 @@ class Planner:
         self.tracer = tracer or NullTracer()
 
     async def plan(self, objective: str, history: Optional[str] = None,
-                   corrective: Optional[str] = None) -> Plan:
+                   corrective: Optional[str] = None,
+                   session_context: Optional[str] = None) -> Plan:
         from claude_agent_sdk import create_sdk_mcp_server, tool
 
         from .factory import locked_session
@@ -380,6 +448,12 @@ class Planner:
         )
 
         prompt = objective
+        if session_context:
+            prompt += (
+                "\n\nSESSION CONTEXT (this terminal session's previous task and its "
+                "deliverable — judge whether the new input above is FEEDBACK on it; "
+                "see REVISION MODE):\n" + session_context
+            )
         if history:
             prompt += (
                 "\n\nPRIOR WORK by this system (you may design stages that build on it; its files "
@@ -410,7 +484,9 @@ class Planner:
         return Plan(objective=objective, stages=stages, success_criteria=criteria,
                     strategy_rationale=rationale,
                     capability_needs=_normalize_needs(captured.get("capability_needs")),
-                    direct_observation=direct)
+                    direct_observation=direct,
+                    knowledge_needs=_normalize_knowledge_needs(captured.get("knowledge_needs")),
+                    revision=_normalize_revision(captured.get("revision")))
 
     async def extend(self, objective: str, completed: str, gaps: list[dict],
                      existing_ids: list[str]):
@@ -490,22 +566,35 @@ class StubPlanner:
 
     def __init__(self, stages: list[StageSpec], success_criteria: Optional[list[str]] = None,
                  strategy_rationale: str = "", capability_needs: Optional[dict] = None,
-                 direct_observation: Optional[dict] = None):
+                 direct_observation: Optional[dict] = None,
+                 knowledge_needs: Optional[list] = None,
+                 revision: Optional[dict] = None):
         self._stages = stages
         self._criteria = success_criteria or []
         self._rationale = strategy_rationale
         self._needs = dict(capability_needs or {})
         self._direct = dict(direct_observation or {})
+        self._knowledge = list(knowledge_needs or [])
+        self._revision = dict(revision or {})
         self.plan_calls = 0
         self.correctives: list[str] = []
+        self.session_contexts: list[str] = []
 
     async def plan(self, objective: str, history: Optional[str] = None,
-                   corrective: Optional[str] = None) -> Plan:
+                   corrective: Optional[str] = None,
+                   session_context: Optional[str] = None) -> Plan:
         self.plan_calls += 1
         if corrective:
             self.correctives.append(corrective)
+        if session_context:
+            self.session_contexts.append(session_context)
+        # Knowledge needs are one-shot: the informed replan (corrective set)
+        # must not redeclare them, mirroring the real planner's contract.
+        knowledge = [] if corrective else list(self._knowledge)
         return Plan(objective=objective, stages=list(self._stages),
                     success_criteria=list(self._criteria),
                     strategy_rationale=self._rationale,
                     capability_needs=dict(self._needs),
-                    direct_observation=dict(self._direct))
+                    direct_observation=dict(self._direct),
+                    knowledge_needs=knowledge,
+                    revision=dict(self._revision))

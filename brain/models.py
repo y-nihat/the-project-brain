@@ -123,6 +123,15 @@ class Plan:
     # explanation}. The controller corrects a proxy-first plan that skipped
     # direct observation with no legitimate blocker (tool-absence is not one).
     direct_observation: dict = field(default_factory=dict)
+    # Declared knowledge gaps that must be RESEARCHED before execution —
+    # domain standards, conventions, "what does good look like here": each
+    # {topic, why}. Resolved through the research channel; the briefs inform a
+    # single knowledge-informed replan whose criteria encode the standards.
+    knowledge_needs: list = field(default_factory=list)
+    # Session revision state: when the new objective is FEEDBACK on the
+    # previous run's deliverable, {of_run, feedback, preserve} — revise only
+    # what the feedback targets, keep what already satisfied the user.
+    revision: dict = field(default_factory=dict)
 
 
 @dataclass

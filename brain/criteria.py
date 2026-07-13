@@ -117,6 +117,31 @@ def violations(checks: list[CountCheck]) -> list[CountCheck]:
     return [c for c in checks if not c.ok and c.gating]
 
 
+def artifact_page_check(criteria: list[str], page_count: int) -> list[CountCheck]:
+    """Measure slide/page count constraints against the RENDERED artifact
+    (pages actually produced by rendering it), not against the text payload —
+    an 11-page artifact shipped against an explicit 10-page requirement
+    because the count was only ever measured on prose. Gating: a render is an
+    unambiguous count."""
+    checks: list[CountCheck] = []
+    for crit in criteria or []:
+        for m in list(_CONSTRAINT.finditer(crit)) + list(_IMPLICIT_ONE.finditer(crit)):
+            unit = m.group("unit").lower()
+            if unit not in ("slide", "page"):
+                continue
+            raw = m.group("num").lower()
+            bound = int(raw) if raw.isdigit() else _NUMBER_WORDS.get(raw, 0)
+            if not bound:
+                continue
+            op = _op_kind(m.groupdict().get("op") or "exactly")
+            ok = (page_count == bound if op == "exact"
+                  else page_count >= bound if op == "min"
+                  else page_count <= bound)
+            checks.append(CountCheck(criterion=crit, unit=unit, op=op, bound=bound,
+                                     measured=page_count, ok=ok, gating=True))
+    return checks
+
+
 def describe(checks: list[CountCheck]) -> str:
     if not checks:
         return ""
