@@ -547,11 +547,17 @@ def _generic_verify(cap: Capability, sample_input: dict, sample_files: dict, man
         for ref in unresolved:
             p = (root / str(ref)).resolve()
             if not str(p).startswith(str(root)) or not p.is_file():
+                # List what actually exists (parity with the runtime's
+                # file-not-found error): a developer was observed guessing
+                # paths three times while the real file sat one listing away.
+                avail = [str(x.relative_to(root)) for x in sorted(root.rglob("*"))
+                         if x.is_file() and x.relative_to(root).parts[:1] != ("prior",)]
+                shown = avail[:40]
+                more = f" (showing first 40 of {len(avail)})" if len(avail) > 40 else ""
                 return (False,
                         f"SAMPLE FILE NOT FOUND: sample_input.files references {str(ref)!r}, "
                         "which does not exist in the run workspace — reference a REAL "
-                        "provided file (e.g. one listed under input/), exactly as spelled "
-                        "in the task.", None)
+                        f"file exactly as listed. Files that exist{more}: {shown}", None)
             try:
                 input_files[p.name] = p.read_bytes()
             except OSError as e:
