@@ -124,6 +124,30 @@ def test_knowledge_replan_failure_is_fail_open(tmp_path, monkeypatch):
     assert "done" in answer                    # original plan still executed
 
 
+def test_formatted_prompt_templates_actually_render():
+    """Prompt templates that go through str.format() must RENDER, not just
+    contain the right words: an unescaped literal brace is a KeyError that
+    kills every run at the first plan call (observed live on v0.13.0 —
+    '({topic, why})' parsed as a replacement field named 'topic, why'; the
+    suite stayed green because nothing executed the real template)."""
+    import string
+
+    from brain import acquisition as acq_mod
+    from brain import planner as planner_mod
+
+    rendered = planner_mod._SYSTEM.format(known="CAP CATALOG")
+    assert "CAP CATALOG" in rendered
+    assert "{topic, why}" in rendered            # escaped braces survive as text
+    assert "{of_run" in rendered
+    assert acq_mod._BUILDER_SYSTEM.format(free_hint="FREE")
+    # Every declared field in each template is one we actually supply.
+    for tpl, allowed in ((planner_mod._SYSTEM, {"known"}),
+                         (acq_mod._BUILDER_SYSTEM, {"free_hint"})):
+        fields = {f for _, f, _, _ in string.Formatter().parse(tpl)
+                  if f is not None}
+        assert fields <= allowed, f"unescaped brace field(s): {fields - allowed}"
+
+
 def test_planner_prompt_defines_good_before_building():
     from brain import planner as planner_mod
     s = planner_mod._SYSTEM
