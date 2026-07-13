@@ -274,18 +274,31 @@ def build_caps_server(
             if result.output_files and ws is not None:
                 produced = _save_outputs(ws, cap.name, result.output_files)
                 # Retention is a LEDGER fact, not narration: record what was
-                # kept and the provenance the tool reported, so review and the
-                # approval gate compute the evidence plane instead of trusting
-                # any agent's account of it.
+                # kept, the provenance the tool reported, AND the workspace
+                # files this call consumed — the edges lineage propagates
+                # along, so a property-preserving transformation of the target
+                # stays target-lineage whatever role its tool declared.
                 try:
                     meta_line = json.loads(result.stdout.strip().splitlines()[-1])
                 except Exception:  # noqa: BLE001
                     meta_line = {}
-                refs = meta_line.get("source_refs") if isinstance(meta_line, dict) else None
+                if not isinstance(meta_line, dict):
+                    meta_line = {}
+                refs = meta_line.get("source_refs")
+                reported = meta_line.get("consumed_inputs")
+                routed = [str(r) for r in (file_refs or [])]
+                if isinstance(reported, list):
+                    names = {str(Path(str(c)).name) for c in reported}
+                    consumed = [r for r in routed if Path(r).name in names] or routed
+                else:
+                    consumed = routed
                 evidence_mod.record(
                     ws.parent, cap.name, produced,
                     refs if isinstance(refs, list) else [],
-                    str(meta_line.get("coverage", "")) if isinstance(meta_line, dict) else "")
+                    str(meta_line.get("coverage", "")),
+                    inputs=consumed,
+                    state=str(meta_line.get("observation_state", "")),
+                    role=cap.emits or "", workspace=ws)
                 # Causal-attribution evidence: did this call persist supplied
                 # content EXACTLY? A write that matches its input byte-for-byte
                 # exonerates the tool from defects IN that content — those
@@ -332,16 +345,25 @@ def build_caps_server(
             coverage = str(meta.get("coverage", "")) if isinstance(meta, dict) else ""
             needs = meta.get("unresolved_needs") if isinstance(meta, dict) else None
             needs = [str(n)[:120] for n in needs][:5] if isinstance(needs, list) else []
+            state = str(meta.get("observation_state", "")) if isinstance(meta, dict) else ""
             if coverage in ("partial", "none") or needs:
                 if tracer is not None:
                     tracer.event("evidence.gap", cap.name, status="info",
-                                 coverage=coverage or "unreported", needs=needs)
+                                 coverage=coverage or "unreported", needs=needs,
+                                 state=state or "unreported")
                 text += ("\n\n[engine note] evidentiary yield: coverage="
                          + (coverage or "unreported")
+                         + (f"; observation_state={state}" if state else "")
                          + (f"; unresolved: {needs}" if needs else "")
                          + " — if the objective depends on what was NOT observed, call "
                            "report_evidence_gap instead of filling the gap from memory "
-                           "or plausibility.")
+                           "or plausibility."
+                         + ("" if state == "observed_absent" else
+                            " ABSENCE DISCIPLINE: this result does NOT establish that the "
+                            "property is absent from the target — only 'observed_absent' "
+                            "(the channel was adequately examined and the property is not "
+                            "there) can support an absence claim; say 'no X was detected', "
+                            "never 'there is no X'."))
             content: list[dict] = [{"type": "text", "text": text}]
             if produced and ws is not None:
                 from .. import config as config_mod
