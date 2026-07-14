@@ -36,13 +36,60 @@ _IMAGE_EXTS = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
                ".gif": "image/gif", ".webp": "image/webp"}
 
 
+def _encoded_len(raw_len: int) -> int:
+    return (raw_len * 4 + 2) // 3
+
+
+def _fit_image(data: bytes, mime: str, max_encoded: int):
+    """Fit an image under an ENCODED-size ceiling by recompressing and
+    downscaling (perception survives at lower resolution; a session killed by
+    an oversized frame does not). Returns (bytes, mime) or None when the image
+    cannot be made to fit (Pillow missing or floor reached)."""
+    if _encoded_len(len(data)) <= max_encoded:
+        return data, mime
+    try:
+        import io
+
+        from PIL import Image
+    except ImportError:
+        return None
+    try:
+        img = Image.open(io.BytesIO(data))
+        img.load()
+        if img.mode not in ("RGB", "L"):
+            img = img.convert("RGB")
+        quality = 80
+        for _ in range(16):
+            buf = io.BytesIO()
+            img.save(buf, "JPEG", quality=quality)
+            out = buf.getvalue()
+            if _encoded_len(len(out)) <= max_encoded:
+                return out, "image/jpeg"
+            if quality > 50:
+                quality -= 15
+            elif img.width > 480:
+                img = img.resize((max(480, int(img.width * 0.7)),
+                                  max(1, int(img.height * 0.7))))
+            else:
+                break
+    except Exception:  # noqa: BLE001 — a broken image must not kill the result
+        return None
+    return None
+
+
 def image_blocks(produced: list[str], workspace: Path,
-                 max_images: int, max_bytes: int) -> list[dict]:
+                 max_images: int, max_bytes: int,
+                 budget_bytes: int = 0) -> list[dict]:
     """MCP image content blocks for image files among a tool's outputs, in
-    production order, capped in count and per-file size."""
+    production order, capped in count, per-file size, and — decisively — in
+    TOTAL encoded size: the transport rejects messages over its frame limit,
+    so blocks that would overflow ``budget_bytes`` are downscaled to fit and
+    dropped only when they cannot be. Per-image caps alone proved fatal:
+    individually-legal images jointly exceeded the frame and killed sessions."""
     blocks: list[dict] = []
+    remaining = budget_bytes if budget_bytes > 0 else _encoded_len(max_bytes) * max_images
     for rel in produced:
-        if len(blocks) >= max_images:
+        if len(blocks) >= max_images or remaining < 512:
             break
         mime = _IMAGE_EXTS.get(Path(rel).suffix.lower())
         if not mime:
@@ -54,10 +101,28 @@ def image_blocks(produced: list[str], workspace: Path,
             continue
         if not data or len(data) > max_bytes:
             continue
-        blocks.append({"type": "image",
-                       "data": base64.b64encode(data).decode("ascii"),
-                       "mimeType": mime})
+        fitted = _fit_image(data, mime, remaining)
+        if fitted is None:
+            continue
+        raw, mime = fitted
+        b64 = base64.b64encode(raw).decode("ascii")
+        remaining -= len(b64) + 256
+        blocks.append({"type": "image", "data": b64, "mimeType": mime})
     return blocks
+
+
+def fit_result_text(text: str, budget: int) -> str:
+    """Bound a result's TEXT under the transport budget, keeping head and tail
+    (the tail carries the tool's machine-readable meta line). An unbounded
+    stdout is the same session-killer as an oversized image."""
+    if len(text) <= budget:
+        return text
+    keep = max(4096, budget - 200)
+    head, tail = keep * 2 // 3, keep // 3
+    return (text[:head]
+            + f"\n[…{len(text) - keep:,} chars omitted — the full result exceeded the "
+              "transport-safe size; consume the produced files instead of this preview…]\n"
+            + text[-tail:])
 
 
 def _env_value(v) -> str:
@@ -364,12 +429,17 @@ def build_caps_server(
                             "(the channel was adequately examined and the property is not "
                             "there) can support an absence claim; say 'no X was detected', "
                             "never 'there is no X'."))
+            from .. import config as config_mod
+
+            # TRANSPORT SAFETY: the whole result — text plus encoded images —
+            # must fit under the SDK frame limit or the session dies mid-call.
+            budget = config_mod.TRANSPORT_SAFE_RESULT_BYTES
+            text = fit_result_text(text, budget - 32768)
             content: list[dict] = [{"type": "text", "text": text}]
             if produced and ws is not None:
-                from .. import config as config_mod
-
                 imgs = image_blocks(produced, ws, config_mod.OBSERVATION_MAX_IMAGES,
-                                    config_mod.OBSERVATION_MAX_IMAGE_BYTES)
+                                    config_mod.OBSERVATION_MAX_IMAGE_BYTES,
+                                    budget_bytes=budget - len(text) - 4096)
                 if imgs:
                     content += imgs
                     if tracer is not None:

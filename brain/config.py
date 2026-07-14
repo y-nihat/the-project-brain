@@ -130,6 +130,18 @@ SANDBOX_MAX_OUTPUT_MB = int(os.environ.get("SANDBOX_MAX_OUTPUT_MB", "128"))
 OBSERVATION_MAX_IMAGES = int(os.environ.get("OBSERVATION_MAX_IMAGES", "3"))
 OBSERVATION_MAX_IMAGE_BYTES = int(os.environ.get("OBSERVATION_MAX_IMAGE_BYTES",
                                                  str(2 * 1024 * 1024)))
+# The Agent SDK's stdio transport rejects any single JSON message over 1 MiB —
+# a tool result assembled above that limit kills the WHOLE agent session
+# mid-call (observed: rendered-page images killed three stages including a
+# final review round). Every result — text plus encoded images — must fit
+# under this budget; images are recompressed/downscaled to fit, never allowed
+# to exceed it. Headroom covers the JSON envelope and string escaping.
+TRANSPORT_SAFE_RESULT_BYTES = int(os.environ.get("TRANSPORT_SAFE_RESULT_BYTES",
+                                                 "700000"))
+# Mid-run tool repairs triggered by an AGENT's defect report (a tool that runs
+# but is broken — crashes, wrong output shape). Each repair re-runs the
+# reporting stage once.
+TOOL_DEFECT_REPAIRS_PER_RUN = int(os.environ.get("TOOL_DEFECT_REPAIRS_PER_RUN", "2"))
 
 # Watchdogs for agent (LLM) sessions: abort when no SDK message arrives for
 # AGENT_STALL_TIMEOUT seconds, or when a session exceeds AGENT_TOTAL_TIMEOUT.

@@ -24,6 +24,7 @@ RUN pip install --no-cache-dir \
         python-dotenv \
         "opentelemetry-sdk>=1.20.0" \
         "opentelemetry-exporter-otlp-proto-http>=1.20.0" \
+        "pillow>=10.0.0" \
         pytest \
         pytest-asyncio
 
