@@ -5,6 +5,77 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
 [Semantic Versioning](https://semver.org/) — `0.x` while the core algorithm
 and behavior are still expected to change between releases.
 
+## [0.15.0] — 2026-07-14
+
+The round-survival and evidence-provisioning release, from the first
+five-task external campaign (unfamiliar domains, deterministic grading). No
+run overclaimed — the honesty gates held everywhere — but three of five runs
+shipped UNVERIFIED for reasons the engine itself caused: reviews correctly
+refused to approve while the engine failed to provision the evidence the
+approval needed or to survive its own infrastructure faults. One run died
+whole when a planner burned its turn budget on malformed tool arguments that
+were answered "plan recorded"; another re-attempted one failing approach
+three times under three freshly-named contracts.
+
+### Added
+- **Corpus manifest**: before each review round the engine materializes a
+  deterministic enumeration of the retained target-lineage evidence as a
+  citable workspace file, recorded as consuming those files (lineage:
+  `derived`). A negative claim scoped to the corpus ("no X exists in the
+  sources") can now cite real evidence — a complete enumeration IS the
+  observation that grounds within-corpus absence. The claims gate is
+  unchanged; a miscited absence claim still voids. The manifest is excluded
+  from the `target_evidence` metric (bookkeeping must not inflate it).
+- **Prior deliverable as evidence in revision runs**: deliverables are agent
+  text — never retained by a tool, so never in any workspace — which made
+  preserve-discipline criteria ("unchanged except…") structurally
+  unverifiable. A revision run now seeds the prior run's deliverable under
+  `prior/<run>/outputs/` and records it `target`-tier
+  (`evidence.record_designated`): the artifact under revision is a
+  designated source by construction. Non-revision continuity seeds do NOT
+  import it.
+- **Run-scoped, cross-contract failure memory**: authoring failures
+  (build/verify) append to a per-run log shown to every subsequent developer
+  session — per-name memory alone let an identical approach fail again under
+  every new name a replan invented. The persistence digest adds a
+  deterministic repeated-signature count (hex/digits normalized) so the
+  supervisor sees "seen 3x" instead of misreading repeats as distinct bugs.
+- **Delegated-work beacon** (`observability.activity`): research,
+  upstream-question sessions, sandbox runs and image builds mark an
+  in-flight window; the stall watchdog treats a session waiting on that work
+  as active instead of killing it mid-wait (observed: a developer killed at
+  180s while its own requested research was still running — the finished
+  research discarded with the cascade). Total session budgets are never
+  suspended, and the watchdog now parks the pending stream read across
+  tolerated waits instead of cancelling the underlying generator.
+
+### Fixed
+- **Frame-share result budgets**: the SDK's 1 MiB limit applies to the
+  MESSAGE, and one assistant turn's PARALLEL tool results ride a single
+  frame — two results each inside the old per-result budget summed past the
+  limit and killed a 1-round review session. Every per-result budget is now
+  the frame budget divided by `TRANSPORT_FRAME_SHARE` (default 3).
+- **Review round refunds**: a round that dies of infrastructure (an
+  exception, not a verdict) is retried without consuming the round budget,
+  bounded by `REVIEW_CRASH_RETRIES` (default 1). With a 1-round review, one
+  transport fault previously equaled review death and the draft shipped
+  unverified with its review never performed.
+- **Plan-emission repair and salvage**: `emit_plan` calls with no recognized
+  parameter get a corrective error naming the expected keys (previously
+  answered "plan recorded" — positive feedback for capturing nothing); a
+  lone unrecognized envelope key whose value contains the real payload is
+  deterministically unwrapped; and a validly captured plan now survives the
+  planner session's death instead of being discarded with the exception.
+  Planner sessions get 6 turns (was 4).
+- **Authoring contract — guarded zero-yield path**: tools must code
+  aggregations over possibly-empty collections defensively so genuine
+  emptiness reaches the honest `observed_absent`/`not_detected` exit instead
+  of crashing (observed: a crash on "nothing there" converted the most
+  decisive observation available into a fake malfunction, retried for half
+  the run). Review guidance now also directs numeric claims to be
+  cross-derived from structured source data before "uncontradicted" is
+  assertable, and absence-within-corpus claims to cite the manifest.
+
 ## [0.14.0] — 2026-07-14
 
 The transport-safety and anchored-deliverable release, from the first
