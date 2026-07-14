@@ -141,7 +141,11 @@ class SandboxManager:
                 info.mtime = int(time.time())
                 tar.addfile(info, io.BytesIO(data))
         fileobj.seek(0)
-        with self.tracer.span("image.build", tag, tag=tag):
+        from ..observability import activity
+
+        # A build is delegated work an agent session may be silently awaiting —
+        # the stall watchdog must not read that silence as a hang.
+        with activity.working(), self.tracer.span("image.build", tag, tag=tag):
             try:
                 self.client.images.build(
                     fileobj=fileobj,
@@ -185,8 +189,13 @@ class SandboxManager:
     ) -> RunResult:
         pol = policy or policy_mod.isolated()
         ttl = ttl if ttl is not None else pol.ttl_seconds
+        from ..observability import activity
 
-        with self.tracer.span(
+        # Sandbox runs execute inside an agent's tool call: the calling
+        # session's stream is silent the whole time. Mark the window so the
+        # stall watchdog knows waiting is not hanging (a run's ttl can exceed
+        # the stall timeout).
+        with activity.working(), self.tracer.span(
             "sandbox.run",
             capability or image,
             image=image,

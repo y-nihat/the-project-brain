@@ -196,6 +196,7 @@ async def acquire(
     example_input: Optional[dict] = None,
     research_fn=None,
     workspace=None,
+    failure_log: Optional[list] = None,
 ) -> Capability:
     """Acquire the capability for ``need_key`` (recipe if known, else author it).
 
@@ -203,7 +204,11 @@ async def acquire(
     ask, so the supervisor can equip the user first. ``example_input`` carries
     the CONCRETE instance values (a locator, a query) for verification only —
     the description stays an instance-neutral contract. ``research_fn`` gives the
-    developer agent a channel to request research when it lacks knowledge."""
+    developer agent a channel to request research when it lacks knowledge.
+    ``failure_log`` is the caller's RUN-scoped, cross-contract failure memory:
+    entries from earlier acquisitions this run are shown to the developer, and
+    this acquisition appends its own failures — per-name memory alone lets an
+    identical approach fail again under every new name a replan invents."""
     tracer = tracer or NullTracer()
     recipe = _RECIPES.get(need_key)
     if recipe is not None:
@@ -215,7 +220,7 @@ async def acquire(
         need_key, description or need_key, manager=manager, registry=registry, broker=broker,
         model=model, developer=developer, max_attempts=max_attempts, tracer=tracer,
         pre_interaction=pre_interaction, example_input=example_input, research_fn=research_fn,
-        workspace=workspace,
+        workspace=workspace, failure_log=failure_log,
     )
 
 
@@ -680,6 +685,7 @@ async def _author_capability(
     need_key, description, *, manager, registry, broker, model, developer, max_attempts, tracer,
     seed: Optional[dict] = None, repair_reason: Optional[str] = None, pre_interaction=None,
     example_input: Optional[dict] = None, research_fn=None, workspace=None,
+    failure_log: Optional[list] = None,
 ) -> Capability:
     dev = developer or make_developer_agent(model, tracer, research_fn=research_fn)
     mode = "repair" if seed else "author"
@@ -719,8 +725,22 @@ async def _author_capability(
                                     need=need_key, failure_class=last_class,
                                     attempts=len(history) or max_attempts, history=history)
 
+        # Run-scoped memory: earlier failures THIS RUN (any contract) ride into
+        # every authoring attempt — the observed alternative is a replan naming
+        # an equivalent capability afresh and the new developer repeating the
+        # exact approach that just failed, attempt after attempt.
+        log = failure_log if failure_log is not None else []
+
         for attempt in range(1, max_attempts + 1):
-            sub = await dev(need_key, task, previous, error)
+            prior_block = ""
+            if log:
+                prior_block = (
+                    "\n\nAPPROACHES THAT ALREADY FAILED THIS RUN (recorded across ALL "
+                    "tools/contracts — an equivalent approach under a new name fails "
+                    "identically; choose a genuinely DIFFERENT approach, or report the "
+                    "intrinsic blocker instead of resubmitting a variant of these):\n"
+                    + "\n".join(f"- {str(x)[:220]}" for x in log[-8:]))
+            sub = await dev(need_key, task + prior_block, previous, error)
             if not sub or not sub.get("program") or not sub.get("dockerfile"):
                 last_detail = "developer produced no usable submission"
                 last_class = "submission"
@@ -808,6 +828,7 @@ async def _author_capability(
                 last_detail = f"build failed: {tail}"
                 last_class = "packaging"
                 history.append(f"attempt {attempt}: packaging — {_error_tail(tail, 160)}")
+                log.append(f"'{need_key}' build [packaging]: {_error_tail(tail, 200)}")
                 error = f"The docker image BUILD failed. Error (tail of build log):\n{tail}"
                 previous = {"program": sub["program"], "dockerfile": sub["dockerfile"]}
                 continue
@@ -864,6 +885,7 @@ async def _author_capability(
                 "MISSING SOURCE LINEAGE", "UNRETAINED OBSERVATION", "IRRELEVANT-INPUT"))
                 else "implementation")
             history.append(f"attempt {attempt}: {last_class} — {_error_tail(detail, 160)}")
+            log.append(f"'{need_key}' verify [{last_class}]: {_error_tail(detail, 200)}")
             error = f"The image built, but VERIFICATION of the running tool failed:\n{detail}"
             previous = {"program": sub["program"], "dockerfile": sub["dockerfile"]}
 
@@ -1064,7 +1086,11 @@ _DEVELOPER_SYSTEM = (
     "section') is a SUCCESSFUL observation: exit 0, coverage='none', "
     "observation_state='observed_absent' ONLY when your examination genuinely covered the "
     "channel ('not_detected' otherwise), name it in `unresolved_needs`, and report what "
-    "WAS observed. "
+    "WAS observed. CODE THE ZERO-YIELD PATH DEFENSIVELY: any aggregation over a "
+    "possibly-empty collection (max/min/first/indexing, dividing by a count) must be "
+    "guarded so genuine emptiness reaches this honest exit instead of crashing — a tool "
+    "that crashes on 'nothing there' converts the most decisive observation it can make "
+    "into a fake malfunction, and it will be retried forever. "
     'Reserve {"error": ...} + non-zero exit for the tool itself failing to operate '
     "(crash, unreachable service, invalid input) — never for an honest empty yield.\n"
     "CHANNEL LINEAGE (hard rule): every output field and file must name the channel "

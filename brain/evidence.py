@@ -325,6 +325,37 @@ def inherit_records(run_dir: Path, seed_dir: Path, seed_id: str) -> int:
     return count
 
 
+def record_designated(run_dir: Path, capability: str, files: list[str],
+                      workspace: Optional[Path] = None,
+                      state: str = "observed_present") -> None:
+    """Record engine-provisioned files that are DESIGNATED SOURCES by
+    construction (tier stamped ``target``) — e.g. the prior run's deliverable
+    seeded into a revision run: the user's feedback designates that artifact
+    exactly as attaching a file designates it. Best-effort like all
+    provenance."""
+    try:
+        hashes = {}
+        if workspace is not None:
+            for f in files:
+                digest = _hash_file(Path(workspace) / str(f))
+                if digest:
+                    hashes[str(f)] = digest
+        with (Path(run_dir) / _LOG_NAME).open("a") as fh:
+            fh.write(json.dumps({
+                "cap": capability,
+                "files": [str(f) for f in files],
+                "source_refs": [],
+                "coverage": "full",
+                "inputs": [],
+                "state": state,
+                "role": "observation",
+                "sha256": hashes,
+                "tiers": {str(f): "target" for f in files},
+            }) + "\n")
+    except OSError:
+        pass
+
+
 def target_lineage(entries: list[EvidenceEntry]) -> list[EvidenceEntry]:
     """The entries that constitute evidence OF the designated source itself."""
     return [e for e in entries if e.tier in TARGET_TIERS]

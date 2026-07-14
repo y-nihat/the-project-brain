@@ -158,6 +158,16 @@ def _claims_gate(claims: list[dict], lineage) -> str:
     return ""
 
 
+def _failure_signature(text: str) -> str:
+    """Normalize an error detail so REPEATS of the same failure are countable
+    across attempts and across differently-named contracts: hex ids, numbers
+    and whitespace vary run to run; the failure shape does not."""
+    s = re.sub(r"[0-9a-f]{8,}", "<hex>", str(text or "").lower())
+    s = re.sub(r"\d+", "<n>", s)
+    s = re.sub(r"\s+", " ", s).strip()
+    return s[:160]
+
+
 def _stage_dict(s: StageSpec) -> dict:
     return {"id": s.id, "pattern": s.pattern, "role": s.role, "goal": s.goal,
             "capabilities": s.capabilities, "depends_on": s.depends_on,
@@ -628,6 +638,32 @@ class Orchestrator:
                 if inherited:
                     self.tracer.event("evidence.inherited", seed_run, status="info",
                                       records=inherited)
+            # A REVISION run's designated source includes the artifact under
+            # revision itself. Deliverables are agent text — never retained by
+            # a tool, so never in any workspace or ledger — which left
+            # preserve-discipline criteria ("unchanged except…") structurally
+            # unverifiable: the reviewer rightly refused to diff against
+            # narration and the run could not be approved. Seed the prior
+            # deliverable as a RETAINED, target-tier evidence file.
+            if getattr(plan, "revision", None):
+                prior_out = Path(config.RUNS_DIR) / seed_run / "outputs"
+                for name in ("DELIVERABLE.md", "ANSWER.md"):
+                    src = prior_out / name
+                    if not src.is_file():
+                        continue
+                    rel = f"prior/{seed_run}/outputs/{name}"
+                    dst = workspace / rel
+                    try:
+                        dst.parent.mkdir(parents=True, exist_ok=True)
+                        dst.write_bytes(src.read_bytes())
+                    except OSError:
+                        continue
+                    evidence_mod.record_designated(
+                        Path(config.RUNS_DIR) / self.session,
+                        "prior_deliverable", [rel], workspace=workspace)
+                    self.tracer.event("revision.deliverable_seeded", seed_run,
+                                      status="info", file=rel)
+                    break
 
         self._sessions = 0
         self._stages_by_id = {s.id: s for s in stages}
@@ -669,6 +705,7 @@ class Orchestrator:
         self._recoveries = 0            # bounded failure-driven strategy re-entries
         self._recovery_state = "not-needed"
         self._suppressed_caps = set()   # methods that failed this run; need new rationale
+        self._acq_failures = []         # run-scoped, cross-contract failure memory
         self._format_violations = []    # engine-measured count-criteria failures
         self._help_request = None       # set when the brain decides to stop and ask the user
         self._fix_notes = {}            # stage id -> accumulated fix-round lessons
@@ -914,6 +951,53 @@ class Orchestrator:
             stages=[s.id for s in revised.stages])
         return revised if revised.stages else plan
 
+    def _write_corpus_manifest(self, workspace: Path, entries) -> Optional[str]:
+        """Materialize the corpus enumeration as a CITABLE evidence file.
+
+        A negative claim scoped to a bounded corpus ('no X exists in the
+        sources') is groundable only by observation of the WHOLE corpus — and
+        that observation existed nowhere as a file, so a sound absence claim
+        citing 'the ledger lists exactly N files' was deterministically voided
+        as a miscitation and the run shipped unverified. The manifest is
+        deterministic engine output, recorded as consuming every
+        target-lineage file (lineage classifies it 'derived'); the claims
+        gate itself is unchanged. Returns the workspace-relative path, or
+        None when there is no target-lineage evidence to enumerate."""
+        lineage = [e for e in evidence_mod.target_lineage(entries)
+                   if not str(e.file).startswith("corpus_manifest/")]
+        if not lineage:
+            return None
+        rel = "corpus_manifest/manifest.md"
+        p = Path(workspace) / rel
+        lines = [
+            "# Corpus manifest — complete enumeration of retained target-lineage evidence",
+            "",
+            f"Engine-generated, deterministic. This run's designated-source corpus "
+            f"comprises exactly {len(lineage)} retained file(s); no other payload "
+            "from the designated sources exists in this run. An absence claim "
+            "scoped to this corpus may cite THIS file as its negative evidence.",
+            "",
+        ]
+        for e in lineage:
+            lines.append(f"- {e.file} (tier={e.tier}; via {e.capability}"
+                         + (f"; sha256={e.sha256}" if e.sha256 else "") + ")")
+        content = "\n".join(lines) + "\n"
+        try:
+            if p.is_file() and p.read_text() == content:
+                return rel      # fresh already — do not re-record provenance
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text(content)
+        except OSError:
+            return None
+        evidence_mod.record(Path(config.RUNS_DIR) / self.session, "corpus_manifest",
+                            [rel], [], "full",
+                            inputs=[e.file for e in lineage][:24],
+                            state="observed_present", role="observation",
+                            workspace=Path(workspace))
+        self.tracer.event("evidence.manifest", "corpus_manifest", status="info",
+                          enumerated=len(lineage))
+        return rel
+
     def _perceivable_artifacts(self, workspace: Path) -> tuple[list[str], list[str]]:
         """Files an audience will LOOK at: (renderable, images). Classified by
         the producing tool's DECLARED role in the provenance log — only
@@ -1110,7 +1194,7 @@ class Orchestrator:
             is_image = p.suffix.lower() in _IMAGE_EXTS
             imgs = image_blocks([str(p.relative_to(root))], root, 1,
                                 config.OBSERVATION_MAX_IMAGE_BYTES,
-                                budget_bytes=config.TRANSPORT_SAFE_RESULT_BYTES - 4096)
+                                budget_bytes=config.transport_result_budget() - 4096)
             self.tracer.event("agent.read_file", "workspace", status="info",
                               path=rel[:160], file_kind="image" if imgs else "text")
             if imgs:
@@ -1472,6 +1556,21 @@ class Orchestrator:
                          f"x{max(1, f.attempts)}: {f.detail[:200]}")
             for h in f.attempt_history[:3]:
                 lines.append(f"    · {h[:160]}")
+        # Deterministic repeat detection: the same error signature under
+        # different stage/tool names is the SAME approach failing — observed:
+        # a supervisor read three identical failures as 'distinct fixable
+        # bugs' because each rode in under a freshly-named contract.
+        sigs: dict[str, int] = {}
+        for entry in getattr(self, "_acq_failures", []) or []:
+            sig = _failure_signature(str(entry).split(": ", 1)[-1])
+            sigs[sig] = sigs.get(sig, 0) + 1
+        repeats = sorted(((n, s) for s, n in sigs.items() if n >= 2), reverse=True)
+        if repeats:
+            lines.append("\nREPEATED ERROR SIGNATURES (deterministic engine count "
+                         "across ALL tools/contracts this run — repetition without "
+                         "new information is a PLATEAU, not a set of distinct bugs):")
+            for n, s in repeats[:5]:
+                lines.append(f"- seen {n}x: {s}")
         inputs = self._input_files(self._run_ctx[2]) if self._run_ctx else []
         if inputs:
             lines.append("\nUSER-PROVIDED INPUT FILES (present and readable in the run "
@@ -1572,9 +1671,14 @@ class Orchestrator:
             "method_failures": [f"{f.stage_id}:{f.phase}/{f.failure_class}"
                                 for f in self._failures[:4]],
             # Certificate substance: how much retained evidence is OF the
-            # designated source (target lineage) vs testimony about it.
-            "target_evidence": len(evidence_mod.target_lineage(
-                evidence_mod.ledger(workspace, self._reader_dirs(), self._locators))),
+            # designated source (target lineage) vs testimony about it. The
+            # engine's own corpus manifest is bookkeeping ABOUT that evidence
+            # and must not inflate the count.
+            "target_evidence": len([
+                e for e in evidence_mod.target_lineage(
+                    evidence_mod.ledger(workspace, self._reader_dirs(),
+                                        self._locators))
+                if not str(e.file).startswith("corpus_manifest/")]),
         }
         self.tracer.event("run.dimensions", "run", status="info", **dims,
                           artifact_issues=issues[:6])
@@ -1886,8 +1990,19 @@ class Orchestrator:
             + "\n".join(f"- {c}" for c in self._criteria) if self._criteria else "")
         evidence_server = {"evidence": self._evidence_server(workspace)}
         evidence_tools = ["mcp__evidence__locate_evidence"]
+        # Round accounting: content verdicts spend the budget; an
+        # infrastructure-crashed round may be retried REVIEW_CRASH_RETRIES
+        # times without cost (observed: a transport fault consumed a 1-round
+        # review and an excellent draft shipped unverified, its review never
+        # actually performed).
+        rounds_budget = max(1, stage.rounds)
+        crash_retries = max(0, config.REVIEW_CRASH_RETRIES)
+        spent = 0
         try:
-            for rnd in range(1, max(1, stage.rounds) + 1):
+            for rnd in range(1, rounds_budget + crash_retries + 1):
+                if spent >= rounds_budget:
+                    break
+                spent += 1
                 # PERCEPTUAL REVIEW: if an audience will look at the artifact,
                 # the reviewer must look at it. Renderable formats get the
                 # render capability (authored on first use, like any tool).
@@ -1908,6 +2023,13 @@ class Orchestrator:
                 observed = _observed_artifacts(workspace)
                 ledger_entries = evidence_mod.ledger(workspace, self._reader_dirs(),
                                                      self._locators)
+                # Fresh corpus manifest each round (couriers may have retained
+                # more since the last one) — then re-ledger so the manifest is
+                # itself visible/citable this round.
+                manifest_rel = self._write_corpus_manifest(workspace, ledger_entries)
+                if manifest_rel:
+                    ledger_entries = evidence_mod.ledger(workspace, self._reader_dirs(),
+                                                         self._locators)
                 lineage_paths = [e.file for e in
                                  evidence_mod.target_lineage(ledger_entries)]
                 source = _source_evidence(workspace, self._reader_dirs(),
@@ -1974,6 +2096,10 @@ class Orchestrator:
                     + (degraded_note + "\n\n" if degraded_note else "")
                     + (crash_note + "\n\n" if crash_note else "")
                     + ledger_block + "\n\n"
+                    + (f"CORPUS MANIFEST — engine-generated complete enumeration of the "
+                       f"retained target-lineage evidence; the citable ground for a claim "
+                       f"that something is ABSENT from the sources: {manifest_rel}\n\n"
+                       if manifest_rel else "")
                     + (facts + "\n\n" if facts else "")
                     + perceptual_block
                     + (f"ORIGINAL SOURCE EVIDENCE (the user's actual inputs / raw extraction — the "
@@ -1995,7 +2121,11 @@ class Orchestrator:
                       "the original source evidence is UNSUPPORTED even though an upstream stage "
                       "asserted it — flag it and REVISE. Verify the observed artifact matches what "
                       "the draft claims about it (counts, length, described features must actually be "
-                      "present). SOURCE IDENTITY: the deliverable's subject/title/central themes must "
+                      "present). CROSS-DERIVE NUMERIC CLAIMS: when the sources' structured data can "
+                      "be combined into the same quantity a claim states (a rate times its period, a "
+                      "sum of parts, a count of records), COMPUTE it and compare — 'no source "
+                      "contradicts this figure' is assertable only after the derivable checks, and "
+                      "an unexplained mismatch is a discrepancy the deliverable must surface. SOURCE IDENTITY: the deliverable's subject/title/central themes must "
                       "match the ACTUAL source (check the source's real title and recurring terms); a "
                       "renamed source or themes/keywords absent from the source evidence (e.g. safety "
                       "framing imported from background knowledge) are fabrication -> REVISE. Content "
@@ -2037,10 +2167,12 @@ class Orchestrator:
                       "ledger file you actually opened or located supports the claim (cite "
                       "that file); an event asserted BETWEEN observations (motion, "
                       "transitions, causation bridging samples) is 'inferred', not direct; "
-                      "'negative' (an absence claim) requires observed_absent evidence — "
-                      "not_detected or observation_failed NEVER support absence, demand "
-                      "qualified wording instead; 'proxy' means only testimony about the "
-                      "target supports it. The engine deterministically checks this table: "
+                      "'negative' (an absence claim) requires observed_absent evidence OR — "
+                      "for absence WITHIN the designated corpus — a citation of the corpus "
+                      "manifest file, whose complete enumeration is the observation that "
+                      "grounds within-corpus absence; not_detected or observation_failed "
+                      "NEVER support absence, demand qualified wording instead; 'proxy' "
+                      "means only testimony about the target supports it. The engine deterministically checks this table: "
                       "an approval with unsupported claims, miscited lineage, or no "
                       "direct/derived support at all will be VOIDED."
                 )
@@ -2049,19 +2181,27 @@ class Orchestrator:
                     critique = await self._run_agent_with_reflection(
                         spec, caps, objective, {}, history, workspace, task_context=ctx,
                         extra_servers=evidence_server, extra_tools=evidence_tools)
-                except Exception as e:  # noqa: BLE001 — a crashed round costs ONE round,
-                    # never the whole review (observed: an oversized perception
-                    # result killed the final round's session and the draft
-                    # shipped UNVERIFIED with a precise defect list unapplied).
+                except Exception as e:  # noqa: BLE001 — a crashed round costs at most ONE
+                    # round, never the whole review (observed: an oversized
+                    # perception result killed the final round's session and the
+                    # draft shipped UNVERIFIED with a precise defect list
+                    # unapplied); the first crash(es) cost NOTHING — an
+                    # infrastructure death is not a content verdict.
                     err = f"{type(e).__name__}: {str(e)[:300]}"
+                    refunded = crash_retries > 0
+                    if refunded:
+                        crash_retries -= 1
+                        spent -= 1
                     self.tracer.event("review.round_failed", stage.id, status="failed",
-                                      round=rnd, error=err)
+                                      round=rnd, error=err, round_refunded=refunded)
                     record.append({"round": rnd, "verdict": "errored", "error": err})
                     self._review_verdicts.append("errored")
                     verdict = "errored"
                     crash_note = (
-                        f"NOTE: review round {rnd} CRASHED mid-session ({err}) and consumed "
-                        "one round. The usual cause is an oversized perception step — work "
+                        f"NOTE: review round {rnd} CRASHED mid-session ({err})"
+                        + (" — retried without consuming the round budget."
+                           if refunded else " and consumed one round.")
+                        + " The usual cause is an oversized perception step — work "
                         "economically this round: open ONE file per call, rely on the "
                         "engine-measured facts already in this context instead of "
                         "re-opening everything, and reach the verdict protocol early.")
@@ -2205,7 +2345,7 @@ class Orchestrator:
                                  "be grounded in it):\n" + fetched[:20000])
 
                 redo = self._redo.get(draft_id)
-                if redo is None or rnd >= stage.rounds:
+                if redo is None or spent >= rounds_budget:
                     break
                 try:
                     draft = await redo(critique + extra, draft)
@@ -2430,7 +2570,13 @@ class Orchestrator:
                               error=f"{type(e).__name__}: {str(e)[:160]}")
             return ("[research] could not be carried out (the research tool was unavailable). "
                     "Proceed with what you know or report a blocker.")
-        with self.tracer.span("research", spec.id, topic=key[:120]):
+        from .observability import activity
+
+        # Research runs INSIDE the requester's tool call — its session is
+        # silent throughout and must not be stall-killed for waiting
+        # (observed: a watchdog killed the requesting developer mid-research
+        # and the finished research was discarded with the cascade).
+        with activity.working(), self.tracer.span("research", spec.id, topic=key[:120]):
             findings = await self._run_agent_with_reflection(
                 spec, caps, objective, {}, history, workspace, task_context=ctx,
                 model=config.model_for("research"), team=False,
@@ -2458,8 +2604,13 @@ class Orchestrator:
         ctx = ("Your earlier output:\n---\n" + prev + "\n---\n\n"
                "Teammate's question: " + question +
                "\nAnswer strictly from your output and context; if you do not know, say so.")
-        return await self._run_agent_with_reflection(
-            spec, {}, objective, {}, history, workspace, task_context=ctx, team=False)
+        from .observability import activity
+
+        # Same delegated-work window as research: the ASKER's session is
+        # silent while this answer session runs.
+        with activity.working():
+            return await self._run_agent_with_reflection(
+                spec, {}, objective, {}, history, workspace, task_context=ctx, team=False)
 
     def _evidence_server(self, workspace: Path):
         """In-process MCP server giving verification-role agents deterministic,
@@ -2783,6 +2934,7 @@ class Orchestrator:
                         research_fn=self._research,
                         workspace=(self._run_ctx[2] if getattr(self, "_run_ctx", None)
                                    else None),
+                        failure_log=getattr(self, "_acq_failures", None),
                     )
                     caps[cap.name] = cap
         return caps

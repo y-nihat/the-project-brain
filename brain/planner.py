@@ -12,6 +12,7 @@ time from the manifest its upstream stage produced.
 """
 from __future__ import annotations
 
+import json
 from typing import Optional
 
 from .models import Plan, StageSpec
@@ -414,6 +415,64 @@ def _normalize_needs(raw) -> dict[str, dict]:
     return out
 
 
+# The top-level parameters emit_plan recognizes — the repair/feedback loop
+# below is keyed on these, so extend it when the schema grows.
+_PLAN_KEYS = ("stages", "success_criteria", "strategy_rationale",
+              "capability_needs", "direct_observation", "knowledge_needs",
+              "revision")
+
+
+def _unwrap_plan_args(args) -> tuple[dict, str]:
+    """Deterministic repair of a plan-emission argument envelope.
+
+    A model sometimes wraps the real payload under a single placeholder key
+    (observed: three calls carrying everything inside a literal
+    '$PARAMETER_NAME' argument, each answered 'plan recorded' — positive
+    feedback for an empty capture, then death by turn budget). When no
+    recognized parameter is present but a lone envelope value (dict, or a
+    JSON-parsable string) contains recognized keys, recover it. Returns
+    ``(recognized_args, repair_note)``; empty dict = nothing recognizable."""
+    args = dict(args or {})
+    if any(k in args for k in _PLAN_KEYS):
+        return args, ""
+    if len(args) == 1:
+        (key, val), = args.items()
+        if isinstance(val, str):
+            try:
+                val = json.loads(val)
+            except ValueError:
+                val = None
+        if isinstance(val, dict) and any(k in val for k in _PLAN_KEYS):
+            return val, f"payload unwrapped from envelope key {str(key)[:60]!r}"
+    return {}, ""
+
+
+_EMIT_REJECTION = (
+    "NOT RECORDED: no recognized parameter. Call emit_plan again with the real "
+    "parameter names at the TOP LEVEL of the tool arguments — "
+    f"{', '.join(_PLAN_KEYS)} — not wrapped inside a placeholder key."
+)
+
+
+def _make_emit_plan(captured: dict, tracer, name: str):
+    """The emit_plan tool body: capture EVERYTHING the model emitted —
+    cherry-picking keys here is how success_criteria got silently dropped
+    (#12) — but never return success for a capture of NOTHING; a malformed
+    call must get corrective feedback, not 'plan recorded'."""
+    async def emit_plan(args):
+        fixed, note = _unwrap_plan_args(args)
+        if not fixed:
+            tracer.event("plan.args_rejected", name, status="failed",
+                         keys=[str(k)[:60] for k in (args or {})][:8])
+            return {"content": [{"type": "text", "text": _EMIT_REJECTION}],
+                    "is_error": True}
+        if note:
+            tracer.event("plan.args_repaired", name, status="info", note=note)
+        captured.update(fixed)
+        return {"content": [{"type": "text", "text": "plan recorded"}]}
+    return emit_plan
+
+
 class Planner:
     def __init__(
         self,
@@ -440,13 +499,8 @@ class Planner:
 
         captured: dict = {}
 
-        @tool("emit_plan", "Emit the staged workflow as structured data.", _PLAN_SCHEMA)
-        async def emit_plan(args):
-            # Capture EVERYTHING the model emitted — cherry-picking keys here is
-            # how success_criteria got silently dropped (#12): emitted by the
-            # model, discarded by the engine, review ran criteria-blind.
-            captured.update(args or {})
-            return {"content": [{"type": "text", "text": "plan recorded"}]}
+        emit_plan = tool("emit_plan", "Emit the staged workflow as structured data.",
+                         _PLAN_SCHEMA)(_make_emit_plan(captured, self.tracer, "planner"))
 
         known_str = (
             "\n".join(f"  - {k}: {v}" for k, v in self.known.items())
@@ -458,7 +512,7 @@ class Planner:
             mcp_servers={"planner": server},
             allowed_tools=["mcp__planner__emit_plan"],
             model=self.model,
-            max_turns=4,
+            max_turns=6,
         )
 
         prompt = objective
@@ -476,7 +530,19 @@ class Planner:
             )
         if corrective:
             prompt += "\n\n" + corrective
-        await trace_query(self.tracer, "planner", prompt, options)
+        try:
+            await trace_query(self.tracer, "planner", prompt, options)
+        except Exception as e:  # noqa: BLE001 — salvage below or re-raise
+            # A VALIDLY EMITTED plan survives its session's death (observed: a
+            # turn-budget exception discarded a captured plan and the whole
+            # run failed with zero stages executed). The text-salvage path in
+            # trace_query cannot cover tool-captured payloads — this does.
+            if not normalize_stages(captured.get("stages", []))[0]:
+                raise
+            self.tracer.event("plan.salvaged", "planner", status="failed",
+                              error=f"{type(e).__name__}: {str(e)[:200]}",
+                              note="session died after a valid plan was emitted "
+                                   "— proceeding with the captured plan")
 
         stages, warnings = normalize_stages(captured.get("stages", []))
         for w in warnings:
@@ -519,10 +585,9 @@ class Planner:
 
         captured: dict = {}
 
-        @tool("emit_plan", "Emit the ADDITIONAL stages as structured data.", _PLAN_SCHEMA)
-        async def emit_plan(args):
-            captured.update(args or {})
-            return {"content": [{"type": "text", "text": "extension recorded"}]}
+        emit_plan = tool("emit_plan", "Emit the ADDITIONAL stages as structured data.",
+                         _PLAN_SCHEMA)(_make_emit_plan(captured, self.tracer,
+                                                       "planner.extend"))
 
         known_str = ("\n".join(f"  - {k}: {v}" for k, v in self.known.items())
                      if self.known else "  (none yet)")
@@ -532,7 +597,7 @@ class Planner:
             mcp_servers={"planner": server},
             allowed_tools=["mcp__planner__emit_plan"],
             model=self.model,
-            max_turns=4,
+            max_turns=6,
         )
         need_lines = "\n".join(
             f"- NEED: {g.get('need', '')}" + (f" (attempted: {g['attempted']})"
@@ -551,7 +616,17 @@ class Planner:
             "independent corroborating sources. If NO additional observation is "
             "feasible, emit an empty stages list."
         )
-        await trace_query(self.tracer, "planner.extend", prompt, options)
+        try:
+            await trace_query(self.tracer, "planner.extend", prompt, options)
+        except Exception as e:  # noqa: BLE001 — salvage a captured extension;
+            # an EMPTY extension is a valid calibrated stop, so only a capture
+            # with real stages justifies swallowing the session error.
+            if not normalize_stages(captured.get("stages", []) or [])[0]:
+                raise
+            self.tracer.event("plan.salvaged", "planner.extend", status="failed",
+                              error=f"{type(e).__name__}: {str(e)[:200]}",
+                              note="session died after a valid extension was "
+                                   "emitted — proceeding with the captured stages")
         raw = captured.get("stages", []) or []
         stages, warnings = normalize_stages(raw)
         for w in warnings:

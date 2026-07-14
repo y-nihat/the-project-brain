@@ -138,6 +138,19 @@ OBSERVATION_MAX_IMAGE_BYTES = int(os.environ.get("OBSERVATION_MAX_IMAGE_BYTES",
 # to exceed it. Headroom covers the JSON envelope and string escaping.
 TRANSPORT_SAFE_RESULT_BYTES = int(os.environ.get("TRANSPORT_SAFE_RESULT_BYTES",
                                                  "700000"))
+# The frame limit applies to the MESSAGE, and the CLI delivers all of one
+# assistant turn's PARALLEL tool results in a single message — results that
+# are individually under budget kill the session together (observed: a
+# rendered-page result plus a parallel image read, each in budget, summed
+# past the frame limit and crashed a review round). Every per-result budget
+# is therefore the frame budget divided by this expected share.
+TRANSPORT_FRAME_SHARE = max(1, int(os.environ.get("TRANSPORT_FRAME_SHARE", "3")))
+
+
+def transport_result_budget() -> int:
+    """Per-tool-result byte budget: the frame budget split across the results
+    that may share one SDK frame (parallel tool calls in a single turn)."""
+    return TRANSPORT_SAFE_RESULT_BYTES // TRANSPORT_FRAME_SHARE
 # Mid-run tool repairs triggered by an AGENT's defect report (a tool that runs
 # but is broken — crashes, wrong output shape). Each repair re-runs the
 # reporting stage once.
@@ -160,6 +173,11 @@ MAP_RETRY_FAILED_SHARDS = int(os.environ.get("MAP_RETRY_FAILED_SHARDS", "1"))
 TEAM_MAX_QUESTIONS = int(os.environ.get("TEAM_MAX_QUESTIONS", "3"))       # per session
 # The reviewer may demand missing evidence once; a courier session fetches it.
 REVIEW_EVIDENCE_FETCHES = int(os.environ.get("REVIEW_EVIDENCE_FETCHES", "1"))
+# A review round that dies of INFRASTRUCTURE (session crash — not a verdict)
+# may be retried this many times per review stage without consuming a round:
+# with a 1-round budget, one transport fault otherwise equals review death and
+# the draft ships unverified with its critique unwritten.
+REVIEW_CRASH_RETRIES = int(os.environ.get("REVIEW_CRASH_RETRIES", "1"))
 # Bounded mid-run loop re-entries: when agents report an unmet OBSERVATION need
 # (report_evidence_gap), the planner may EXTEND the running plan this many times.
 REPLANS_PER_RUN = int(os.environ.get("REPLANS_PER_RUN", "1"))

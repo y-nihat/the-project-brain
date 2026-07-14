@@ -388,6 +388,10 @@ async def _iter_with_watchdog(ait, stall_s: float, total_s: float, label: str):
     """
     start = time.monotonic()
     it = ait.__aiter__()
+    # The next-item future survives across timed waits: cancelling it on every
+    # timeout (wait_for-style) would kill the underlying generator, so a
+    # tolerated stall could never resume the stream.
+    pending: Optional[asyncio.Future] = None
     try:
         while True:
             elapsed = time.monotonic() - start
@@ -397,21 +401,35 @@ async def _iter_with_watchdog(ait, stall_s: float, total_s: float, label: str):
                     f"{label} exceeded its total session budget ({int(total_s)}s)"
                 )
             wait = min(stall_s, remaining)
-            try:
-                msg = await asyncio.wait_for(it.__anext__(), timeout=wait)
-            except asyncio.TimeoutError:
+            if pending is None:
+                pending = asyncio.ensure_future(it.__anext__())
+            done, _ = await asyncio.wait({pending}, timeout=wait)
+            if not done:
                 if wait < stall_s:  # the wait was budget-limited, not a stall
                     raise AgentStallError(
                         f"{label} exceeded its total session budget ({int(total_s)}s)"
-                    ) from None
+                    )
+                # WAITING IS NOT SILENCE: while delegated engine work
+                # (research, a sandbox run, an image build) is in flight — or
+                # just finished within this window — the quiet stream is a
+                # session waiting for its result, not a hung one. The total
+                # budget above still applies unconditionally.
+                from . import activity
+                if activity.in_flight() or activity.finished_within(wait):
+                    continue
                 raise AgentStallError(
                     f"{label}: no activity for {int(wait)}s "
                     f"(stall watchdog; ~{int(elapsed + wait)}s into the session)"
-                ) from None
+                )
+            task, pending = pending, None
+            try:
+                msg = task.result()
             except StopAsyncIteration:
                 return
             yield msg
     finally:
+        if pending is not None:
+            pending.cancel()
         aclose = getattr(it, "aclose", None)
         if aclose is not None:
             try:

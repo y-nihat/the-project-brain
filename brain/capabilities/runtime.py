@@ -432,9 +432,10 @@ def build_caps_server(
             from .. import config as config_mod
 
             # TRANSPORT SAFETY: the whole result — text plus encoded images —
-            # must fit under the SDK frame limit or the session dies mid-call.
-            budget = config_mod.TRANSPORT_SAFE_RESULT_BYTES
-            text = fit_result_text(text, budget - 32768)
+            # must fit under its SHARE of the SDK frame, because parallel tool
+            # results ride one frame and die together.
+            budget = config_mod.transport_result_budget()
+            text = fit_result_text(text, budget - 16384)
             content: list[dict] = [{"type": "text", "text": text}]
             if produced and ws is not None:
                 imgs = image_blocks(produced, ws, config_mod.OBSERVATION_MAX_IMAGES,
