@@ -849,9 +849,21 @@ class Orchestrator:
                     allowed=("proceed", "inform_user", "redo_stage"))
                 if d.action == "inform_user" and self.broker is not None:
                     self.broker.inform(d.message)
-                elif d.action == "redo_stage" and stage.id not in self._sup_redone:
+                elif d.action == "redo_stage":
                     redo = self._redo.get(stage.id)
-                    if redo is not None:
+                    if redo is None or stage.id in self._sup_redone:
+                        # A dropped executive directive must be a visible fact,
+                        # not a silent no-op: four runs shipped unverified with
+                        # the supervisor's redo order recorded and nothing in
+                        # the trace saying it could not be honored.
+                        self.tracer.event(
+                            "supervisor.redo_unavailable", stage.id, status="failed",
+                            reason=d.reason[:300],
+                            note=("stage was already redone once this run"
+                                  if stage.id in self._sup_redone else
+                                  f"no redo is registered for this stage "
+                                  f"(pattern '{stage.pattern}')"))
+                    else:
                         self._sup_redone.add(stage.id)
                         self.tracer.event("supervisor.redo", stage.id, status="info",
                                           guidance=d.guidance[:300], reason=d.reason)
