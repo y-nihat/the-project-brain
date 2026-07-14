@@ -221,6 +221,68 @@ def _seed_prior_workspace(runs_dir, session: str, seed_run: str, *, max_bytes: i
     return copied
 
 
+def _workspace_files(root: Path) -> list[str]:
+    """Every file the run holds, sorted, workspace-relative — `prior/` seeds
+    INCLUDED. Hiding seeded files from enumeration taught an agent its
+    workspace was empty while every file it needed sat under `prior/`."""
+    root = Path(root).resolve()
+    return sorted(str(x.relative_to(root)).replace("\\", "/")
+                  for x in root.rglob("*") if x.is_file())
+
+
+def _workspace_rollup(files: list[str], max_dirs: int = 24) -> list[str]:
+    """One line per directory: file count plus FIRST and LAST member names, so
+    a numbered sequence reveals its full range without enumerating every
+    member (a first-N-of-M cut hides exactly the far end an agent asks about)."""
+    groups: dict[str, list[str]] = {}
+    for f in files:
+        d, _, name = f.rpartition("/")
+        groups.setdefault(d, []).append(name)
+    lines: list[str] = []
+    for d in sorted(groups):
+        names = groups[d]
+        label = f"{d}/" if d else "(workspace root)"
+        if len(names) <= 3:
+            lines.append(f"- {label}: {', '.join(names)}")
+        else:
+            lines.append(f"- {label}: {len(names)} files, {names[0]} … {names[-1]}")
+    if len(lines) > max_dirs:
+        rest = len(lines) - max_dirs
+        lines = lines[:max_dirs] + [f"- (+{rest} more directories — use list_files)"]
+    return lines
+
+
+def _missing_file_error(root: Path, rel: str) -> str:
+    """The read_file miss message. It must CORRECT the agent, not mislead it:
+    nearest candidates for the requested name first (a wrong directory prefix
+    was the most common miss), then a rollup of what the run actually holds,
+    with truncation framed so it cannot ground an absence conclusion."""
+    import difflib
+
+    files = _workspace_files(Path(root))
+    if not files:
+        return (f"no such workspace file: {rel!r} — the workspace holds no "
+                "files at all yet.")
+    base = (rel or "").replace("\\", "/").rpartition("/")[2]
+    hint = ""
+    exact = [f for f in files if f.rpartition("/")[2] == base]
+    if exact:
+        hint = ("NEAREST MATCH — a file with exactly this name exists at: "
+                + ", ".join(exact[:8]) + ". ")
+    elif base:
+        names = sorted({f.rpartition("/")[2] for f in files})
+        close = set(difflib.get_close_matches(base, names, n=6, cutoff=0.6))
+        similar = [f for f in files if f.rpartition("/")[2] in close]
+        if similar:
+            hint = "Similarly named files exist: " + ", ".join(similar[:8]) + ". "
+    rollup = "\n".join(_workspace_rollup(files))
+    return (f"no such workspace file: {rel!r}. {hint}"
+            f"The workspace holds {len(files)} file(s), by directory "
+            "(counts with first … last names — a SUMMARY, not a full "
+            "enumeration; a name's absence from this message is NOT evidence "
+            "the file does not exist — enumerate with list_files):\n" + rollup)
+
+
 def _notes_block(notes: dict[str, str], limit: int) -> str:
     """Render worker notes for a prompt, hard-capped at `limit` chars."""
     parts: list[str] = []
@@ -1165,7 +1227,21 @@ class Orchestrator:
         async def read_file(args):
             return self._read_workspace(workspace, str(args.get("path", "")))
 
-        return create_sdk_mcp_server(name="workspace", version="1.0.0", tools=[read_file])
+        @tool("list_files",
+              "Enumerate the files the run holds (workspace-relative paths with sizes), "
+              "optionally filtered by a glob pattern (matched against the full path AND "
+              "the bare filename — e.g. '*.png', 'prior/*', '*frame_01*'). Returns the "
+              "total count and pages with an explicit offset when long. Use it to KNOW "
+              "what exists — never guess paths, and never conclude a file is absent "
+              "from a truncated listing or an error message.",
+              {"type": "object", "properties": {"pattern": {"type": "string"},
+                                                "offset": {"type": "integer"}}})
+        async def list_files(args):
+            return self._list_workspace(workspace, str(args.get("pattern", "") or ""),
+                                        int(args.get("offset", 0) or 0))
+
+        return create_sdk_mcp_server(name="workspace", version="1.0.0",
+                                     tools=[read_file, list_files])
 
     def _read_workspace(self, workspace: Path, rel: str) -> dict:
         """Image-aware workspace file read (the read_file tool body, split out so
@@ -1182,13 +1258,9 @@ class Orchestrator:
             rel = str(rel or "").strip().lstrip("/")
             p = (root / rel).resolve()
             if not str(p).startswith(str(root)) or not p.is_file():
-                files = [str(x.relative_to(root)) for x in sorted(root.rglob("*"))
-                         if x.is_file() and x.relative_to(root).parts[:1] != ("prior",)]
-                shown = files[:40]
-                more = f" (showing first 40 of {len(files)})" if len(files) > 40 else ""
-                return {"content": [{"type": "text", "text":
-                        f"no such workspace file: {rel!r}. Files that exist{more}: "
-                        f"{shown}"}], "is_error": True}
+                return {"content": [{"type": "text",
+                                     "text": _missing_file_error(root, rel)}],
+                        "is_error": True}
             from .capabilities.runtime import _IMAGE_EXTS
 
             is_image = p.suffix.lower() in _IMAGE_EXTS
@@ -1217,6 +1289,56 @@ class Orchestrator:
                     "report a blocker so the run can recover.")}], "is_error": True}
         more = f"\n[…{len(text) - 8000:,} more chars]" if len(text) > 8000 else ""
         return {"content": [{"type": "text", "text": f"[{rel}]\n{text[:8000]}{more}"}]}
+
+    def _list_workspace(self, workspace: Path, pattern: str = "",
+                        offset: int = 0, page_size: int = 200) -> dict:
+        """Deterministic, bounded workspace enumeration (the list_files tool
+        body, split out so it is directly testable). Paging is explicit and
+        truncation is labeled as truncation — a bounded listing silently read
+        as 'everything there is' was observed grounding a false absence
+        conclusion that cost a run its approval."""
+        import fnmatch
+
+        try:
+            root = Path(workspace).resolve()
+            files = _workspace_files(root)
+            if pattern:
+                files = [f for f in files
+                         if fnmatch.fnmatch(f, pattern)
+                         or fnmatch.fnmatch(f.rpartition("/")[2], pattern)]
+            total = len(files)
+            self.tracer.event("agent.list_files", "workspace", status="info",
+                              pattern=pattern[:120], total=total, offset=offset)
+            if total == 0:
+                return {"content": [{"type": "text", "text":
+                        (f"no files match pattern {pattern!r}" if pattern
+                         else "the workspace holds no files yet")}]}
+            offset = max(0, min(int(offset), total - 1))
+            page = files[offset:offset + page_size]
+            lines = []
+            for f in page:
+                try:
+                    lines.append(f"{f}\t{(root / f).stat().st_size:,} bytes")
+                except OSError:
+                    lines.append(f)
+            head = (f"{total} file(s)" + (f" matching {pattern!r}" if pattern else "")
+                    + (f"; showing {offset + 1}–{offset + len(page)}"
+                       if total > len(page) else ""))
+            tail = ""
+            if offset + len(page) < total:
+                tail = ("\nTRUNCATED at this page — files beyond it EXIST; absence "
+                        "from this page is not absence from the workspace. Next page: "
+                        f"list_files(offset={offset + len(page)}"
+                        + (f", pattern={pattern!r})" if pattern else ")"))
+            return {"content": [{"type": "text",
+                                 "text": head + ":\n" + "\n".join(lines) + tail}]}
+        except Exception as e:  # noqa: BLE001 — an engine bug must not become a retry loop
+            self.tracer.event("agent.list_files.error", "workspace", status="failed",
+                              error=f"{type(e).__name__}: {str(e)[:200]}")
+            return {"content": [{"type": "text", "text": (
+                    f"INTERNAL ERROR listing files ({type(e).__name__}). This is an "
+                    "engine fault, not a bad pattern — do NOT retry; report a blocker "
+                    "so the run can recover.")}], "is_error": True}
 
     async def _repair_artifacts(self, stage_id: str, outputs: dict, workspace: Path,
                                 out: str) -> str:
@@ -2673,9 +2795,12 @@ class Orchestrator:
         if channel is not None:
             allowed = allowed + TEAM_TOOLS
         # Multimodal perception is the agent's own ability: every real stage
-        # agent can open retained files, images shown AS images.
+        # agent can open retained files (images shown AS images) and can
+        # ENUMERATE what the run holds — guessed paths and truncated error
+        # listings were observed producing false "file is absent" beliefs.
         if channel is not None and workspace is not None:
-            allowed = allowed + ["mcp__workspace__read_file"]
+            allowed = allowed + ["mcp__workspace__read_file",
+                                 "mcp__workspace__list_files"]
         if extra_tools:
             allowed = allowed + list(extra_tools)
         session_secrets = getattr(self.broker, "secrets", {}) or {}
@@ -2684,6 +2809,25 @@ class Orchestrator:
         system_prompt = factory.agent_system_prompt(
             spec, allowed, team_stages=(completed if channel is not None else None),
             ready_credentials=ready or None)
+        # The run's file state is an engine-known FACT — hand it to the agent
+        # instead of letting it guess paths (a worker was observed declaring
+        # its workspace empty while every needed file sat under a seeded
+        # directory it had no way to discover).
+        inventory = None
+        if channel is not None and workspace is not None:
+            try:
+                files = _workspace_files(Path(workspace))
+                if files:
+                    inventory = (
+                        f"{len(files)} file(s), by directory (counts with "
+                        "first … last names):\n"
+                        + "\n".join(_workspace_rollup(files))
+                        + "\n(Snapshot from session start — files produced later are "
+                          "not listed. list_files enumerates the live state; read_file "
+                          "opens any path. Never infer a file's absence from this "
+                          "summary or from a truncated listing.)")
+            except OSError:
+                inventory = None
         repairs = 0
         out = ""
         while True:
@@ -2710,7 +2854,8 @@ class Orchestrator:
             out = await runner(
                 self.tracer, spec.id,
                 factory.agent_user_prompt(objective, spec, upstream, history=history,
-                                          task_context=task_context),
+                                          task_context=task_context,
+                                          workspace_inventory=inventory),
                 options,
             )
 

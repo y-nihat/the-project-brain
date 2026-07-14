@@ -107,7 +107,11 @@ def agent_system_prompt(spec: AgentSpec, allowed_tools: list[str],
             "read_file tool opens any file the run holds — images come back as images. "
             "Actually LOOK at them: to describe frames, screenshots, scans, rendered "
             "pages, or charts, open them with read_file and report what you SEE — never "
-            "what you assume, and never by building a separate vision model."
+            "what you assume, and never by building a separate vision model. "
+            "KNOW YOUR FILES: list_files enumerates what the run holds (glob-filterable, "
+            "paged, sizes). When a path fails to read, LIST before you conclude anything: "
+            "a failed read or a truncated listing proves only that one lookup missed — "
+            "it is never evidence the file does not exist."
         )
     else:
         lines.append(
@@ -156,22 +160,29 @@ def agent_user_prompt(
     upstream: dict[str, str],
     history: str | None = None,
     task_context: str | None = None,
+    workspace_inventory: str | None = None,
 ) -> str:
     """Build the per-agent task prompt, injecting upstream outputs and, when
     present, the brain's relevant prior-run history.
 
     ``task_context`` carries stage-pattern material the orchestrator computes at
     run time — a map worker's shard, a reducer's notes, a reviewer's evidence,
-    or critique a draft must address."""
+    or critique a draft must address. ``workspace_inventory`` is the engine's
+    own enumeration of the files the run holds — a fact, not a suggestion, so
+    agents never have to guess paths or infer file absence from error text."""
     parts = [
         f"Overall objective: {objective}",
         f"Your task ({spec.role}): {spec.goal}",
     ]
     if history:
         parts.append(
-            "\nPrior work by this system relevant to the objective (files listed there may "
-            "already be seeded under `prior/` in the current workspace):\n" + history
+            "\nPrior work by this system relevant to the objective (when its files were "
+            "carried over they appear under `prior/<run-id>/...` — trust the WORKSPACE "
+            "FILES inventory and list_files for actual paths, never a remembered or "
+            "assumed layout):\n" + history
         )
+    if workspace_inventory:
+        parts.append("\nWORKSPACE FILES (engine-enumerated): " + workspace_inventory)
     if upstream:
         parts.append("\nContext from upstream agents:")
         for dep, out in upstream.items():
