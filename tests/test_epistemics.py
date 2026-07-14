@@ -221,18 +221,25 @@ def test_registry_roundtrips_emits_and_syncs_manifest(tmp_path):
 
 # --- #12 regression: the REAL capture path keeps everything emitted -------------- #
 def test_plan_capture_keeps_all_emitted_keys():
-    # Mirrors the emit_plan handler's contract: captured.update(args) — the bug
-    # was cherry-picking 'stages' and silently dropping success_criteria.
+    # The emit_plan handler's contract: a call with any recognized parameter is
+    # captured WHOLE (cherry-picking 'stages' silently dropped success_criteria
+    # once) — extra keys ride along untouched.
+    from brain.observability import NullTracer
+    from brain.planner import _make_emit_plan
+
     captured: dict = {}
-    captured.update({"stages": [{"id": "s", "pattern": "single", "role": "r", "goal": "g"}],
-                     "success_criteria": ["claims traceable to the attached file"]})
-    assert captured.get("success_criteria") == ["claims traceable to the attached file"]
+    handler = _make_emit_plan(captured, NullTracer(), "planner")
+    args = {"stages": [{"id": "s", "pattern": "single", "role": "r", "goal": "g"}],
+            "success_criteria": ["claims traceable to the attached file"],
+            "future_key": "kept too"}
+    out = asyncio.run(handler(dict(args)))
+    assert not out.get("is_error")
+    assert captured == args
     import inspect
 
     from brain import planner as planner_mod
     src = inspect.getsource(planner_mod)
     assert 'captured["stages"] =' not in src   # the exact bug shape must not return
-    assert "captured.update(args" in src
 
 
 # --- #13 engine-appended grounding review ---------------------------------------- #
