@@ -5,6 +5,45 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
 [Semantic Versioning](https://semver.org/) — `0.x` while the core algorithm
 and behavior are still expected to change between releases.
 
+## [0.16.0] — 2026-07-15
+
+The see-your-own-file-state release, from the external campaign's second
+cycle (two runs converted to full successes on the v0.15.0 changes; honesty
+gates held everywhere). The cycle's remaining losses shared two structural
+causes. First, agents had NO way to enumerate the files their own run holds:
+one worker was told its workspace was empty while every file it needed sat
+under a seeded `prior/` directory the miss-message listing excluded, and
+another read a first-40-of-129 truncated listing as proof the files beyond
+it did not exist — a false absence observation manufactured by the engine's
+own error text. Second, planner-written reviews carrying `rounds: 1` (the
+planner contract read "fix cycles"; the executor counts verdict rounds)
+turned every first-round "revise" into instant exhaustion — three reviews
+wrote precise, actionable critiques that were never applied.
+
+### Added
+- **`list_files` workspace tool**: deterministic, glob-filterable (full
+  path and basename), paged enumeration of everything the run holds, with
+  sizes, a total count, and truncation labeled AS truncation pointing at
+  the next offset. Available to every stage agent alongside `read_file`.
+- **Workspace inventory in agent prompts**: each session's task prompt
+  carries an engine-computed rollup of the run's file state (per-directory
+  count with first/last names, `prior/` seeds included) — a fact handed to
+  the agent instead of a layout it must guess.
+
+### Changed
+- **read_file miss messages correct the agent instead of misleading it**:
+  nearest-match candidates for the requested name, `prior/` included, a
+  per-directory rollup that reveals the far end of long sequences, and
+  explicit framing that a bounded listing is never evidence of absence.
+- **Review stages floor at 2 verdict rounds** (`min(2, REVIEW_MAX_ROUNDS)`),
+  so a first-round revise verdict always gets one fix cycle and one
+  re-verdict; the planner contract now states the verdict-round semantics.
+  Acceptance unchanged — approval still requires an approved verdict.
+- **Unhonorable `redo_stage` directives are visible**: when the supervisor
+  orders a redo the engine cannot run (no redo registered — review stages
+  never have one — or already redone), it emits
+  `supervisor.redo_unavailable` instead of silently dropping the order.
+
 ## [0.15.0] — 2026-07-14
 
 The round-survival and evidence-provisioning release, from the first
