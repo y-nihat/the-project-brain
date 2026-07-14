@@ -247,13 +247,13 @@ def test_rendered_page_count_is_the_latest_render(tmp_path):
         assert orch._rendered_page_count(ws) is None
         evidence.record(ws.parent, _RENDER_NEED_KEY,
                         [f"{_RENDER_NEED_KEY}/p{i}.png" for i in range(3)],
-                        ["doc.odt"], "complete", role="derived")
+                        [], "complete", inputs=["doc.odt"], role="derived")
         assert orch._rendered_page_count(ws) == 3
         # A later render (after a fix) supersedes — stale page images from the
         # earlier render cannot skew the count.
         evidence.record(ws.parent, _RENDER_NEED_KEY,
                         [f"{_RENDER_NEED_KEY}/q{i}.png" for i in range(2)],
-                        ["doc.odt"], "complete", role="derived")
+                        [], "complete", inputs=["doc.odt"], role="derived")
         assert orch._rendered_page_count(ws) == 2
     finally:
         bb.close()
@@ -282,12 +282,14 @@ def test_review_renders_artifact_and_page_count_gates_approval(tmp_path, monkeyp
             # Reviewer rendered the artifact: THREE pages against 'exactly 2'.
             evidence.record(tmp_path / "runs" / "percep1", _RENDER_NEED_KEY,
                             [f"{_RENDER_NEED_KEY}/p{i}.png" for i in range(3)],
-                            ["make_deck/deck.odp"], "complete", role="derived")
+                            [], "complete", inputs=["make_deck/deck.odp"],
+                            role="derived")
             return "VERDICT: approved\nlooks fine"
         if name == "check.r2":
             evidence.record(tmp_path / "runs" / "percep1", _RENDER_NEED_KEY,
                             [f"{_RENDER_NEED_KEY}/q{i}.png" for i in range(2)],
-                            ["make_deck/deck.odp"], "complete", role="derived")
+                            [], "complete", inputs=["make_deck/deck.odp"],
+                            role="derived")
             return "VERDICT: approved\nnow it matches"
         raise AssertionError(name)
 
