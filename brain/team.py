@@ -113,10 +113,30 @@ class TeamChannel:
                 "clearly marking the gap; do NOT fill it from memory, prior runs' "
                 "narration, or plausibility.")
 
+    def tool_defect(self, tool: str, error: str, tried: Optional[str]) -> str:
+        """A tool the agent HOLDS is broken (crashes, wrong output, cannot
+        express what the task needs) — recorded as controller state so the
+        ENGINE can repair the capability and re-run the stage. Closes the
+        dead end where an agent declared 'inherent tool limitation', shipped a
+        degraded result, and the repair machinery — which exists — never
+        heard about the defect."""
+        record = {"agent": self.agent_id, "tool": str(tool)[:120],
+                  "error": str(error)[:600], "tried": (tried or "")[:400]}
+        self.tracer.event("team.tool_defect", self.agent_id, status="failed",
+                          tool=record["tool"], error=record["error"][:200])
+        if self.blackboard is not None:
+            existing = self.blackboard.get("tool.defects", []) or []
+            self.blackboard.put("tool.defects", existing + [record])
+        return ("tool defect recorded — the engine will attempt a repair and re-run "
+                "this stage with the fixed tool. Finish this attempt economically: "
+                "deliver what you can with the tools that work, state plainly what "
+                "the defective tool blocked, and do NOT paper over the gap with a "
+                "quality-degrading workaround unless the repair fails too.")
+
 
 TEAM_TOOLS = ["mcp__team__ask_upstream", "mcp__team__report_blocker",
               "mcp__team__report_evidence_gap", "mcp__team__progress_update",
-              "mcp__team__request_research"]
+              "mcp__team__request_research", "mcp__team__report_tool_defect"]
 
 
 def build_team_server(channel: TeamChannel):
@@ -199,7 +219,28 @@ def build_team_server(channel: TeamChannel):
                                           str(args.get("specifics", "")))
         return {"content": [{"type": "text", "text": text}], **({} if ok else {"is_error": True})}
 
+    @tool("report_tool_defect",
+          "One of YOUR tools is defective — it crashes, returns the wrong shape, or "
+          "cannot express something the task's quality bar requires (a missing "
+          "parameter/feature). Report it instead of accepting the limitation: the "
+          "engine can REPAIR tools and will re-run this stage with the fixed tool. "
+          "Do not use this for missing evidence (report_evidence_gap) or external "
+          "obstacles (report_blocker).",
+          {"type": "object",
+           "properties": {"tool": {"type": "string",
+                                   "description": "the defective tool's name"},
+                          "error": {"type": "string",
+                                    "description": "exact error text, or the concrete "
+                                                   "capability it lacks"},
+                          "tried": {"type": "string",
+                                    "description": "what you tried before reporting"}},
+           "required": ["tool", "error"]})
+    async def report_tool_defect(args):
+        text = channel.tool_defect(str(args.get("tool", "")), str(args.get("error", "")),
+                                   args.get("tried"))
+        return {"content": [{"type": "text", "text": text}]}
+
     return create_sdk_mcp_server(name="team", version="1.0.0",
                                  tools=[ask_upstream, report_blocker,
                                         report_evidence_gap, progress_update,
-                                        request_research])
+                                        request_research, report_tool_defect])

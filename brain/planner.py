@@ -41,7 +41,11 @@ _SYSTEM = (
     "— what a SUCCESSFUL run should yield (e.g. 'full-duration coverage of the visual "
     "content', 'the ordered event sequence', 'N records'). The engine compares this to what "
     "was actually observed; the gap tells it whether a retry is making progress or has "
-    "plateaued, so a good expectation makes the system persist intelligently.\n"
+    "plateaued, so a good expectation makes the system persist intelligently. "
+    "When the objective asks for a concrete deliverable (a document, artifact, dataset, "
+    "program), set `deliverable: true` on the ONE stage that PRODUCES it — never on an "
+    "inspection or verification stage. That stage's output is what ships to the user; "
+    "leaving it unmarked lets deliverable ownership drift to whatever stage runs last.\n"
     "Pattern semantics:\n"
     "- single: one agent, runs once.\n"
     "- map: you describe ONE worker; the system replicates it at run time over the items "
@@ -102,7 +106,11 @@ _SYSTEM = (
     "the successful observation half with it, and the compiled-in task policy makes the "
     "tool unusable for any other objective. Interpretation and final formatting belong to "
     "the STAGE AGENT, which composes atomic tools.\n"
-    "CAPABILITY NEEDS: for EVERY new capability key you name, add an entry to "
+    "CAPABILITY NEEDS: FIRST check the known-capabilities catalog — when an existing "
+    "tool's CONTRACT covers a need, you MUST reuse its exact name rather than declaring "
+    "a synonym (a run was observed authoring a second page renderer while the first sat "
+    "promoted and in use; every duplicate build burns budget and splits provenance). "
+    "Only for genuinely NEW capability keys, add an entry to "
     "`capability_needs` with: `key`; `contract` — an INSTANCE-NEUTRAL statement of the one "
     "operation (what it observes/does, its inputs, its outputs, and that partial/negative "
     "yield must be reported honestly) containing NO specific URLs/paths/identifiers, NO "
@@ -216,7 +224,9 @@ _EXTEND_ADDENDUM = (
     "EXTENSION MODE: a run of this workflow is ALREADY EXECUTING and has reported "
     "specific observation needs its current methods cannot establish. Do NOT re-plan "
     "completed work. Emit ONLY the additional stages that observe what is missing. "
-    "New stages may depend on the existing stage ids provided in the prompt.\n"
+    "New stages may depend on the existing stage ids provided in the prompt. If one of "
+    "your new stages now PRODUCES the user-requested deliverable (replacing a failed "
+    "producer), mark it `deliverable: true` — inspection/verification stages never are.\n"
     "FAILED METHODS ARE EVIDENCE: a need may arise because a method FAILED — its tool "
     "could not be built, or its stage died (the classified failure account is included "
     "with the need). Treat that as an observation about the strategy: do NOT re-select "
@@ -265,6 +275,10 @@ _PLAN_SCHEMA = {
                     "expectation": {"type": "string",
                                     "description": "what a SUCCESSFUL run of this stage should "
                                                    "yield (coverage, count, the property observed)"},
+                    "deliverable": {"type": "boolean",
+                                    "description": "true on the ONE stage whose output IS the "
+                                                   "user-requested deliverable (the producer — "
+                                                   "never an inspection/verification stage)"},
                 },
                 "required": ["id", "pattern", "role", "goal"],
             },

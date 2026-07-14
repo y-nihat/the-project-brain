@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+import json
 import re
 from pathlib import Path
 from typing import Awaitable, Callable, Optional
@@ -161,7 +162,7 @@ def _stage_dict(s: StageSpec) -> dict:
     return {"id": s.id, "pattern": s.pattern, "role": s.role, "goal": s.goal,
             "capabilities": s.capabilities, "depends_on": s.depends_on,
             "shard_size": s.shard_size, "shard_from": s.shard_from, "rounds": s.rounds,
-            "expectation": s.expectation}
+            "expectation": s.expectation, "deliverable": s.deliverable}
 
 
 def _persist_agent(runs_dir, session: str, spec: AgentSpec, system_prompt: str, output: str) -> None:
@@ -291,8 +292,22 @@ def artifact_issues(workspace: Path, *, definite_only: bool = False) -> list[str
     # cycles and regressed a reviewed artifact.
     invisible = re.compile(r"<(style|script)[^>]*>.*?</\1>|<!--.*?-->",
                            re.IGNORECASE | re.DOTALL)
+    # Hygiene applies to what an AUDIENCE will read: files whose producing
+    # tool declared a non-artifact role (observation/derived/validation) are
+    # evidence, not deliverables — a research agent's fetched pages were
+    # observed polluting the terminal classification with 'artifact defects'.
+    non_artifact: set[str] = set()
+    for rec in evidence_mod._records(root.parent):
+        role = str(rec.get("role") or "")
+        for f in rec.get("files") or []:
+            if role and role != "artifact":
+                non_artifact.add(str(f))
+            else:
+                non_artifact.discard(str(f))
     for p in sorted(root.rglob("*")):
         if not p.is_file() or (p.relative_to(root).parts[:1] in (("prior",), ("input",))):
+            continue
+        if str(p.relative_to(root)) in non_artifact:
             continue
         rel = p.relative_to(root)  # path names the PRODUCING capability's dir —
         try:                       # defects must be attributable to their producer
@@ -530,6 +545,8 @@ class Orchestrator:
         self._help_request: Optional[dict] = None
         self._knowledge_briefs = ""
         self._session_context: Optional[str] = None
+        self._fix_notes: dict[str, str] = {}
+        self._tool_repairs = 0
 
     # ------------------------------------------------------------------ #
     # run
@@ -565,6 +582,13 @@ class Orchestrator:
         has_user_evidence = (workspace / "input").is_dir() and \
             any((workspace / "input").iterdir())
         self._locators = evidence_mod.designated_locators(objective)
+        # Persisted so a FUTURE run seeding from this one can translate this
+        # run's evidence tiers (they are computed against THESE locators).
+        try:
+            (Path(config.RUNS_DIR) / self.session / "locators.json").write_text(
+                json.dumps(self._locators))
+        except OSError:
+            pass
         has_external_evidence = bool(self._locators)
         # Source-derived runs (designated sources exist: attached files or
         # remote locators) are held to the retained-evidence gate; depth-only
@@ -598,6 +622,12 @@ class Orchestrator:
             if seeded:
                 self.tracer.event("history.seeded", seed_run, status="info",
                                   files=seeded[:20], count=len(seeded))
+                inherited = evidence_mod.inherit_records(
+                    Path(config.RUNS_DIR) / self.session,
+                    Path(config.RUNS_DIR) / seed_run, seed_run)
+                if inherited:
+                    self.tracer.event("evidence.inherited", seed_run, status="info",
+                                      records=inherited)
 
         self._sessions = 0
         self._stages_by_id = {s.id: s for s in stages}
@@ -641,6 +671,8 @@ class Orchestrator:
         self._suppressed_caps = set()   # methods that failed this run; need new rationale
         self._format_violations = []    # engine-measured count-criteria failures
         self._help_request = None       # set when the brain decides to stop and ask the user
+        self._fix_notes = {}            # stage id -> accumulated fix-round lessons
+        self._tool_repairs = 0          # agent-reported tool-defect repairs spent
 
         last_done: Optional[str] = None
         failure_note: Optional[str] = None
@@ -740,7 +772,20 @@ class Orchestrator:
             # its own channel, and it is the fenced PAYLOAD when the stage emitted
             # one: "exactly one paragraph" must have a file that IS exactly one
             # paragraph, not preamble + paragraph + change log (observed V060).
-            payload = workflow.extract_deliverable(answer) or answer
+            # It comes from the artifact-of-record's OWNING stage — after
+            # extensions, the last completed deliverable-owning stage — never
+            # implicitly from whatever stage ran last (an inspection report
+            # was observed shipping as DELIVERABLE.md while the requested
+            # artifact sat in the workspace).
+            deliv_ids = workflow.deliverable_stage_ids(stages)
+            src = next((s.id for s in reversed(stages)
+                        if s.id in deliv_ids and s.id in outputs), last_done)
+            if src != last_done:
+                self.tracer.event("deliverable.source", src, status="info",
+                                  note=f"payload from '{src}', not terminal '{last_done}'")
+            payload = (workflow.extract_deliverable(outputs.get(src, ""))
+                       or workflow.extract_deliverable(answer)
+                       or outputs.get(src, "") or answer)
             deliverable_dir = Path(config.RUNS_DIR) / self.session / "outputs"
             deliverable_dir.mkdir(parents=True, exist_ok=True)
             (deliverable_dir / "DELIVERABLE.md").write_text(payload or "")
@@ -899,21 +944,57 @@ class Orchestrator:
                     images.append(rel)
         return renderable[:6], images[:12]
 
+    @staticmethod
+    def _is_render_record(rec: dict) -> bool:
+        """A render, identified by SHAPE not name (tools are contracts): the
+        call consumed a renderable-format file and produced images. Covers the
+        seeded render capability AND any equivalent tool a plan authored."""
+        from .capabilities.runtime import _IMAGE_EXTS
+
+        files = rec.get("files") or []
+        if not files or rec.get("cap") == "input":
+            return False
+        if not all(Path(str(f)).suffix.lower() in _IMAGE_EXTS for f in files):
+            return False
+        return any(Path(str(i)).suffix.lower() in _RENDERABLE_EXTS
+                   for i in rec.get("inputs") or [])
+
+    def _last_render(self, workspace: Path) -> tuple[Optional[int], Optional[dict]]:
+        records = evidence_mod._records(Path(workspace).parent)
+        idx, last = None, None
+        for i, rec in enumerate(records):
+            if self._is_render_record(rec):
+                idx, last = i, rec
+        return idx, last
+
     def _rendered_page_count(self, workspace: Path) -> Optional[int]:
         """Pages of the artifact's MOST RECENT render (from the provenance log,
         so stale images from an earlier render round can't skew the count).
         None when nothing has been rendered."""
         from .capabilities.runtime import _IMAGE_EXTS
 
-        records = evidence_mod._records(Path(workspace).parent)
-        last = None
-        for rec in records:
-            if rec.get("cap") == _RENDER_NEED_KEY and rec.get("files"):
-                last = rec
+        _, last = self._last_render(workspace)
         if last is None:
             return None
         return sum(1 for f in last["files"]
                    if Path(str(f)).suffix.lower() in _IMAGE_EXTS)
+
+    def _render_is_stale(self, workspace: Path) -> bool:
+        """True when the artifact was REGENERATED after its last render: the
+        page images depict a superseded draft, so neither a reviewer's eyes
+        nor the page-count gate may trust them (observed: round 2 critiqued
+        already-fixed defects from stale images, and the terminal page count
+        certified a deck that no longer existed)."""
+        records = evidence_mod._records(Path(workspace).parent)
+        idx, last = self._last_render(workspace)
+        if last is None:
+            return False
+        inputs = {str(i) for i in last.get("inputs") or []}
+        if not inputs:
+            return False    # unattributable render — cannot adjudicate staleness
+        return any(str(f) in inputs
+                   for rec in records[idx + 1:]
+                   for f in rec.get("files") or [])
 
     def _measured_checks(self, payload: str, workspace: Path) -> list:
         """All engine-measured count checks. When the artifact has been
@@ -926,7 +1007,11 @@ class Orchestrator:
         pages = self._rendered_page_count(workspace)
         if pages is not None:
             checks = [c for c in checks if c.unit not in ("slide", "page")]
-            checks += criteria_mod.artifact_page_check(self._criteria, pages)
+            # A STALE render measures a superseded draft — no measurement at
+            # all beats certifying the wrong artifact; the approval gate
+            # separately demands a re-render.
+            if not self._render_is_stale(workspace):
+                checks += criteria_mod.artifact_page_check(self._criteria, pages)
         return checks
 
     async def _resolve_knowledge_needs(self, plan, objective: str,
@@ -1020,13 +1105,24 @@ class Orchestrator:
                 return {"content": [{"type": "text", "text":
                         f"no such workspace file: {rel!r}. Files that exist{more}: "
                         f"{shown}"}], "is_error": True}
+            from .capabilities.runtime import _IMAGE_EXTS
+
+            is_image = p.suffix.lower() in _IMAGE_EXTS
             imgs = image_blocks([str(p.relative_to(root))], root, 1,
-                                config.OBSERVATION_MAX_IMAGE_BYTES)
+                                config.OBSERVATION_MAX_IMAGE_BYTES,
+                                budget_bytes=config.TRANSPORT_SAFE_RESULT_BYTES - 4096)
             self.tracer.event("agent.read_file", "workspace", status="info",
                               path=rel[:160], file_kind="image" if imgs else "text")
             if imgs:
                 return {"content": [{"type": "text",
                                      "text": f"[{rel} — shown as image]"}] + imgs}
+            if is_image:
+                # Never fall through to a text read of image bytes; say why the
+                # image cannot be shown instead of returning garbage.
+                return {"content": [{"type": "text", "text": (
+                        f"[{rel}] is an image ({p.stat().st_size:,} bytes) that could not "
+                        "be displayed within the transport-safe size budget. It exists and "
+                        "downstream tools can consume it by path.")}]}
             text = p.read_text(errors="ignore")
         except Exception as e:  # noqa: BLE001 — an engine bug must not become a retry loop
             self.tracer.event("agent.read_file.error", "workspace", status="failed",
@@ -1189,9 +1285,17 @@ class Orchestrator:
         pending = next((s for s in stages[from_idx:] if s.pattern == REVIEW), None)
         if pending is None:
             return
-        terminal = new_stages[-1].id
+        # The review's draft is the artifact-of-record, not blindly the last
+        # grafted stage: when any stage is MARKED deliverable, the newest such
+        # stage is the draft and everything else is evidence (observed: an
+        # inspection stage landed last, became 'the draft', and its report
+        # shipped as the deliverable while the artifact went unreviewed).
+        marked = [s for s in stages if getattr(s, "deliverable", False)
+                  and s.pattern != REVIEW]
+        terminal = marked[-1].id if marked else new_stages[-1].id
         evidence = [d for d in pending.depends_on if d != terminal] + \
-                   [s.id for s in new_stages[:-1] if s.id not in pending.depends_on]
+                   [s.id for s in new_stages if s.id != terminal
+                    and s.id not in pending.depends_on]
         pending.depends_on = [terminal] + evidence
         self.tracer.event("review.retargeted", pending.id, status="info",
                           draft=terminal, evidence=evidence)
@@ -1536,13 +1640,28 @@ class Orchestrator:
     async def _run_single(self, stage: StageSpec, stages: list[StageSpec],
                           outputs: dict[str, str], objective: str,
                           history: Optional[str], workspace: Path) -> str:
+        is_deliverable = stage.id in workflow.deliverable_stage_ids(
+            list(self._stages_by_id.values()))
+        # SELF-CHECK has teeth only if the producer can SEE its artifact the
+        # way the audience will: give deliverable stages the promoted render
+        # tool when one exists (reuse only — never stall production on
+        # authoring; observed: a fix agent 'verified' a binary deck with a
+        # text read and shipped the wrong slide count).
+        if (is_deliverable and self.registry is not None
+                and _RENDER_NEED_KEY not in stage.capabilities):
+            try:
+                have = self.registry.get(_RENDER_NEED_KEY)
+            except Exception:  # noqa: BLE001 — a registry lookup must never fail a stage
+                have = None
+            if have is not None and have.verified and not have.quarantined:
+                stage.capabilities.append(_RENDER_NEED_KEY)
         spec = AgentSpec(id=stage.id, role=stage.role, goal=stage.goal,
                          capabilities=stage.capabilities, depends_on=stage.depends_on)
         caps = await self._acquire_caps(spec)
         self._stage_caps[stage.id] = dict(caps)
         upstream = {d: outputs[d] for d in stage.depends_on if d in outputs}
         task_context = workflow.manifest_instruction() if workflow.feeds_a_map(stage.id, stages) else None
-        if stage.id in workflow.deliverable_stage_ids(list(self._stages_by_id.values())):
+        if is_deliverable:
             task_context = (task_context or "") + workflow.deliverable_instruction()
             if self._knowledge_briefs:
                 task_context += ("\n\nRESEARCHED QUALITY STANDARDS (the bar your "
@@ -1550,18 +1669,30 @@ class Orchestrator:
                                  + self._knowledge_briefs[:6000])
         out = await self._run_agent_with_reflection(
             spec, caps, objective, upstream, history, workspace, task_context=task_context)
+        out = await self._maybe_repair_and_rerun(stage, spec, caps, out, objective,
+                                                 upstream, history, workspace,
+                                                 task_context)
         self._stage_notes[stage.id] = {stage.id: out}
 
         async def redo(critique: str, prior: str = "", _spec=spec, _caps=caps,
                        _up=upstream, _ctx=task_context) -> str:
+            lessons = self._fix_notes.get(_spec.id, "")
             fix_ctx = ((_ctx or "")
                        + (f"\n\nYour previous draft:\n---\n{prior}\n---" if prior else "")
+                       + (("\n\nEARLIER FIX ROUNDS' WORKING NOTES (operational lessons "
+                           "about your tools and artifact — heed them, do not re-learn "
+                           "them by repeating the mistake):\n" + lessons[:2500])
+                          if lessons else "")
                        + "\n\nA reviewer requires these fixes — produce a corrected, "
                          "complete version of your result:\n" + critique)
             spec_fix = AgentSpec(id=f"{_spec.id}.fix", role=_spec.role, goal=_spec.goal,
                                  capabilities=_spec.capabilities, depends_on=_spec.depends_on)
-            return await self._run_agent_with_reflection(
+            fixed = await self._run_agent_with_reflection(
                 spec_fix, _caps, objective, _up, history, workspace, task_context=fix_ctx)
+            notes = workflow.working_notes(fixed)
+            if notes:
+                self._fix_notes[_spec.id] = (lessons + "\n---\n" + notes)[-4000:]
+            return fixed
 
         self._redo[stage.id] = redo
         return out
@@ -1699,17 +1830,28 @@ class Orchestrator:
                         "judged against — apply them):\n" + self._knowledge_briefs[:6000])
         out = await self._run_agent_with_reflection(
             spec, caps, objective, {}, history, workspace, task_context=ctx)
+        out = await self._maybe_repair_and_rerun(stage, spec, caps, out, objective,
+                                                 {}, history, workspace, ctx)
         self._stage_notes[stage.id] = {stage.id: out}
 
         async def redo(critique: str, prior: str = "", _spec=spec, _caps=caps, _ctx=ctx) -> str:
+            lessons = self._fix_notes.get(_spec.id, "")
             fix_ctx = (_ctx
                        + (f"\n\nYour previous draft:\n---\n{prior}\n---" if prior else "")
+                       + (("\n\nEARLIER FIX ROUNDS' WORKING NOTES (operational lessons "
+                           "about your tools and artifact — heed them, do not re-learn "
+                           "them by repeating the mistake):\n" + lessons[:2500])
+                          if lessons else "")
                        + "\n\nA reviewer requires these fixes — produce a corrected, "
                          "complete version of the deliverable:\n" + critique)
             spec_fix = AgentSpec(id=f"{_spec.id}.fix", role=_spec.role, goal=_spec.goal,
                                  capabilities=_spec.capabilities, depends_on=_spec.depends_on)
-            return await self._run_agent_with_reflection(
+            fixed = await self._run_agent_with_reflection(
                 spec_fix, _caps, objective, {}, history, workspace, task_context=fix_ctx)
+            notes = workflow.working_notes(fixed)
+            if notes:
+                self._fix_notes[_spec.id] = (lessons + "\n---\n" + notes)[-4000:]
+            return fixed
 
         self._redo[stage.id] = redo
         return out
@@ -1734,6 +1876,7 @@ class Orchestrator:
 
         limit = config.REDUCE_MAX_INPUT_CHARS
         verdict = "revise"
+        crash_note = ""           # carried into the NEXT round after a crash
         couriers_left = config.REVIEW_EVIDENCE_FETCHES
         self._review_ran = True
         record: list[dict] = []   # authoritative per-round verdict record
@@ -1792,10 +1935,18 @@ class Orchestrator:
                 checks = self._measured_checks(payload, workspace)
                 facts = criteria_mod.describe(checks)
                 if rendered_pages is not None:
-                    facts += (("\n" if facts else "")
-                              + f"ARTIFACT RENDER: the latest render produced "
-                                f"{rendered_pages} page image(s) — authoritative for "
-                                "slide/page counts.")
+                    if self._render_is_stale(workspace):
+                        facts += (("\n" if facts else "")
+                                  + "ARTIFACT RENDER IS STALE: the artifact was "
+                                    "REGENERATED after the last render — the page images "
+                                    "depict a SUPERSEDED draft. RE-RENDER before judging; "
+                                    "page counts are unmeasurable until then, and an "
+                                    "approval over stale perception will be voided.")
+                    else:
+                        facts += (("\n" if facts else "")
+                                  + f"ARTIFACT RENDER: the latest render produced "
+                                    f"{rendered_pages} page image(s) — authoritative for "
+                                    "slide/page counts.")
                 perceptual_block = ""
                 if renderable or image_artifacts:
                     perceptual_block = (
@@ -1821,6 +1972,7 @@ class Orchestrator:
                     "DRAFT under review (the deliverable payload):\n---\n" + payload
                     + "\n---" + payload_note + "\n\n"
                     + (degraded_note + "\n\n" if degraded_note else "")
+                    + (crash_note + "\n\n" if crash_note else "")
                     + ledger_block + "\n\n"
                     + (facts + "\n\n" if facts else "")
                     + perceptual_block
@@ -1892,9 +2044,28 @@ class Orchestrator:
                       "an approval with unsupported claims, miscited lineage, or no "
                       "direct/derived support at all will be VOIDED."
                 )
-                critique = await self._run_agent_with_reflection(
-                    spec, caps, objective, {}, history, workspace, task_context=ctx,
-                    extra_servers=evidence_server, extra_tools=evidence_tools)
+                crash_note = ""   # consumed — it is baked into this round's ctx
+                try:
+                    critique = await self._run_agent_with_reflection(
+                        spec, caps, objective, {}, history, workspace, task_context=ctx,
+                        extra_servers=evidence_server, extra_tools=evidence_tools)
+                except Exception as e:  # noqa: BLE001 — a crashed round costs ONE round,
+                    # never the whole review (observed: an oversized perception
+                    # result killed the final round's session and the draft
+                    # shipped UNVERIFIED with a precise defect list unapplied).
+                    err = f"{type(e).__name__}: {str(e)[:300]}"
+                    self.tracer.event("review.round_failed", stage.id, status="failed",
+                                      round=rnd, error=err)
+                    record.append({"round": rnd, "verdict": "errored", "error": err})
+                    self._review_verdicts.append("errored")
+                    verdict = "errored"
+                    crash_note = (
+                        f"NOTE: review round {rnd} CRASHED mid-session ({err}) and consumed "
+                        "one round. The usual cause is an oversized perception step — work "
+                        "economically this round: open ONE file per call, rely on the "
+                        "engine-measured facts already in this context instead of "
+                        "re-opening everything, and reach the verdict protocol early.")
+                    continue
                 m = _VERDICT_RE.search(critique or "")
                 # An UNPARSEABLE verdict is a protocol violation, not an
                 # approval: default to 'revise', never 'approved' (observed: a
@@ -1931,6 +2102,21 @@ class Orchestrator:
                                 "source itself")
                     elif self._source_derived:
                         void = _claims_gate(claims, evidence_mod.target_lineage(fresh))
+                    # PERCEPTION FRESHNESS: an approval must be grounded in
+                    # perception OF the artifact under judgment. Renderable
+                    # artifact + available render tool + no render, or a
+                    # render the artifact has since outrun => void.
+                    if not void and renderable:
+                        if self._render_is_stale(workspace):
+                            void = ("stale perception: the artifact was regenerated "
+                                    "AFTER the render this review relied on — "
+                                    "re-render and judge the CURRENT artifact")
+                        elif (self._rendered_page_count(workspace) is None
+                              and _RENDER_NEED_KEY in caps):
+                            void = ("unperceived artifact: an audience-facing "
+                                    "renderable artifact exists and the render tool is "
+                                    "available, but no render was ever made — render "
+                                    "it and LOOK at every page before approving")
                     if not void:
                         gate = criteria_mod.violations(self._measured_checks(
                             workflow.extract_deliverable(draft) or draft, workspace))
@@ -1989,13 +2175,19 @@ class Orchestrator:
                         workspace, self._reader_dirs(), self._locators)}
                     courier_caps, courier_note = \
                         await self._acquire_caps_best_effort(courier)
-                    with self.tracer.span("review.evidence", stage.id):
-                        fetched = await self._run_agent_with_reflection(
-                            courier, courier_caps, objective, {},
-                            history, workspace,
-                            task_context=(courier_note + "\n\n" if courier_note else "")
-                            + "The reviewer needs this evidence:\n" + critique,
-                            extra_servers=evidence_server, extra_tools=evidence_tools)
+                    try:
+                        with self.tracer.span("review.evidence", stage.id):
+                            fetched = await self._run_agent_with_reflection(
+                                courier, courier_caps, objective, {},
+                                history, workspace,
+                                task_context=(courier_note + "\n\n" if courier_note else "")
+                                + "The reviewer needs this evidence:\n" + critique,
+                                extra_servers=evidence_server, extra_tools=evidence_tools)
+                    except Exception as e:  # noqa: BLE001 — courier death ≠ review death
+                        self.tracer.event("courier.failed", stage.id, status="failed",
+                                          error=f"{type(e).__name__}: {str(e)[:200]}")
+                        fetched = (f"(the evidence courier crashed: {type(e).__name__}: "
+                                   f"{str(e)[:200]} — no new evidence was fetched)")
                     evidence[courier.id] = fetched
                     # Label the courier's text by the LEDGER's fact, not the
                     # courier's own account: the engine calling narration
@@ -2015,9 +2207,17 @@ class Orchestrator:
                 redo = self._redo.get(draft_id)
                 if redo is None or rnd >= stage.rounds:
                     break
-                draft = await redo(critique + extra, draft)
-                outputs[draft_id] = draft
-                self.tracer.event("review.revised", draft_id, status="info", round=rnd)
+                try:
+                    draft = await redo(critique + extra, draft)
+                    outputs[draft_id] = draft
+                    self.tracer.event("review.revised", draft_id, status="info", round=rnd)
+                except Exception as e:  # noqa: BLE001 — a crashed fix round leaves the
+                    # previous draft standing; the next round re-reviews it.
+                    self.tracer.event("review.revision_failed", draft_id, status="failed",
+                                      round=rnd, error=f"{type(e).__name__}: {str(e)[:200]}")
+                    crash_note = (f"NOTE: the fix round after round {rnd} CRASHED "
+                                  f"({type(e).__name__}) — the draft is UNCHANGED; your "
+                                  "previous critique was not applied.")
         except Exception as e:  # noqa: BLE001
             # The reviewer dying must not cost the user the draft: deliver it
             # unverified, honestly labeled.
@@ -2080,7 +2280,7 @@ class Orchestrator:
                           + (f" — {c['evidence']}" if c.get("evidence") else "")
                           for c in claims]
                 lines.append("")
-            lines += [r["critique"], ""]
+            lines += [r.get("critique") or r.get("error") or "", ""]
         agg.write_text("\n".join(lines))
 
     def _digest(self, pending: Optional[str] = None,
@@ -2398,6 +2598,61 @@ class Orchestrator:
 
         _persist_agent(config.RUNS_DIR, self.session, spec, system_prompt, out)
         return out
+
+    async def _maybe_repair_and_rerun(self, stage: StageSpec, spec: AgentSpec,
+                                      caps: dict, out: str, objective: str,
+                                      upstream: dict, history: Optional[str],
+                                      workspace: Path,
+                                      task_context: Optional[str]) -> str:
+        """Quality-driven tool evolution: an agent that REPORTED one of its
+        tools defective gets the tool repaired and ONE re-run with it. Closes
+        the dead end observed twice: a broken/inexpressive tool ended as a
+        blocker note and a silently degraded deliverable (charts dropped to
+        tables) while `repair_capability` sat unused — failure-driven repair
+        existed, agent-reported repair did not. Bounded per run."""
+        if self.blackboard is None or self.manager is None or self.registry is None:
+            return out
+        defects = self.blackboard.get("tool.defects", []) or []
+        mine = [d for d in defects
+                if str(d.get("agent", "")).startswith(stage.id)
+                and d.get("tool") in caps and not d.get("handled")]
+        if not mine:
+            return out
+        for d in mine:
+            d["handled"] = True
+        self.blackboard.put("tool.defects", defects)
+        if self._tool_repairs >= config.TOOL_DEFECT_REPAIRS_PER_RUN:
+            self.tracer.event("capability.defect_unrepaired", stage.id, status="failed",
+                              tool=mine[-1].get("tool", ""),
+                              note="tool-defect repair budget exhausted")
+            return out
+        d = mine[-1]
+        name = str(d.get("tool"))
+        self._tool_repairs += 1
+        reason = (f"agent-reported defect: {d.get('error', '')[:400]}"
+                  + (f" (tried: {d.get('tried', '')[:200]})" if d.get("tried") else ""))
+        try:
+            with self.tracer.span("capability.repair", name,
+                                  reason="agent-reported defect"):
+                new_cap = await acquire_repair(
+                    caps[name], reason, manager=self.manager, registry=self.registry,
+                    broker=self.broker, model=config.model_for("repair") or self.model,
+                    tracer=self.tracer, research_fn=self._research, workspace=workspace)
+            caps[name] = new_cap
+        except Exception as e:  # noqa: BLE001 — a failed repair leaves the honest fallback
+            self.tracer.event("capability.repair_failed", name, status="failed",
+                              error=f"{type(e).__name__}: {str(e)[:200]}")
+            return out
+        self.tracer.event("stage.rerun_after_repair", stage.id, status="info", tool=name)
+        note = ((task_context or "")
+                + f"\n\nENGINE NOTE: your tool '{name}' was REPAIRED in response to your "
+                  f"defect report ({d.get('error', '')[:200]}). Redo the task now USING "
+                  "the repaired tool — do not keep the degraded workaround. Your previous "
+                  "attempt, for reference:\n---\n" + out[:4000] + "\n---")
+        spec2 = AgentSpec(id=f"{stage.id}.retool", role=spec.role, goal=spec.goal,
+                          capabilities=spec.capabilities, depends_on=spec.depends_on)
+        return await self._run_agent_with_reflection(
+            spec2, caps, objective, upstream, history, workspace, task_context=note)
 
     async def _acquire_caps_best_effort(self, spec: AgentSpec) -> tuple[dict, str]:
         """Acquire what can be acquired, degrading per-capability instead of

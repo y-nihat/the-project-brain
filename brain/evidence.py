@@ -176,6 +176,15 @@ def ledger(workspace: Path, reader_dirs: tuple = (), locators: Optional[list] = 
         for p in sorted(inp.rglob("*")):
             if p.is_file():
                 lineage[str(p.relative_to(root))] = "target"
+    # INHERITED lineage: records seeded from a prior run carry each file's
+    # tier as computed IN THAT RUN (its locators are not this run's, so the
+    # tier cannot be recomputed here). Without this, a revision run's sources
+    # arrive provenance-naked and the run can never certify traceability to
+    # the original materials (observed: target_evidence: 0 on a revision).
+    for rec in records:
+        for f, t in (rec.get("tiers") or {}).items():
+            if t in ("target", "derived", "proxy"):
+                lineage.setdefault(str(f), t)
 
     changed = True
     while changed:
@@ -237,7 +246,83 @@ def ledger(workspace: Path, reader_dirs: tuple = (), locators: Optional[list] = 
                 role=str(rec.get("role") or ""),
                 inputs=[str(i) for i in rec.get("inputs") or []],
                 sha256=str((rec.get("sha256") or {}).get(rel, ""))))
+    # Inherited seeds WITH provenance are ledger entries too (a revision run's
+    # evidence base); unrecorded prior files stay invisible — seeds are not
+    # evidence unless their lineage came with them.
+    prior_dir = root / "prior"
+    if prior_dir.is_dir():
+        for p in sorted(prior_dir.rglob("*")):
+            if not p.is_file():
+                continue
+            rel = str(p.relative_to(root))
+            rec = prov.get(rel)
+            if rec is None:
+                continue
+            entries.append(EvidenceEntry(
+                file=rel, capability=str(rec.get("cap") or "prior"),
+                tier=lineage.get(rel, "retained"),
+                source_refs=rec.get("source_refs") or [],
+                coverage=str(rec.get("coverage") or ""),
+                state=str(rec.get("state") or ""),
+                role=str(rec.get("role") or ""),
+                inputs=[str(i) for i in rec.get("inputs") or []],
+                sha256=str((rec.get("sha256") or {}).get(rel, ""))))
     return entries
+
+
+def inherit_records(run_dir: Path, seed_dir: Path, seed_id: str) -> int:
+    """Carry a seeded prior run's PROVENANCE forward: its evidence records are
+    translated to this run's ``prior/<seed_id>/…`` paths, each file stamped
+    with the tier it had in the prior run (computed with the PRIOR run's
+    locators — this run cannot re-derive them). The prior run's user inputs
+    inherit ``target`` by construction. Best-effort like all provenance."""
+    seed_ws = Path(seed_dir) / "workspace"
+    try:
+        locs = json.loads((Path(seed_dir) / "locators.json").read_text())
+    except (OSError, ValueError):
+        locs = []
+    seed_entries = ledger(seed_ws, (), [str(x) for x in locs or []],
+                          run_dir=Path(seed_dir))
+    tier_of = {e.file: e.tier for e in seed_entries}
+    count = 0
+    try:
+        with (Path(run_dir) / _LOG_NAME).open("a") as fh:
+            for rec in _records(Path(seed_dir)):
+                files = [f"prior/{seed_id}/{f}" for f in rec.get("files") or []]
+                if not files:
+                    continue
+                tiers = {f"prior/{seed_id}/{f}": tier_of.get(str(f), "retained")
+                         for f in rec.get("files") or []}
+                fh.write(json.dumps({
+                    "cap": str(rec.get("cap") or ""),
+                    "files": files,
+                    "source_refs": rec.get("source_refs") or [],
+                    "coverage": str(rec.get("coverage") or ""),
+                    "inputs": [f"prior/{seed_id}/{i}" for i in rec.get("inputs") or []],
+                    "state": str(rec.get("state") or ""),
+                    "role": str(rec.get("role") or ""),
+                    "sha256": {f"prior/{seed_id}/{k}": v
+                               for k, v in (rec.get("sha256") or {}).items()},
+                    "tiers": tiers,
+                    "inherited_from": seed_id,
+                }) + "\n")
+                count += 1
+            inp = seed_ws / "input"
+            if inp.is_dir():
+                in_files = [f"prior/{seed_id}/{p.relative_to(seed_ws)}"
+                            for p in sorted(inp.rglob("*")) if p.is_file()]
+                if in_files:
+                    fh.write(json.dumps({
+                        "cap": "input", "files": in_files, "source_refs": [],
+                        "coverage": "", "inputs": [], "state": "", "role": "",
+                        "sha256": {},
+                        "tiers": {f: "target" for f in in_files},
+                        "inherited_from": seed_id,
+                    }) + "\n")
+                    count += 1
+    except OSError:
+        return count
+    return count
 
 
 def target_lineage(entries: list[EvidenceEntry]) -> list[EvidenceEntry]:

@@ -55,6 +55,16 @@ def deliverable_instruction() -> str:
     )
 
 
+def working_notes(text: str) -> str:
+    """Everything OUTSIDE the deliverable fence — the stage's operational
+    notes. Fix rounds record tool-behavior discoveries here ('this tool adds
+    a cover slide automatically'); a later fix round that never sees them
+    re-learns the lesson by repeating the mistake."""
+    if not text:
+        return ""
+    return _DELIVERABLE_RE.sub(" [deliverable payload omitted] ", text).strip()
+
+
 def extract_deliverable(text: str):
     """The LAST fenced deliverable block, or None when the stage did not emit
     one (caller falls back to the whole output — degraded, never lossy)."""
@@ -68,8 +78,15 @@ def extract_deliverable(text: str):
 
 
 def deliverable_stage_ids(stages: list["StageSpec"]) -> set[str]:
-    """Stages whose output IS the artifact-of-record: the draft each review
-    verifies (deps[0]) and the terminal stage of the graph."""
+    """Stages whose output IS the artifact-of-record. Planner-marked
+    (`deliverable: true`) stages are authoritative when present — ownership is
+    plan-level knowledge and must not drift to whatever stage lands last after
+    a mid-run extension (an INSPECTION REPORT was observed shipping as the
+    deliverable). Fallback: the draft each review verifies (deps[0]) and the
+    terminal stage of the graph."""
+    marked = {s.id for s in stages if getattr(s, "deliverable", False)}
+    if marked:
+        return marked
     ids = {s.depends_on[0] for s in stages if s.pattern == REVIEW and s.depends_on}
     ordered = topo_order(stages)
     for s in reversed(ordered):
@@ -159,6 +176,7 @@ def normalize_stages(raw: list) -> tuple[list[StageSpec], list[str]]:
             # on a review default to 2 (verdict -> one fix cycle -> re-verdict).
             rounds=int(r.get("rounds") or (2 if pattern == REVIEW else 1)),
             expectation=str(r.get("expectation") or ""),
+            deliverable=bool(r.get("deliverable")) and pattern != REVIEW,
         ))
 
     ids = {s.id for s in stages}

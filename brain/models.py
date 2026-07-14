@@ -98,6 +98,14 @@ class StageSpec:
     # 'surprise' signal the persistence judgment reads — are we getting closer,
     # or have approaches plateaued? Empty => fall back to the goal.
     expectation: str = ""
+    # This stage's output IS the user-requested artifact-of-record (the
+    # producer, never an inspector/verifier). Plan-level knowledge: mid-run
+    # extensions must not silently move deliverable ownership to whatever
+    # stage happens to land last — a run was observed shipping its INSPECTION
+    # REPORT as DELIVERABLE.md while the requested artifact sat in the
+    # workspace. When no stage is marked, the engine falls back to the
+    # graph-shape heuristic (review draft / terminal stage).
+    deliverable: bool = False
 
 
 @dataclass
