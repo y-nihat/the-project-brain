@@ -5,6 +5,76 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
 [Semantic Versioning](https://semver.org/) — `0.x` while the core algorithm
 and behavior are still expected to change between releases.
 
+## [0.14.0] — 2026-07-14
+
+The transport-safety and anchored-deliverable release, from the first
+session-revision trial. That run proved the v0.13 architecture end-to-end —
+feedback recognized as a revision, prior artifacts reused, mid-authoring
+library research, two persistence-judged recoveries, and a dramatically
+better artifact — yet still shipped UNVERIFIED: the SDK's 1 MiB transport
+frame killed three sessions including the final review round, the crashed
+review aborted holding an unapplied 3-defect diagnosis, an extension made the
+INSPECTOR the deliverable owner (its report shipped as DELIVERABLE.md), a
+broken tool ended as a silent quality downgrade, and the revision run's
+seeded sources carried no lineage (target_evidence: 0).
+
+### Added
+- **Agent-reported tool defects route to repair**: a new `report_tool_defect`
+  team tool records "my tool crashes / cannot express what quality requires"
+  as controller state; the engine repairs the capability (existing
+  `repair_capability`, research-assisted) and re-runs the reporting stage
+  once with the fixed tool — bounded by `TOOL_DEFECT_REPAIRS_PER_RUN`.
+  Failure-driven repair existed; quality-driven repair did not (observed
+  twice: charts silently degraded to tables/bullets behind a blocker note).
+- **Deliverable ownership is plan-level state**: stages carry
+  `deliverable: true` (the producer, never an inspector); planner-marked
+  ownership overrides the graph-tail heuristic in `deliverable_stage_ids`,
+  extension retargeting keeps the OWNER as the review's draft (new stages
+  join as evidence), and DELIVERABLE.md ships from the last completed owning
+  stage — never implicitly from whatever stage ran last.
+- **Seeded lineage inheritance**: each run persists its designated locators;
+  seeding a prior run now translates its provenance records to
+  `prior/<run_id>/…` paths with each file's tier as computed IN THAT RUN
+  (prior user inputs stay `target`), the ledger honors inherited tiers and
+  lists seeded evidence, and lineage propagates through them — a revision
+  can finally certify traceability to the original materials.
+- **Fix rounds carry lessons forward**: a fix round's working notes
+  (tool-behavior discoveries) are accumulated per stage and shown to later
+  fix rounds — the auto-added-cover-slide lesson was learned and lost across
+  sessions, and the trap re-fired.
+- **Producers get the reviewer's eyes**: deliverable stages reuse the
+  promoted render capability when one exists (reuse only, never an authoring
+  stall), so the self-check can actually LOOK at a binary artifact.
+
+### Fixed
+- **Transport-safe tool results**: every result — text plus encoded images —
+  is now assembled under `TRANSPORT_SAFE_RESULT_BYTES` (the SDK stdio frame
+  rejects messages over 1 MiB and kills the whole session). Oversized images
+  are recompressed/downscaled to fit (Pillow), unbounded stdout is head/tail
+  clipped with the meta line preserved, cumulative image budgets replace
+  per-image-only caps, and `read_file` never falls through to a text read of
+  image bytes. Observed: rendered-page results killed three stages including
+  a final review round.
+- **A crashed review round degrades instead of aborting the review**: the
+  round is recorded as `errored`, consumes one round, and the next round
+  proceeds with guidance to work economically; courier and fix-round crashes
+  likewise leave the draft standing. Observed: one crash shipped the draft
+  UNVERIFIED with a precise defect list never applied.
+- **Perception freshness is gated**: renders are recognized by SHAPE
+  (images produced from a renderable input — any tool, any name); a render
+  outrun by artifact regeneration is stale — stale page counts measure
+  nothing, the reviewer is told to re-render, and approvals over stale or
+  absent perception (with the render tool available) are VOIDED. Observed: a
+  review round critiqued a superseded draft from stale images while the
+  terminal gate certified a slide count the delivered artifact violated.
+- **Artifact hygiene is role-scoped**: files whose producing tool declared a
+  non-artifact role (observation/derived/validation) are exempt from
+  deliverable-hygiene scanning — a research agent's fetched pages were
+  polluting terminal classification with "artifact defects".
+- **Capability dedup guidance**: the planner must reuse an existing tool
+  whose contract covers a need instead of declaring a synonym (a second page
+  renderer was authored while the first sat promoted and in use).
+
 ## [0.13.1] — 2026-07-13
 
 ### Fixed
