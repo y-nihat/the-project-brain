@@ -255,11 +255,15 @@ def test_read_file_works_with_a_real_tracer(tmp_path):
         res = orch._read_workspace(ws, "f/frame.png")
         assert not res.get("is_error"), res
         assert any(b.get("type") == "image" for b in res["content"])
-        # A capped listing says "first 40 of N", never implying only 40 exist.
+        # The miss message summarizes what exists (count + first … last) and
+        # says outright that it is not absence evidence — a "first 40 of N"
+        # cut was observed being read as "only 40 exist" (v0.16).
         for i in range(45):
             (ws / "f" / f"g{i:03d}.txt").write_text("x")
         miss = orch._read_workspace(ws, "nope.png")
-        assert miss.get("is_error") and "showing first 40 of" in miss["content"][0]["text"]
+        text = miss["content"][0]["text"]
+        assert miss.get("is_error") and "46 file(s)" in text
+        assert "NOT evidence" in text and "g044.txt" in text
     finally:
         tracer.close()
 
