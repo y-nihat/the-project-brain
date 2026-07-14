@@ -201,7 +201,15 @@ def normalize_stages(raw: list) -> tuple[list[StageSpec], list[str]]:
                 s.shard_from = s.depends_on[0] if s.depends_on else None
             if s.shard_size <= 0:
                 s.shard_size = config.MAP_DEFAULT_SHARD_SIZE
-        s.rounds = max(1, min(s.rounds, config.REVIEW_MAX_ROUNDS))
+        # A review's round budget must let it ACT on its own first verdict:
+        # verdict + one fix cycle + re-verdict needs 2 rounds, and an explicit
+        # planner `rounds: 1` (its contract reads as "fix cycles", off by one
+        # from these verdict rounds) was observed turning every first-round
+        # "revise" into instant exhaustion — the critique written, never
+        # applied, the run dead unverified. The floor guarantees capacity,
+        # not acceptance: approval still requires an approved verdict.
+        floor = min(2, config.REVIEW_MAX_ROUNDS) if s.pattern == REVIEW else 1
+        s.rounds = max(floor, min(s.rounds, config.REVIEW_MAX_ROUNDS))
 
     return stages, warnings
 
