@@ -66,6 +66,8 @@ def _repair_orch(tmp_path, tracer, defects, reran):
     o.model = None
     o._research = None
     o._tool_repairs = 0
+    o._insufficient = {}
+    o._repaired_caps = set()
 
     async def rerun(spec, caps, objective, upstream, history, workspace,
                     task_context=None, **_kw):
