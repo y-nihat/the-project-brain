@@ -272,3 +272,73 @@ def test_later_rounds_receive_the_prior_verdict_record(tmp_path, monkeypatch):
     assert "tighten the intro" in r2          # what round 1 demanded
     assert "REVIEW CONTINUITY" in r2
     assert "SETTLED" in r2
+
+
+# --- owner-review amendments on top of the adopted v0.19 proposals ------------------ #
+def test_referenced_siblings_are_never_superseded(tmp_path, monkeypatch):
+    """A deliverable may legitimately be MANY files the payload names
+    (chapters, parts) that share a dedup family; only UNREFERENCED same-family
+    iterations are debris. Labeling a referenced part 'superseded working
+    draft' would tell the reviewer to ignore shipped content."""
+    monkeypatch.setattr(config, "RUNS_DIR", tmp_path / "runs")
+    run = tmp_path / "runs" / "multi1"
+    ws = run / "workspace"
+    (ws / "write_md").mkdir(parents=True)
+    for name in ("part.md", "part-2.md", "part-3.md"):
+        (ws / "write_md" / name).write_text("## s\n\nbody")
+        evidence.record(run, "write_md", [f"write_md/{name}"], [], "complete",
+                        role="artifact", workspace=ws)
+    orch = object.__new__(Orchestrator)
+    orch.tracer = NullTracer()
+    payload = "The deliverable is write_md/part.md plus write_md/part-3.md."
+    chosen, superseded = orch._artifact_of_record(payload, ws)
+    assert chosen == "write_md/part-3.md"
+    assert superseded == ["write_md/part-2.md"]   # referenced part.md is NOT debris
+
+
+def test_fix_round_prompt_propagates_changed_facts(tmp_path, monkeypatch):
+    """The reviser preserved a stale derived statement verbatim under the
+    minimal-edit rule while its premise changed — propagation is part of the
+    fix, not of the carry-over, and the prompt must say so."""
+    monkeypatch.setattr(config, "RUNS_DIR", tmp_path / "runs")
+    prompts: dict[str, str] = {}
+    seen = {"n": 0}
+
+    async def runner(_t, name, prompt, options):
+        prompts[name] = prompt
+        if name.startswith("check.r"):
+            seen["n"] += 1
+            return ("VERDICT: revise\n1. update the derived figure"
+                    if seen["n"] == 1 else "VERDICT: approved\nok")
+        return "```deliverable\nthe work\n```"
+
+    planner = StubPlanner(
+        [StageSpec(id="draft", pattern="single", role="D", goal="write",
+                   deliverable=True),
+         StageSpec(id="check", pattern="review", role="C", goal="verify",
+                   depends_on=["draft"], rounds=2)])
+    bb = Blackboard(tmp_path / "ff.db", "factprop1")
+    orch = Orchestrator(session="factprop1", manager=None, ledger=None,
+                        registry=None, blackboard=bb, broker=None,
+                        planner=planner, resolver=None, session_runner=runner,
+                        tracer=NullTracer())
+    try:
+        asyncio.run(orch.run("write the thing"))
+    finally:
+        bb.close()
+    assert "A changed FACT propagates" in prompts.get("draft.fix", "")
+
+
+def test_agent_prompt_names_the_defect_channel():
+    from brain import factory
+    from brain.models import AgentSpec
+    text = factory.agent_system_prompt(
+        AgentSpec(id="a", role="R", goal="g", capabilities=[]),
+        ["mcp__caps__t"], team_stages=["s1"])
+    assert "report_tool_defect" in text
+    assert "insufficient tool" in text
+
+
+def test_planner_revision_scope_propagates_changed_facts():
+    from brain import planner as planner_mod
+    assert "SCOPE OF A CHANGED FACT" in planner_mod._SYSTEM
