@@ -149,6 +149,17 @@ def agent_system_prompt(spec: AgentSpec, allowed_tools: list[str],
         "title. Describe your design in YOUR OWN output; keep it out of the artifact's text."
     )
     lines.append(
+        "CLAIM STRENGTH MUST MATCH EVIDENCE STRENGTH. COVERAGE CLAIMS: before asserting "
+        "'every/all/no X' (every discrepancy, all items, nothing missing), perform and "
+        "STATE the systematic sweep that grounds it — what space you enumerated and what "
+        "check you applied to each member; a list of found examples never supports "
+        "'every', and where sources hold comparable quantities (a rate and its period, "
+        "parts and their total), COMPUTE the comparison rather than declaring items "
+        "unrelated. PRECISION DISCIPLINE: state values at the precision your evidence "
+        "actually carries — a figure, timestamp, or measurement more precise than any "
+        "retained observation is fabrication however plausible; round or qualify instead."
+    )
+    lines.append(
         "SOURCE ANCHORING: when working from a provided document, anchor on what the SOURCE "
         "actually contains — its real title and its recurring terms. Do NOT import background "
         "associations you happen to know about the subject or its publisher: if a concept "
