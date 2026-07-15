@@ -5,6 +5,44 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
 [Semantic Versioning](https://semver.org/) — `0.x` while the core algorithm
 and behavior are still expected to change between releases.
 
+## [0.19.0] — 2026-07-15
+
+The defect-repair reach + review-context release, from campaign
+c20260715-0608 cycle 2 (the first cycle run on v0.18.1). The cycle's
+headline: both remaining failures were the engine withholding from one of
+its own mechanisms information it already held. A run with fully correct
+analysis died fighting its report tool while the worker's two formal
+defect reports — the exact signal the repair machinery was built for —
+matched nothing, because the repair pass only listened after the initial
+stage session and compared the reporter's MCP display name against bare
+capability keys. And a session revision whose final draft the round-3
+reviewer itself called criteria-clean shipped unverified because the
+reviewer, never told which file the engine designates and ships, treated
+the dedup siblings every fix round necessarily leaves behind as
+"ambiguity" and ordered deletions no session can perform — after round 2
+had already burned a round ordering the exact reversal of what round 1
+demanded, each round being a fresh session with no memory of the last.
+
+### Fixed
+- **Tool-defect repair reach**: both redo closures run the agent-reported
+  defect repair pass after fix sessions, and `_reported_cap` normalizes
+  the MCP display form (`mcp__<server>__<name>`) to the held capability
+  key. The repair itself is unchanged and fully gated (re-verify battery,
+  re-promote under the same image tag); the per-run repair budget stands.
+
+### Added
+- **Deliverable-of-record review context**: `_artifact_of_record` extracts
+  the designation rule measurement already follows (payload reference
+  outranks recency) and names the superseded same-family dedup iterations;
+  every review round is told which file ships and that superseded working
+  drafts are retained debris — not defects, not grounds to revise or
+  withhold approval. Measurement-target selection is unchanged.
+- **Review-round continuity**: each round's context carries the last three
+  rounds' verdicts and critiques with the continuity rule — an applied fix
+  is settled unless it violates a criterion or the evidence; contradicting
+  an earlier round must be explicit and justified. Context provisioning
+  only; verdict semantics, budgets, and all deterministic gates unchanged.
+
 ## [0.18.1] — 2026-07-15
 
 Owner-review addendum to v0.18.0 (same cycle-1 collective review): the
