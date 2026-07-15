@@ -240,3 +240,13 @@ def test_session_turn_seeds_the_prior_deliverable_without_any_detector(
     ws = tmp_path / "runs" / "sessturn1" / "workspace"
     assert (ws / "prior" / "prev-run" / "outputs" / "DELIVERABLE.md").is_file()
     assert "revision.deliverable_seeded" in tracer.kinds()
+
+
+def test_author_contract_binds_structure_not_just_count():
+    """t4 shipped a fifth top-level 'Charts' heading — auxiliary in intent,
+    an additional section by the counting rule — and the review spent rounds
+    on it. The author contract must state the structural implication, not
+    only the arithmetic."""
+    text = workflow.deliverable_instruction()
+    assert "NOTHING else may sit at the sections' heading level" in text
+    assert "INSIDE one of the required sections" in text
