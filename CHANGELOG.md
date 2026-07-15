@@ -5,6 +5,48 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
 [Semantic Versioning](https://semver.org/) — `0.x` while the core algorithm
 and behavior are still expected to change between releases.
 
+## [0.18.0] — 2026-07-15
+
+The review-targeting + designation release, from campaign c20260715-0608
+cycle 1 (the first cycle run on v0.17.0). The cycle's headline: three of
+four failures were the engine pointing a working mechanism at the wrong
+object. The review pattern assumed its first dependency was the draft
+under review — an order the planner contract never promises — so two runs
+whose content every verdict round verified spent all their rounds judging
+a prerequisite stage's status report and routing revisions to an agent who
+correctly answered "not my task"; the artifact-of-record rule measured
+whichever measurable artifact appeared LAST, which after v0.17's
+collision-deduped output names meant template-probe placeholders, not the
+report the payload shipped; and a session's second turn blocked honestly
+because the prior turn's deliverable — the referent of the user's feedback
+— was never provisioned when both revision detectors (the LLM judgment and
+the prior-path fallback) were defeated by a planner that inlined the prior
+text into a stage goal. The fourth failure repeated a known class: a
+review-round revision regenerated its figures from memory and fabricated
+values its own round-3 reviewer caught.
+
+### Fixed
+- **Review subject selection** (`workflow.review_subject`): a review stage
+  judges, and routes revisions to, the first deliverable-MARKED dependency
+  when one exists (the same authority rule as `deliverable_stage_ids`),
+  falling back to the first dependency. The review's evidence block
+  assembles from every non-subject dependency instead of `deps[1:]`.
+- **Measurement designation** (`_measurement_target`): among produced
+  artifact-role files, one the deliverable payload references (by path or
+  bare filename) is the deliverable of record; recency only breaks ties
+  among referenced files and still rules when the payload references none.
+- **Session-turn provisioning**: a run that continues a session always
+  seeds the previous turn's deliverable as retained, target-tier prior
+  evidence — provisioning no longer depends on the planner's revision
+  judgment or on a `prior/` path appearing in the plan; those remain as
+  trace signals only.
+
+### Added
+- **Minimal-edit rule** in both revision (redo) prompts: the fix session
+  must change exactly what the critique names and carry everything else
+  over from the previous draft verbatim — regeneration from memory is the
+  documented fabrication channel. Prompt-level; every gate still applies.
+
 ## [0.17.0] — 2026-07-15
 
 The review-convergence + measurement-truth release, from the campaign's
