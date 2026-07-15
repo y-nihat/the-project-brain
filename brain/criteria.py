@@ -39,6 +39,46 @@ _IMPLICIT_ONE = re.compile(
 _GATING_UNITS = ("paragraph", "word", "section", "heading", "bullet", "item",
                  "line", "slide")
 
+# THE COUNTING RULE for sections (stated wherever measurements are shown, so
+# authors and reviewers know exactly what the engine counts): sections are the
+# headings at the BODY's top structural level; a single leading heading that is
+# strictly shallower than every other heading is the document TITLE, not a
+# section. A load-bearing check with wrong semantics is a false-violation
+# generator — a fully compliant deliverable (title + exactly N sections) was
+# measured N+1 VIOLATED, and reviewers, bound to trust the measurement over
+# their own eyes, burned every bounded round chasing the phantom.
+SECTION_RULE = ("sections are counted at the body's top heading level; a single "
+                "leading shallower heading is the document title, NOT a section; "
+                "deeper subheadings are not sections")
+
+_ATX_HEADING = re.compile(r"^(#{1,6})\s+\S", re.MULTILINE)
+_SETEXT_HEADING = re.compile(r"^[^\n]+\n(={3,}|-{3,})\s*$", re.MULTILINE)
+
+
+def _headings(text: str) -> list[int]:
+    """All markdown heading LEVELS in document order (ATX ``#``..``######`` and
+    setext ``===``/``---`` underlines, which are levels 1 and 2)."""
+    found: list[tuple[int, int]] = []
+    for m in _ATX_HEADING.finditer(text):
+        found.append((m.start(), len(m.group(1))))
+    for m in _SETEXT_HEADING.finditer(text):
+        found.append((m.start(), 1 if m.group(1)[0] == "=" else 2))
+    return [level for _, level in sorted(found)]
+
+
+def _section_count(text: str) -> int:
+    """Count sections per SECTION_RULE: drop a lone leading heading strictly
+    shallower than everything after it (the title), then count headings at the
+    shallowest remaining level (subheadings are structure inside a section,
+    not additional sections)."""
+    levels = _headings(text)
+    if not levels:
+        return 0
+    if len(levels) > 1 and levels[0] < min(levels[1:]):
+        levels = levels[1:]
+    top = min(levels)
+    return sum(1 for lv in levels if lv == top)
+
 
 @dataclass
 class CountCheck:
@@ -59,8 +99,12 @@ def _count(unit: str, text: str) -> int:
         return len([b for b in re.split(r"\n\s*\n", t) if b.strip()])
     if unit == "word":
         return len(t.split())
-    if unit in ("section", "heading"):
-        return len(re.findall(r"^#{1,6}\s+\S|^[^\n]+\n[=-]{3,}\s*$", t, re.MULTILINE))
+    if unit == "section":
+        return _section_count(t)
+    if unit == "heading":
+        # "heading" counts EVERY heading (title included) — the explicit unit
+        # asks for headings, not document structure.
+        return len(_headings(t))
     if unit in ("bullet", "item"):
         return len(re.findall(r"^\s*(?:[-*+•]|\d+[.)])\s+\S", t, re.MULTILINE))
     if unit == "line":
@@ -142,14 +186,41 @@ def artifact_page_check(criteria: list[str], page_count: int) -> list[CountCheck
     return checks
 
 
-def describe(checks: list[CountCheck]) -> str:
+def html_countable_text(html: str) -> str:
+    """Deterministic HTML -> countable-text projection, so count criteria can
+    be measured against an HTML artifact of record instead of a payload that
+    merely points at it (a compliant dashboard was measured '0 sections'
+    because only its one-line pointer payload was ever counted). Headings map
+    to ATX (#..######), list items to bullets, block ends to paragraph breaks;
+    script/style/comments are dropped. Pure text projection — no parser deps."""
+    t = re.sub(r"(?is)<(script|style)\b.*?</\1\s*>", " ", html or "")
+    t = re.sub(r"(?s)<!--.*?-->", " ", t)
+    t = re.sub(r"(?is)<h([1-6])[^>]*>", lambda m: "\n\n" + "#" * int(m.group(1)) + " ", t)
+    t = re.sub(r"(?is)</h[1-6]\s*>", "\n\n", t)
+    t = re.sub(r"(?is)<li[^>]*>", "\n- ", t)
+    t = re.sub(r"(?is)<(?:br|hr)\s*/?\s*>", "\n", t)
+    t = re.sub(r"(?is)</(?:p|div|section|article|table|tr|ul|ol|blockquote|"
+               r"figure|header|footer|main|aside|nav)\s*>", "\n\n", t)
+    t = re.sub(r"(?s)<[^>]{0,600}>", " ", t)
+    for ent, ch in (("&amp;", "&"), ("&lt;", "<"), ("&gt;", ">"),
+                    ("&quot;", '"'), ("&#39;", "'"), ("&nbsp;", " ")):
+        t = t.replace(ent, ch)
+    t = re.sub(r"[ \t]+", " ", t)
+    t = re.sub(r" ?\n ?", "\n", t)
+    t = re.sub(r"\n{3,}", "\n\n", t)
+    return t.strip()
+
+
+def describe(checks: list[CountCheck], target: str = "the deliverable PAYLOAD") -> str:
     if not checks:
         return ""
-    lines = ["ENGINE-MEASURED FORMAT FACTS (counted against the deliverable "
-             "PAYLOAD — these measurements are authoritative for gating units; "
-             "sentence counts are advisory):"]
+    lines = [f"ENGINE-MEASURED FORMAT FACTS (counted against {target} — these "
+             "measurements are authoritative for gating units; sentence counts "
+             "are advisory):"]
     for c in checks:
         verdict = "OK" if c.ok else ("VIOLATED" if c.gating else "over/under (advisory)")
         lines.append(f"- {c.op} {c.bound} {c.unit}(s) required; measured {c.measured} "
                      f"-> {verdict}  [{c.criterion[:90]}]")
+    if any(c.unit in ("section", "heading") for c in checks):
+        lines.append(f"(Counting rule: {SECTION_RULE}.)")
     return "\n".join(lines)
