@@ -5,6 +5,47 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
 [Semantic Versioning](https://semver.org/) — `0.x` while the core algorithm
 and behavior are still expected to change between releases.
 
+## [0.21.0] — 2026-07-15
+
+Capability re-entry + windowed perception — campaign-3 cycle-1 owner
+review (suite v2's first contact; the honesty machinery held everywhere:
+a turn that could not compute refused to fake it with eight artifacts of
+evidence). The cycle's general finding: TOOL-INSUFFICIENCY had no path
+back into the core loop. A cached analytics tool froze its birth task's
+7-day window into its computation menu; the next turn needed 30 days;
+ten precise defect reports and two failed repairs later the run could
+only block honestly — the loop never got to author a DIFFERENT tool for
+the same data, because defect exhaustion ended at a trace event while
+strategy re-entry only listened to observation gaps. Meanwhile agents in
+three tasks filed defect reports against read_file itself (flat 8000-char
+clip on files they needed whole), a renderer failed repeatedly with
+"exit=1" and empty stderr, and a transcriber chose speed over fidelity
+("tennis carter" for a name the fixture proves recoverable).
+
+### Added
+- **Insufficiency escalates to strategy re-entry**: when a tool's defect
+  reports outlive the repair budget, or a defect class RECURS after a
+  repair, the stage's completion is reclassified as a method failure
+  (`CapabilityInsufficientError`, failure_class
+  `capability_insufficient`) and enters the EXISTING recovery
+  adjudicator — supervisor persistence judgment, capability suppression,
+  planner extension under a NEW contract, bounded by RECOVERIES_PER_RUN.
+  The honest gap report survives as failure history, never as evidence.
+- **Windowed read_file**: an `offset` parameter with explicit
+  `chars X-Y of N` framing and a footer naming the next offset — long
+  evidence is now pageable instead of silently clipped; the tool
+  description warns against treating one window as the whole file.
+- **Authoring contract**: SUPPLIED-QUANTITY PARAMETERIZATION (any
+  quantity the task supplies — window, threshold, count, unit, grouping —
+  must be a schema argument with the task's value as its example, never a
+  baked-in constant) and PERCEPTION FIDELITY (identity-critical tokens
+  demand the higher-accuracy configuration and low-confidence marking).
+
+### Fixed
+- **Silent tool failures carry diagnostics**: a non-zero exit with empty
+  stderr now says so explicitly and steers the agent to schema re-check +
+  a defect report, instead of "exit=1" with nothing actionable.
+
 ## [0.20.0] — 2026-07-15
 
 Claim strength must match evidence strength — the post-cycle-3 owner
