@@ -5,6 +5,33 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
 [Semantic Versioning](https://semver.org/) — `0.x` while the core algorithm
 and behavior are still expected to change between releases.
 
+## [0.22.0] — 2026-07-16
+
+Scoped measurement + coverage escalation — campaign-3 cycle-2 owner
+review. The cycle's engine finding had the same shape as v0.17's headline
+one level down: an audit was APPROVED at its final round and then voided
+because "Section 1 — one paragraph" was measured against the whole
+document (nineteen paragraphs) — a SCOPED bound judged globally by a
+measurement with authority. And a perception coverage gap over a required
+agenda item was hedged as final instead of escalated: two different ASR
+builds dropped the same span, and the run reported "no decision could be
+confirmed" without ever attempting re-observation.
+
+### Fixed
+- **Scoped count constraints** (`criteria.py`): a bound attached to a
+  named part ("Section 1 contains one paragraph") is measured WITHIN that
+  part (the Nth body section's content, heading line excluded, title
+  rules unchanged); when the part cannot be identified deterministically
+  the check demotes to advisory — a scoped constraint never gates on a
+  global measurement. Per-item bounds ("each answer under 40 words") are
+  advisory by construction. `describe()` states the scope.
+
+### Added
+- **Coverage-gap escalation (agent contract)**: a coverage gap over
+  content the objective REQUIRES is an evidence gap — do not finalize a
+  hedge until a re-observation was attempted or requested via
+  report_evidence_gap.
+
 ## [0.21.0] — 2026-07-15
 
 Capability re-entry + windowed perception — campaign-3 cycle-1 owner
