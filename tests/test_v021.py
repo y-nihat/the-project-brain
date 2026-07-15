@@ -162,3 +162,37 @@ def test_authoring_contract_parameterization_and_fidelity():
     assert "SUPPLIED-QUANTITY PARAMETERIZATION" in _DEVELOPER_SYSTEM
     assert "PERCEPTION FIDELITY" in _DEVELOPER_SYSTEM
     assert "NEVER a constant baked into the code" in _DEVELOPER_SYSTEM
+
+
+# --- v0.22: scoped counts + coverage-gap escalation --------------------------------- #
+def test_scoped_count_measures_within_its_section():
+    """An approved audit was voided at its final round because 'Section 1 -
+    one paragraph' was measured as nineteen paragraphs of full document: a
+    scoped bound must be measured within its identifiable part."""
+    from brain import criteria
+    doc = "# T\n\n## What it does\n\none tight paragraph\n\n## Defects\n\na\n\nb\n\nc"
+    c = criteria.check_counts(["Section 1 contains exactly one paragraph"], doc)[0]
+    assert c.scope == "section 1" and c.measured == 1 and c.ok and c.gating
+    v = criteria.check_counts(["Section 2 is exactly one paragraph"], doc)[0]
+    assert v.measured == 3 and not v.ok and v.gating
+
+
+def test_unresolvable_scope_is_advisory_never_gating():
+    from brain import criteria
+    missing = criteria.check_counts(["Section 9 has exactly one paragraph"],
+                                    "## A\n\nx")[0]
+    assert not missing.gating and "not found" in missing.scope
+    per = criteria.check_counts(["each answer is at most 40 words"],
+                                "word " * 300)[0]
+    assert not per.gating and "per-item" in per.scope
+    glob = criteria.check_counts(["exactly 1 section"], "## A\n\nx")[0]
+    assert glob.gating and glob.scope == ""
+
+
+def test_agent_contract_escalates_required_coverage_gaps():
+    from brain import factory
+    from brain.models import AgentSpec
+    text = factory.agent_system_prompt(
+        AgentSpec(id="a", role="R", goal="g", capabilities=[]),
+        ["mcp__caps__t"], team_stages=["s1"])
+    assert "COVERAGE GAP" in text and "re-observation" in text
