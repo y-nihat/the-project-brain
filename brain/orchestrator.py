@@ -158,6 +158,15 @@ def _claims_gate(claims: list[dict], lineage) -> str:
     return ""
 
 
+# Gate defects that are TABLE MECHANICS — re-emittable without re-judging the
+# draft: a missing table, or a citation string that fails to resolve to a
+# lineage file the reviewer actually verified. Substantive defects (an
+# unsupported claim, no grounded claim at all) are deliberately absent:
+# inviting a retype under void pressure would be a laundering channel.
+_FIXABLE_GATE_PREFIXES = ("approval without a claim-support table",
+                          "miscited support")
+
+
 def _failure_signature(text: str) -> str:
     """Normalize an error detail so REPEATS of the same failure are countable
     across attempts and across differently-named contracts: hex ids, numbers
@@ -619,6 +628,9 @@ class Orchestrator:
         self._session_context: Optional[str] = None
         self._fix_notes: dict[str, str] = {}
         self._tool_repairs = 0
+        self._presubmit_fixes_left = max(0, config.PRESUBMIT_FORMAT_FIXES)
+        self._revision_fixups_left = max(0, config.REVISION_FORMAT_FIXUPS)
+        self._gate_fixups_left = max(0, config.REVIEW_GATE_FIXUPS)
 
     # ------------------------------------------------------------------ #
     # run
@@ -772,6 +784,7 @@ class Orchestrator:
         self._help_request = None       # set when the brain decides to stop and ask the user
         self._fix_notes = {}            # stage id -> accumulated fix-round lessons
         self._tool_repairs = 0          # agent-reported tool-defect repairs spent
+        self._presubmit_fixes_left = max(0, config.PRESUBMIT_FORMAT_FIXES)
 
         last_done: Optional[str] = None
         failure_note: Optional[str] = None
@@ -1972,7 +1985,153 @@ class Orchestrator:
             return fixed
 
         self._redo[stage.id] = redo
+        if is_deliverable:
+            out = await self._presubmit_format_pass(stage.id, out, redo, workspace)
         return out
+
+    async def _presubmit_format_pass(self, stage_id: str, out: str, redo,
+                                     workspace: Path) -> str:
+        """Deterministic dry-run BEFORE review: measure the deliverable
+        author's draft against the compiled count criteria and have the AUTHOR
+        fix a measured violation immediately. A format violation is a
+        deterministic fact the engine already holds at authoring time —
+        spending a bounded, fully-gated review round to relay it is how two
+        compliant-content runs shipped unverified. Slide/page units are
+        excluded: their text heuristic only becomes authoritative through a
+        render, which happens in review. Bounded per run; a fix attempt that
+        measures WORSE is discarded (never trade a counted defect for more)."""
+        if self._presubmit_fixes_left <= 0 or not self._criteria:
+            return out
+        gate, checks, target = self._count_gate(out, workspace)
+        if not gate:
+            return out
+        self._presubmit_fixes_left -= 1
+        facts = criteria_mod.describe(checks, target=target)
+        self.tracer.event("criteria.presubmit_violation", stage_id, status="failed",
+                          target=target,
+                          violations=[f"{v.op} {v.bound} {v.unit}: measured {v.measured}"
+                                      for v in gate])
+        feedback = (
+            "ENGINE PRE-REVIEW MEASUREMENT — your draft violates measured count "
+            "constraints. Fix EXACTLY these violations and change nothing else "
+            "(the measurements are deterministic facts about the deliverable of "
+            "record named below, not reviewer opinions):\n" + facts)
+        try:
+            fixed = await redo(feedback, out)
+        except Exception as e:  # noqa: BLE001 — a failed fixup leaves the draft standing
+            self.tracer.event("stage.format_fixup", stage_id, status="failed",
+                              error=f"{type(e).__name__}: {str(e)[:200]}")
+            return out
+        regate, _, _ = self._count_gate(fixed, workspace)
+        if len(regate) <= len(gate):
+            self.tracer.event("stage.format_fixup", stage_id, status="info",
+                              before=len(gate), after=len(regate))
+            self._stage_notes[stage_id] = {stage_id: fixed}
+            return fixed
+        self.tracer.event("stage.format_fixup", stage_id, status="failed",
+                          note="fix attempt measured worse — original draft kept",
+                          before=len(gate), after=len(regate))
+        return out
+
+    def _count_gate(self, text: str, workspace: Path) -> tuple[list, list, str]:
+        """(gating count violations, all checks, measurement-target label) for
+        a stage output. Slide/page units are excluded from the gate list: their
+        text heuristic only becomes authoritative through a render."""
+        payload = workflow.extract_deliverable(text) or text
+        checks, target = self._measured_checks(payload, workspace)
+        return ([v for v in criteria_mod.violations(checks)
+                 if v.unit not in ("slide", "page")], checks, target)
+
+    async def _remeasure_revision(self, draft_id: str, draft: str, redo,
+                                  outputs: dict, workspace: Path) -> str:
+        """Reviser discipline, deterministic: a fix round that satisfies the
+        critique but INTRODUCES a measured count violation gets one immediate
+        corrective pass — observed twice in one cycle: round-1 revisions fixed
+        exactly what was critiqued and prepended process narration / appended
+        a sources block, and the next bounded round was spent on defects the
+        engine could measure the moment the revision landed. Never keeps a
+        correction that measures worse; failures leave the revision standing."""
+        if self._revision_fixups_left <= 0 or not self._criteria:
+            return draft
+        gate, checks, target = self._count_gate(draft, workspace)
+        if not gate:
+            return draft
+        self._revision_fixups_left -= 1
+        facts = criteria_mod.describe(checks, target=target)
+        self.tracer.event("review.revision_remeasured", draft_id, status="failed",
+                          target=target,
+                          violations=[f"{v.op} {v.bound} {v.unit}: measured {v.measured}"
+                                      for v in gate])
+        msg = ("ENGINE RE-MEASUREMENT of your revision: it violates measured "
+               "count constraints. A revision must satisfy ALL success criteria, "
+               "not only the critiqued items — do not add headed process "
+               "narration, source appendices, or any block the required "
+               "structure does not include:\n" + facts
+               + "\nFix EXACTLY these violations; preserve every fix you already made.")
+        try:
+            fixed = await redo(msg, draft)
+        except Exception as e:  # noqa: BLE001 — the revision stands unfixed
+            self.tracer.event("review.revision_fixup", draft_id, status="failed",
+                              error=f"{type(e).__name__}: {str(e)[:200]}")
+            return draft
+        regate, _, _ = self._count_gate(fixed, workspace)
+        if len(regate) <= len(gate):
+            outputs[draft_id] = fixed
+            self.tracer.event("review.revision_fixup", draft_id, status="info",
+                              before=len(gate), after=len(regate))
+            return fixed
+        self.tracer.event("review.revision_fixup", draft_id, status="failed",
+                          note="correction measured worse — revision kept as-is",
+                          before=len(gate), after=len(regate))
+        return draft
+
+    async def _claims_gate_fixup(self, stage, rnd: int, void: str, claims: list,
+                                 critique: str, lineage, objective: str,
+                                 workspace: Path) -> tuple[str, list]:
+        """Claims-gate dry-run exchange: the reviewer re-emits ONLY the claims
+        table, told exactly why the current one would void and which
+        target-lineage files exist to cite. Returns (void, claims) — cleared
+        and corrected when the re-emitted table passes the UNCHANGED gate,
+        original otherwise (a failed fix-up never softens the void, and a
+        substituted table that voids for a new reason is treated as failed)."""
+        self._gate_fixups_left -= 1
+        files = sorted({e.file for e in lineage})[:24]
+        prev = json.dumps(claims, indent=1)[:3000] if claims else "(no table was emitted)"
+        spec = AgentSpec(
+            id=f"{stage.id}.r{rnd}.gatefix", role=stage.role,
+            goal="Re-emit the review's claim-support table with resolvable citations.",
+            capabilities=[])
+        ctx = (
+            "CLAIMS-GATE DRY-RUN: your verdict was 'approved', but the engine's "
+            f"deterministic claim-support check would VOID it: {void}\n\n"
+            "Your verdict and critique stand — do NOT re-judge the draft. Re-emit "
+            "ONLY the corrected fenced ```claims block (same JSON schema). Each "
+            "'direct'/'derived'/'negative' claim must cite the exact target-lineage "
+            "ledger file that supports it, from this list:\n"
+            + "\n".join(f"- {f}" for f in files)
+            + "\n\nBe honest, never cosmetic: retype a claim to 'inferred' or 'proxy' "
+              "if no listed file supports it, and NEVER drop a load-bearing claim to "
+              "pass the gate — the same gate re-checks your corrected table, and a "
+              "table that fails again voids the approval exactly as before.\n\n"
+              "Your previous table:\n" + prev
+            + "\n\nYour critique, for reference:\n" + (critique or "")[:4000])
+        try:
+            fixed = await self._run_agent_with_reflection(
+                spec, {}, objective, {}, None, workspace, task_context=ctx)
+        except Exception as e:  # noqa: BLE001 — a dead fix-up leaves the void standing
+            self.tracer.event("review.claims_fixup", stage.id, status="failed",
+                              round=rnd, error=f"{type(e).__name__}: {str(e)[:200]}")
+            return void, claims
+        new_claims = _parse_claims(fixed)
+        revoid = _claims_gate(new_claims, lineage) if new_claims else \
+            "no claims table in the re-emission"
+        self.tracer.event("review.claims_fixup", stage.id,
+                          status="info" if not revoid else "failed",
+                          round=rnd, resolved=not revoid, was=void[:160],
+                          now=(revoid or "passed")[:160])
+        if not revoid:
+            return "", new_claims
+        return void, claims
 
     async def _run_map(self, stage: StageSpec, outputs: dict[str, str], objective: str,
                        history: Optional[str], workspace: Path) -> str:
@@ -2131,6 +2290,8 @@ class Orchestrator:
             return fixed
 
         self._redo[stage.id] = redo
+        if stage.id in workflow.deliverable_stage_ids(list(self._stages_by_id.values())):
+            out = await self._presubmit_format_pass(stage.id, out, redo, workspace)
         return out
 
     async def _run_review(self, stage: StageSpec, outputs: dict[str, str], objective: str,
@@ -2170,9 +2331,12 @@ class Orchestrator:
         # actually performed).
         rounds_budget = max(1, stage.rounds)
         crash_retries = max(0, config.REVIEW_CRASH_RETRIES)
+        post_redos_left = max(0, config.POST_REVIEW_REDOS)
+        self._revision_fixups_left = max(0, config.REVISION_FORMAT_FIXUPS)
+        self._gate_fixups_left = max(0, config.REVIEW_GATE_FIXUPS)
         spent = 0
         try:
-            for rnd in range(1, rounds_budget + crash_retries + 1):
+            for rnd in range(1, rounds_budget + crash_retries + post_redos_left + 1):
                 if spent >= rounds_budget:
                     break
                 spent += 1
@@ -2401,6 +2565,7 @@ class Orchestrator:
                 # failing claim-support table, a miscited lineage claim, or a
                 # measured violation of a countable criterion.
                 void = ""
+                absence_void = False   # evidence-ABSENCE voids are not author-fixable
                 if verdict == "approved":
                     fresh = evidence_mod.ledger(workspace, self._reader_dirs(),
                                                 self._locators)
@@ -2408,13 +2573,29 @@ class Orchestrator:
                         void = ("empty evidence ledger: this run derives claims from "
                                 "designated sources but NO payload was retained — "
                                 "narration was approved, not evidence")
+                        absence_void = True
                     elif self._source_derived and not evidence_mod.target_lineage(fresh):
                         void = ("no target-lineage evidence: every retained payload is "
                                 "proxy-tier or unknown lineage — testimony ABOUT the "
                                 "designated source cannot certify claims about the "
                                 "source itself")
+                        absence_void = True
                     elif self._source_derived:
                         void = _claims_gate(claims, evidence_mod.target_lineage(fresh))
+                        # CLAIMS-GATE DRY-RUN: a fixable table-mechanics defect
+                        # (see _FIXABLE_GATE_PREFIXES) surfaces to the reviewer
+                        # as a correctable warning ONCE before it voids —
+                        # observed: an approval earned on the merits was voided
+                        # because one claim's citation named the notes ABOUT
+                        # the verified frames instead of the frames' ledger
+                        # file. The gate itself is unchanged; the corrected
+                        # table passes the SAME gate or the original void lands.
+                        if void and void.startswith(_FIXABLE_GATE_PREFIXES) and \
+                                self._gate_fixups_left > 0:
+                            void, claims = await self._claims_gate_fixup(
+                                stage, rnd, void, claims, critique,
+                                evidence_mod.target_lineage(fresh), objective,
+                                workspace)
                     # PERCEPTION FRESHNESS: an approval must be grounded in
                     # perception OF the artifact under judgment. Renderable
                     # artifact + available render tool + no render, or a
@@ -2519,8 +2700,26 @@ class Orchestrator:
                                  "be grounded in it):\n" + fetched[:20000])
 
                 redo = self._redo.get(draft_id)
-                if redo is None or spent >= rounds_budget:
+                if redo is None:
                     break
+                if spent >= rounds_budget:
+                    # POST-REVIEW REDO, bounded: the budget is exhausted and
+                    # the reviewer's final verdict holds a precise, actionable
+                    # critique that would otherwise never be applied (observed
+                    # three times in one cycle as supervisor redo orders that
+                    # could not run). Apply it once and buy exactly ONE more
+                    # fully-gated round — every void/gate applies to it. An
+                    # evidence-ABSENCE void is excluded: no author redo can
+                    # retain evidence, so the round would be spent re-voiding.
+                    if post_redos_left <= 0 or verdict != "revise" or absence_void:
+                        break
+                    post_redos_left -= 1
+                    rounds_budget += 1
+                    self.tracer.event("review.post_redo", draft_id, status="info",
+                                      round=rnd,
+                                      note="review exhausted holding an actionable "
+                                           "critique — applying it and granting one "
+                                           "fully-gated round")
                 try:
                     draft = await redo(critique + extra, draft)
                     outputs[draft_id] = draft
@@ -2532,6 +2731,9 @@ class Orchestrator:
                     crash_note = (f"NOTE: the fix round after round {rnd} CRASHED "
                                   f"({type(e).__name__}) — the draft is UNCHANGED; your "
                                   "previous critique was not applied.")
+                else:
+                    draft = await self._remeasure_revision(draft_id, draft, redo,
+                                                           outputs, workspace)
         except Exception as e:  # noqa: BLE001
             # The reviewer dying must not cost the user the draft: deliver it
             # unverified, honestly labeled.

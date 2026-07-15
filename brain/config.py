@@ -178,6 +178,18 @@ REVIEW_EVIDENCE_FETCHES = int(os.environ.get("REVIEW_EVIDENCE_FETCHES", "1"))
 # with a 1-round budget, one transport fault otherwise equals review death and
 # the draft ships unverified with its critique unwritten.
 REVIEW_CRASH_RETRIES = int(os.environ.get("REVIEW_CRASH_RETRIES", "1"))
+# Deterministic dry-runs BEFORE the expensive verdicts (per run / per review):
+# a deliverable author whose draft violates a measured count constraint gets it
+# fixed at authoring time instead of burning a review round on a deterministic
+# fact; a reviser that fixes the critiqued items but introduces a NEW measured
+# violation gets one corrective pass; an exhausted review left holding a
+# precise, actionable critique may apply it once and buy exactly ONE more
+# fully-gated round; an approval whose claims table would void on a FIXABLE
+# defect (missing table, unresolvable citation) gets one re-emission exchange.
+PRESUBMIT_FORMAT_FIXES = int(os.environ.get("PRESUBMIT_FORMAT_FIXES", "1"))
+REVISION_FORMAT_FIXUPS = int(os.environ.get("REVISION_FORMAT_FIXUPS", "1"))
+POST_REVIEW_REDOS = int(os.environ.get("POST_REVIEW_REDOS", "1"))
+REVIEW_GATE_FIXUPS = int(os.environ.get("REVIEW_GATE_FIXUPS", "1"))
 # Bounded mid-run loop re-entries: when agents report an unmet OBSERVATION need
 # (report_evidence_gap), the planner may EXTEND the running plan this many times.
 REPLANS_PER_RUN = int(os.environ.get("REPLANS_PER_RUN", "1"))
