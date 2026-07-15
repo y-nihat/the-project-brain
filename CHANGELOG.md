@@ -5,6 +5,15 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
 [Semantic Versioning](https://semver.org/) — `0.x` while the core algorithm
 and behavior are still expected to change between releases.
 
+## [0.18.1] — 2026-07-15
+
+Owner-review addendum to v0.18.0 (same cycle-1 collective review): the
+author contract now binds document STRUCTURE, not just the section count —
+nothing may sit at the sections' heading level except the required
+sections themselves; appendices, chart galleries, and sources lists belong
+inside a section. A fifth same-level "auxiliary" heading is an additional
+section by the counting rule, and one such heading burned review rounds.
+
 ## [0.18.0] — 2026-07-15
 
 The review-targeting + designation release, from campaign c20260715-0608
