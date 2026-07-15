@@ -444,7 +444,7 @@ def test_render_detected_by_shape_and_staleness_by_order(tmp_path):
         # Stale render measures nothing (no false certification either way).
         orch._criteria = ["exactly 2 pages"]
         assert all(c.unit not in ("slide", "page")
-                   for c in orch._measured_checks("payload", ws))
+                   for c in orch._measured_checks("payload", ws)[0])
     finally:
         bb.close()
 

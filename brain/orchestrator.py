@@ -900,14 +900,15 @@ class Orchestrator:
             deliverable_dir = Path(config.RUNS_DIR) / self.session / "outputs"
             deliverable_dir.mkdir(parents=True, exist_ok=True)
             (deliverable_dir / "DELIVERABLE.md").write_text(payload or "")
-            # Countable format criteria are MEASURED against the payload — a
-            # measured violation is authoritative over any verdict prose.
-            # (Slide/page counts defer to the rendered artifact when one exists.)
-            checks = self._measured_checks(payload, workspace)
+            # Countable format criteria are MEASURED against the deliverable of
+            # record (artifact when one exists, else the payload) — a measured
+            # violation is authoritative over any verdict prose. (Slide/page
+            # counts defer to the rendered artifact when one exists.)
+            checks, meas_target = self._measured_checks(payload, workspace)
             self._format_violations = criteria_mod.violations(checks)
             if checks:
                 self.tracer.event(
-                    "criteria.measured", "run", status="info",
+                    "criteria.measured", "run", status="info", target=meas_target,
                     checks=[f"{c.op} {c.bound} {c.unit}: measured {c.measured} "
                             f"({'ok' if c.ok else 'VIOLATED' if c.gating else 'advisory'})"
                             for c in checks])
@@ -1154,14 +1155,52 @@ class Orchestrator:
                    for rec in records[idx + 1:]
                    for f in rec.get("files") or [])
 
-    def _measured_checks(self, payload: str, workspace: Path) -> list:
-        """All engine-measured count checks. When the artifact has been
-        RENDERED, the render is authoritative for slide/page counts — the
-        payload-text heuristic (--- separators) only stands when nothing was
-        rendered. Both directions matter: a stray separator must not void a
-        correct artifact, and clean prose must not excuse an 11-page artifact
-        against an explicit 10."""
-        checks = criteria_mod.check_counts(self._criteria, payload)
+    _MEASURABLE_ARTIFACT_EXTS = (".md", ".markdown", ".txt", ".html", ".htm")
+
+    def _measurement_target(self, payload: str, workspace: Path) -> tuple[str, str]:
+        """(text, label): the object count criteria are measured against.
+
+        THE MEASUREMENT-TARGET CONTRACT: when the run produced a deliverable
+        ARTIFACT file in a text-measurable format, the artifact is the
+        deliverable of record and structural counts follow IT — the payload
+        may faithfully summarize or point at it. Otherwise the payload is the
+        deliverable and is measured directly. Observed both ways: a compliant
+        HTML dashboard measured '0 of 4 sections' because its one-line pointer
+        payload was counted, and grading swung 10/11 -> 6/11 on unchanged
+        analysis quality — pure measurement-target variance. Same filter as
+        _perceivable_artifacts: DECLARED artifact role only, renders excluded,
+        the LAST-produced file wins (a regeneration supersedes)."""
+        root = Path(workspace)
+        chosen = ""
+        if root.is_dir():
+            for rec in evidence_mod._records(root.parent):
+                if rec.get("role") != "artifact" or rec.get("cap") == _RENDER_NEED_KEY:
+                    continue
+                for f in rec.get("files") or []:
+                    rel = str(f)
+                    if (Path(rel).suffix.lower() in self._MEASURABLE_ARTIFACT_EXTS
+                            and (root / rel).is_file()):
+                        chosen = rel
+        if not chosen:
+            return payload, "the deliverable PAYLOAD"
+        try:
+            text = (root / chosen).read_text(errors="replace")
+        except OSError:
+            return payload, "the deliverable PAYLOAD"
+        if chosen.lower().endswith((".html", ".htm")):
+            text = criteria_mod.html_countable_text(text)
+        return text, f"the produced ARTIFACT {chosen}"
+
+    def _measured_checks(self, payload: str, workspace: Path) -> tuple[list, str]:
+        """(checks, target label) — all engine-measured count checks, measured
+        against the deliverable OF RECORD (see _measurement_target). When the
+        artifact has been RENDERED, the render is authoritative for slide/page
+        counts — the text heuristic (--- separators) only stands when nothing
+        was rendered. Both directions matter: a stray separator must not void
+        a correct artifact, and clean prose must not excuse an 11-page
+        artifact against an explicit 10."""
+        target_text, target = self._measurement_target(payload, workspace)
+        checks = criteria_mod.check_counts(self._criteria, target_text)
         pages = self._rendered_page_count(workspace)
         if pages is not None:
             checks = [c for c in checks if c.unit not in ("slide", "page")]
@@ -1170,7 +1209,7 @@ class Orchestrator:
             # separately demands a re-render.
             if not self._render_is_stale(workspace):
                 checks += criteria_mod.artifact_page_check(self._criteria, pages)
-        return checks
+        return checks, target
 
     async def _resolve_knowledge_needs(self, plan, objective: str,
                                        history: Optional[str]):
@@ -2188,8 +2227,8 @@ class Orchestrator:
                                 "block were stripped — THIS payload is what ships and what "
                                 "format criteria are measured against.)")
                 rendered_pages = self._rendered_page_count(workspace)
-                checks = self._measured_checks(payload, workspace)
-                facts = criteria_mod.describe(checks)
+                checks, meas_target = self._measured_checks(payload, workspace)
+                facts = criteria_mod.describe(checks, target=meas_target)
                 if rendered_pages is not None:
                     if self._render_is_stale(workspace):
                         facts += (("\n" if facts else "")
@@ -2392,8 +2431,9 @@ class Orchestrator:
                                     "available, but no render was ever made — render "
                                     "it and LOOK at every page before approving")
                     if not void:
-                        gate = criteria_mod.violations(self._measured_checks(
-                            workflow.extract_deliverable(draft) or draft, workspace))
+                        gate_checks, gate_target = self._measured_checks(
+                            workflow.extract_deliverable(draft) or draft, workspace)
+                        gate = criteria_mod.violations(gate_checks)
                         if gate:
                             v = gate[0]
                             # The reviewer renders DURING the round: re-read.
@@ -2404,7 +2444,7 @@ class Orchestrator:
                                      if v.unit in ("slide", "page")
                                      and self._rendered_page_count(workspace)
                                      is not None
-                                     else "in the deliverable payload")
+                                     else f"in {gate_target}")
                             void = (f"engine-measured format violation: required {v.op} "
                                     f"{v.bound} {v.unit}(s), measured {v.measured} {where}")
                 if void:
