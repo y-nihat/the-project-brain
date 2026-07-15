@@ -2608,10 +2608,32 @@ class Orchestrator:
                               "approval — judge the deliverable of record.")
                            if superseded else "")
                         + "\n\n")
+                # Rounds are separate sessions; without the record of what
+                # earlier rounds demanded, a fresh reviewer re-litigates —
+                # observed: round 2 ordered the exact reversal of the fix
+                # round 1 had demanded and the author had applied.
+                continuity = ""
+                prior_rounds = [r for r in record if r.get("verdict") != "errored"]
+                if prior_rounds:
+                    continuity = (
+                        "PRIOR REVIEW ROUNDS of this draft (the author has revised "
+                        "after each):\n"
+                        + "\n".join(f"[round {r.get('round')}] verdict: "
+                                    f"{r.get('verdict')}\n"
+                                    + str(r.get("critique") or "")[:1200]
+                                    for r in prior_rounds[-3:])
+                        + "\nREVIEW CONTINUITY: a fix an earlier round demanded and "
+                          "the author applied is SETTLED — do not demand its "
+                          "reversal unless it violates a success criterion or the "
+                          "evidence. If you must contradict an earlier round's "
+                          "instruction, say so explicitly and justify it against "
+                          "the success criteria; never silently re-litigate. Spend "
+                          "this round on what is still unmet.\n\n")
                 ctx = (
                     "DRAFT under review (the deliverable payload):\n---\n" + payload
                     + "\n---" + payload_note + "\n\n"
                     + record_block
+                    + continuity
                     + (degraded_note + "\n\n" if degraded_note else "")
                     + (crash_note + "\n\n" if crash_note else "")
                     + ledger_block + "\n\n"
