@@ -350,8 +350,14 @@ def build_caps_server(
                     reason = (f"the tool exceeded its memory limit ({pol.mem}) and was killed; "
                               "try a smaller input or report this limitation")
                 else:
+                    tail = (result.stderr or "").strip()[-800:]
                     reason = (f"exit={result.exit_code}, timed_out={result.timed_out}: "
-                              f"{result.stderr[-800:]}")
+                              + (tail if tail else
+                                 "(the tool wrote NOTHING to stderr — it likely "
+                                 "crashed before printing or swallowed its own "
+                                 "error; re-check argument shapes against the tool "
+                                 "schema, try a minimal call, and report_tool_defect "
+                                 "with the exact arguments if it persists)"))
                 _observe(monitor, tracer, cap.name, health_mod.ERROR, 0)
                 return {
                     "content": [{

@@ -1452,12 +1452,18 @@ class Orchestrator:
               "Open a file the run holds (workspace-relative path — e.g. a path from a "
               "tool's produced-files list or an upstream note). IMAGES (png/jpg/webp/…) "
               "come back as images for you to LOOK AT directly; text files return an "
-              "excerpt. Use it to PERCEIVE retained evidence — frames, screenshots, "
-              "scans, rendered pages, charts — rather than guessing their content.",
-              {"type": "object", "properties": {"path": {"type": "string"}},
+              "excerpt (~8000 chars per call; LONG files are read in WINDOWS — pass "
+              "`offset` to continue exactly where the previous window ended; the "
+              "footer tells you the next offset). Use it to PERCEIVE retained "
+              "evidence — frames, screenshots, scans, rendered pages, charts — "
+              "rather than guessing their content; never treat one window of a "
+              "long file as the whole file.",
+              {"type": "object", "properties": {"path": {"type": "string"},
+                                                "offset": {"type": "integer"}},
                "required": ["path"]})
         async def read_file(args):
-            return self._read_workspace(workspace, str(args.get("path", "")))
+            return self._read_workspace(workspace, str(args.get("path", "")),
+                                        int(args.get("offset", 0) or 0))
 
         @tool("list_files",
               "Enumerate the files the run holds (workspace-relative paths with sizes), "
@@ -1475,7 +1481,7 @@ class Orchestrator:
         return create_sdk_mcp_server(name="workspace", version="1.0.0",
                                      tools=[read_file, list_files])
 
-    def _read_workspace(self, workspace: Path, rel: str) -> dict:
+    def _read_workspace(self, workspace: Path, rel: str, offset: int = 0) -> dict:
         """Image-aware workspace file read (the read_file tool body, split out so
         it is directly testable). Images -> image content block; text -> excerpt;
         path traversal and missing files -> honest error. The whole body is
@@ -1519,8 +1525,19 @@ class Orchestrator:
                     f"INTERNAL ERROR reading {rel!r} ({type(e).__name__}). This is an "
                     "engine fault, not a bad path — do NOT retry this file or others; "
                     "report a blocker so the run can recover.")}], "is_error": True}
-        more = f"\n[…{len(text) - 8000:,} more chars]" if len(text) > 8000 else ""
-        return {"content": [{"type": "text", "text": f"[{rel}]\n{text[:8000]}{more}"}]}
+        total = len(text)
+        off = max(0, int(offset or 0))
+        if off and off >= total:
+            return {"content": [{"type": "text", "text": (
+                    f"[{rel}] offset {off:,} is beyond the end — the file has "
+                    f"{total:,} chars. Re-read with a smaller offset.")}]}
+        window = text[off:off + 8000]
+        head = (f"[{rel} — chars {off:,}-{off + len(window):,} of {total:,}]"
+                if (off or total > 8000) else f"[{rel}]")
+        left = total - off - len(window)
+        more = (f"\n[…{left:,} more chars — call read_file with "
+                f"offset={off + len(window)} for the next window]" if left > 0 else "")
+        return {"content": [{"type": "text", "text": f"{head}\n{window}{more}"}]}
 
     def _list_workspace(self, workspace: Path, pattern: str = "",
                         offset: int = 0, page_size: int = 200) -> dict:
