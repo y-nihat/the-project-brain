@@ -5,6 +5,40 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
 [Semantic Versioning](https://semver.org/) — `0.x` while the core algorithm
 and behavior are still expected to change between releases.
 
+## [0.20.0] — 2026-07-15
+
+Claim strength must match evidence strength — the post-cycle-3 owner
+review of campaign c20260715-0608. Cycle 3 was the campaign's best on
+every axis (4/5 succeeded, 48/51 checks, cheapest cycle) and produced its
+first REAL false success: not a fabrication, but an incomplete sweep
+certified complete. A "list every place where documents disagree"
+criterion was verified existentially — each listed discrepancy was
+genuine — while the pack's primary planted contradiction, derivable by
+one multiplication between two sources, went unlisted; author and
+reviewer both spot-confirmed instead of sweeping. The cycle's one
+regression was the same asymmetry at the precision axis: a synthesis
+cited a timestamp to the millisecond that no retained observation
+carried, and the review rightly refused it (honest unverified) three
+rounds too late to fix without re-observation.
+
+### Added
+- **Coverage discipline (author contract)**: asserting 'every/all/no X'
+  requires performing and STATING the systematic sweep that grounds it —
+  the space enumerated and the check applied to each member; a list of
+  found examples never supports 'every', and derivable comparisons
+  between sources (a rate and its period, parts and a total) must be
+  COMPUTED, never declared unrelated.
+- **Universal-criteria rule (reviewer contract)**: a coverage-shaped
+  criterion is 'met' only with an enumeration argument (the corpus
+  manifest grounds file-level sweeps; derivable cross-source comparisons
+  must be computed); confirming the LISTED items are genuine supports
+  only 'unknown' — an incomplete sweep certified complete is the
+  false-success channel.
+- **Precision discipline (author contract)**: state values at the
+  precision the evidence actually carries — a figure, timestamp, or
+  measurement more precise than any retained observation is fabrication
+  however plausible; round or qualify instead.
+
 ## [0.19.1] — 2026-07-15
 
 Owner-review pass over the v0.19.0 proposals (cycle-2 boundary; process
