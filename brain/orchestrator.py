@@ -442,6 +442,42 @@ def _evidence_files(workspace: Path, reader_dirs: tuple,
     return out
 
 
+# Typography normalization for evidence lookup: sources and drafts spell the
+# SAME text differently (curly vs straight quotes, en/em dashes, PDF ligatures,
+# markdown emphasis around a quoted phrase) — every variant is one lexeme for
+# matching purposes. False NOT-FOUNDs burn review rounds and manufacture doubt:
+# a reviewer was observed re-verifying by direct file read what the lookup had
+# just denied. Matching stays deterministic; approximate hits are LABELED.
+_LOOKUP_CHAR_MAP = {"’": "'", "‘": "'", "‚": "'", "′": "'",
+                    "“": '"', "”": '"', "„": '"', "″": '"',
+                    "–": "-", "—": "-", "‒": "-", "−": "-",
+                    "…": "...", "ﬁ": "fi", "ﬂ": "fl", "ﬀ": "ff",
+                    "­": ""}
+_LOOKUP_TRANSPARENT = frozenset("*_`")   # markdown emphasis/code markers
+
+
+def _flatten_for_lookup(raw: str) -> tuple[str, list[int]]:
+    """Whitespace-collapsed, typography-normalized stream plus a map back to
+    original character offsets (evidence files wrap mid-sentence, so matching
+    runs on the collapsed stream and line numbers are recovered per hit)."""
+    flat: list[str] = []
+    positions: list[int] = []
+    last_ws = True
+    for i, ch in enumerate(raw):
+        if ch.isspace():
+            if not last_ws:
+                flat.append(" ")
+                positions.append(i)
+            last_ws = True
+            continue
+        mapped = "" if ch in _LOOKUP_TRANSPARENT else _LOOKUP_CHAR_MAP.get(ch, ch)
+        for out in mapped:
+            flat.append(out)
+            positions.append(i)
+            last_ws = False
+    return "".join(flat), positions
+
+
 def _locate_evidence(workspace: Path, reader_dirs: tuple, query: str,
                      context: int = 240, max_matches: int = 8,
                      extra_paths: Optional[list] = None) -> str:
@@ -452,53 +488,84 @@ def _locate_evidence(workspace: Path, reader_dirs: tuple, query: str,
     asking the stage that produced the draft: a tool-less follow-up agent
     answers from its own prose memory and was observed testifying a verbatim
     source figure was 'possibly hallucinated' — a true claim got removed on
-    false testimony."""
+    false testimony. Recall discipline: text present in retained evidence MUST
+    be findable — matching is typography-normalized, decoding is tolerant (one
+    bad byte must not hide a whole file), and when the exact phrase misses, a
+    token-level pass reports clearly-labeled approximate matches."""
     q = " ".join(str(query or "").split())
     if len(q) < 3:
         return "query too short — give the exact number/phrase/quote to locate."
+    qn = _flatten_for_lookup(q)[0].casefold()
     root = Path(workspace)
     hits: list[str] = []
-    searched = 0
+    corpus: list[tuple] = []   # (path, raw, flat, positions, flat_casefolded)
     for p in _evidence_files(workspace, reader_dirs, extra_paths):
+        try:
+            raw = p.read_text(errors="replace")
+        except OSError:
+            continue
+        if raw.count("�") > max(8, len(raw) // 20):
+            continue   # effectively binary — not a text evidence file
+        flat, positions = _flatten_for_lookup(raw)
+        corpus.append((p, raw, flat, positions, flat.casefold()))
+
+    def record_hit(p, raw, flat, positions, j: int, span: int) -> None:
+        orig = positions[j] if j < len(positions) else 0
+        line = raw.count("\n", 0, orig) + 1
+        lo, hi = max(0, j - context), min(len(flat), j + span + context)
+        snippet = flat[lo:hi].strip()
+        hits.append(f"[{p.relative_to(root)}:{line}] …{snippet}…")
+
+    for p, raw, flat, positions, flat_s in corpus:
         if len(hits) >= max_matches:
             break
-        try:
-            raw = p.read_text(errors="strict")
-        except (UnicodeDecodeError, OSError):
-            continue
-        searched += 1
-        # Evidence files wrap mid-sentence (PDF extraction), so match on
-        # whitespace-collapsed text and map back for line numbers.
-        flat, positions = [], []
-        last_ws = True
-        for i, ch in enumerate(raw):
-            if ch.isspace():
-                if not last_ws:
-                    flat.append(" ")
-                    positions.append(i)
-                last_ws = True
-            else:
-                flat.append(ch)
-                positions.append(i)
-                last_ws = False
-        flat_s = "".join(flat).lower()
         start = 0
         while len(hits) < max_matches:
-            j = flat_s.find(q.lower(), start)
+            j = flat_s.find(qn, start)
             if j < 0:
                 break
-            orig = positions[j]
-            line = raw.count("\n", 0, orig) + 1
-            lo, hi = max(0, j - context), min(len(flat_s), j + len(q) + context)
-            snippet = "".join(flat[lo:hi]).strip()
-            hits.append(f"[{p.relative_to(root)}:{line}] …{snippet}…")
-            start = j + max(1, len(q))
-    if not hits:
-        return (f"NOT FOUND: {q!r} does not occur in any of the run's evidence files "
-                f"(searched {searched} readable file(s): user inputs, extractions, and "
-                "target-lineage payloads). If a draft asserts it as a source fact, it "
-                "is unsupported.")
-    return f"FOUND {len(hits)} match(es) for {q!r}:\n" + "\n".join(hits)
+            record_hit(p, raw, flat, positions, j, len(qn))
+            start = j + max(1, len(qn))
+    if hits:
+        return f"FOUND {len(hits)} match(es) for {q!r}:\n" + "\n".join(hits)
+
+    # Token-level fallback: all content tokens, in order, within a bounded
+    # window. Reported as APPROXIMATE — 'NOT FOUND' must keep meaning 'not
+    # even approximately present', so a reviewer can still trust a miss.
+    tokens = [t for t in qn.split() if len(t) >= 3][:12]
+    if len(tokens) >= 2:
+        window = len(qn) * 2 + 240
+        for p, raw, flat, positions, flat_s in corpus:
+            if len(hits) >= max_matches:
+                break
+            start = 0
+            while len(hits) < max_matches:
+                j = flat_s.find(tokens[0], start)
+                if j < 0:
+                    break
+                pos, ok = j + len(tokens[0]), True
+                for t in tokens[1:]:
+                    k = flat_s.find(t, pos, j + window)
+                    if k < 0:
+                        ok = False
+                        break
+                    pos = k + len(t)
+                if ok:
+                    record_hit(p, raw, flat, positions, j, pos - j)
+                    start = pos
+                else:
+                    start = j + 1
+        if hits:
+            return (f"FOUND {len(hits)} APPROXIMATE match(es) for {q!r} — the exact "
+                    "phrase does not occur, but all its content words appear "
+                    "together, in order (verify the snippet's actual wording "
+                    "before citing it as verbatim):\n" + "\n".join(hits))
+
+    return (f"NOT FOUND: {q!r} does not occur in any of the run's evidence files "
+            f"(searched {len(corpus)} readable file(s): user inputs, extractions, and "
+            "target-lineage payloads; matching was typography-normalized and was "
+            "also attempted token-by-token). If a draft asserts it as a source "
+            "fact, it is unsupported.")
 
 
 def _source_evidence(workspace: Path, reader_dirs: tuple = (), limit: int = 6000,
