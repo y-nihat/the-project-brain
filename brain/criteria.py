@@ -89,6 +89,49 @@ class CountCheck:
     measured: int
     ok: bool
     gating: bool     # measured unambiguously enough to void an approval
+    scope: str = ""  # "" = whole deliverable; "section N" = measured within it
+
+
+# A count constraint may be SCOPED to a part of the deliverable ("Section 1
+# is one paragraph", "each answer under 40 words"). Measuring a scoped bound
+# against the WHOLE text is a false-violation generator with authority: an
+# approved audit was voided at its final round because "Section 1 - one
+# paragraph" was measured as nineteen paragraphs of full document. A scoped
+# constraint is measured WITHIN its identifiable part, and demoted to
+# advisory when the part cannot be identified deterministically.
+_SECTION_SCOPE = re.compile(r"(?i)\bsection\s+(\d{1,2})\b")
+_PER_ITEM_SCOPE = re.compile(r"(?i)\b(each|every|per)\s+\w")
+
+
+def _section_span(text: str, n: int):
+    """The Nth body section's CONTENT (1-based, title excluded per
+    SECTION_RULE, the section's own heading line excluded — a heading is
+    structure, not a countable paragraph/line of the section), or None when
+    the document has no such section."""
+    marks: list = []   # (heading start, level, content start)
+    for m in _ATX_HEADING.finditer(text):
+        nl = text.find("\n", m.start())
+        marks.append((m.start(), len(m.group(1)),
+                      nl + 1 if nl >= 0 else len(text)))
+    for m in _SETEXT_HEADING.finditer(text):
+        nl = text.find("\n", m.end() - 1)
+        marks.append((m.start(), 1 if m.group(1)[0] == "=" else 2,
+                      nl + 1 if nl >= 0 else len(text)))
+    marks.sort()
+    if not marks:
+        return None
+    levels = [lv for _, lv, _c in marks]
+    if len(levels) > 1 and levels[0] < min(levels[1:]):
+        marks = marks[1:]
+        levels = levels[1:]
+    if not marks:
+        return None
+    top = min(levels)
+    tops = [(pos, cstart) for pos, lv, cstart in marks if lv == top]
+    if n < 1 or n > len(tops):
+        return None
+    end = tops[n][0] if n < len(tops) else len(text)
+    return text[tops[n - 1][1]:end]
 
 
 def _count(unit: str, text: str) -> int:
@@ -146,13 +189,29 @@ def check_counts(criteria: list[str], payload: str) -> list[CountCheck]:
             if not bound or key in seen:
                 continue
             seen.add(key)
-            measured = _count(unit, payload)
+            scope, gating = "", unit in _GATING_UNITS
+            target_text = payload
+            sm = _SECTION_SCOPE.search(c)
+            if sm and unit not in ("section", "heading"):
+                span = _section_span(payload, int(sm.group(1)))
+                if span is not None:
+                    target_text = span
+                    scope = f"section {sm.group(1)}"
+                else:
+                    gating = False
+                    scope = f"section {sm.group(1)} (not found - advisory)"
+            elif _PER_ITEM_SCOPE.search(c) and unit not in ("section", "heading"):
+                # "each/every X under N words" binds per item — a global
+                # count cannot adjudicate it; advisory only.
+                gating = False
+                scope = "per-item (advisory)"
+            measured = _count(unit, target_text)
             ok = (measured == bound if op == "exact"
                   else measured >= bound if op == "min"
                   else measured <= bound)
             checks.append(CountCheck(criterion=c, unit=unit, op=op, bound=bound,
                                      measured=measured, ok=ok,
-                                     gating=unit in _GATING_UNITS))
+                                     gating=gating, scope=scope))
     return checks
 
 
@@ -219,8 +278,9 @@ def describe(checks: list[CountCheck], target: str = "the deliverable PAYLOAD") 
              "are advisory):"]
     for c in checks:
         verdict = "OK" if c.ok else ("VIOLATED" if c.gating else "over/under (advisory)")
-        lines.append(f"- {c.op} {c.bound} {c.unit}(s) required; measured {c.measured} "
-                     f"-> {verdict}  [{c.criterion[:90]}]")
+        where = f" within {c.scope}" if c.scope else ""
+        lines.append(f"- {c.op} {c.bound} {c.unit}(s) required{where}; measured "
+                     f"{c.measured} -> {verdict}  [{c.criterion[:90]}]")
     if any(c.unit in ("section", "heading") for c in checks):
         lines.append(f"(Counting rule: {SECTION_RULE}.)")
     return "\n".join(lines)
