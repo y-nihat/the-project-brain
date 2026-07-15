@@ -2092,6 +2092,11 @@ class Orchestrator:
                                  capabilities=_spec.capabilities, depends_on=_spec.depends_on)
             fixed = await self._run_agent_with_reflection(
                 spec_fix, _caps, objective, _up, history, workspace, task_context=fix_ctx)
+            # Fix rounds are where a tool's structural defect surfaces — a
+            # defect reported here must reach the repair machinery too.
+            fixed = await self._maybe_repair_and_rerun(
+                stage, spec_fix, _caps, fixed, objective, _up, history,
+                workspace, fix_ctx)
             notes = workflow.working_notes(fixed)
             if notes:
                 self._fix_notes[_spec.id] = (lessons + "\n---\n" + notes)[-4000:]
@@ -2402,6 +2407,10 @@ class Orchestrator:
                                  capabilities=_spec.capabilities, depends_on=_spec.depends_on)
             fixed = await self._run_agent_with_reflection(
                 spec_fix, _caps, objective, {}, history, workspace, task_context=fix_ctx)
+            # Same defect-repair reach as the single-stage redo closure.
+            fixed = await self._maybe_repair_and_rerun(
+                stage, spec_fix, _caps, fixed, objective, {}, history,
+                workspace, fix_ctx)
             notes = workflow.working_notes(fixed)
             if notes:
                 self._fix_notes[_spec.id] = (lessons + "\n---\n" + notes)[-4000:]
@@ -3269,6 +3278,23 @@ class Orchestrator:
         _persist_agent(config.RUNS_DIR, self.session, spec, system_prompt, out)
         return out
 
+    @staticmethod
+    def _reported_cap(raw: str, caps: dict) -> str:
+        """Match a defect report's tool name to a held capability. Agents
+        report the name their session shows them — the MCP display form
+        `mcp__<server>__<name>` — while capabilities are keyed bare; a report
+        that names the tool exactly as the reporter sees it must still reach
+        the repair machinery (observed: two precise defect reports against a
+        held tool matched nothing and the run died fighting that tool)."""
+        raw = str(raw or "")
+        if raw in caps:
+            return raw
+        if raw.startswith("mcp__"):
+            bare = raw.rsplit("__", 1)[-1]
+            if bare in caps:
+                return bare
+        return ""
+
     async def _maybe_repair_and_rerun(self, stage: StageSpec, spec: AgentSpec,
                                       caps: dict, out: str, objective: str,
                                       upstream: dict, history: Optional[str],
@@ -3279,25 +3305,29 @@ class Orchestrator:
         the dead end observed twice: a broken/inexpressive tool ended as a
         blocker note and a silently degraded deliverable (charts dropped to
         tables) while `repair_capability` sat unused — failure-driven repair
-        existed, agent-reported repair did not. Bounded per run."""
+        existed, agent-reported repair did not. Runs after the initial stage
+        session AND after every fix (redo) session — revision rounds are
+        where a tool's structural defect is usually discovered, and defects
+        reported there previously went nowhere while the review burned its
+        rounds regenerating through the same broken tool. Bounded per run."""
         if self.blackboard is None or self.manager is None or self.registry is None:
             return out
         defects = self.blackboard.get("tool.defects", []) or []
-        mine = [d for d in defects
+        mine = [(d, cap_name) for d in defects
                 if str(d.get("agent", "")).startswith(stage.id)
-                and d.get("tool") in caps and not d.get("handled")]
+                and not d.get("handled")
+                and (cap_name := self._reported_cap(d.get("tool"), caps))]
         if not mine:
             return out
-        for d in mine:
+        for d, _ in mine:
             d["handled"] = True
         self.blackboard.put("tool.defects", defects)
         if self._tool_repairs >= config.TOOL_DEFECT_REPAIRS_PER_RUN:
             self.tracer.event("capability.defect_unrepaired", stage.id, status="failed",
-                              tool=mine[-1].get("tool", ""),
+                              tool=mine[-1][0].get("tool", ""),
                               note="tool-defect repair budget exhausted")
             return out
-        d = mine[-1]
-        name = str(d.get("tool"))
+        d, name = mine[-1]
         self._tool_repairs += 1
         reason = (f"agent-reported defect: {d.get('error', '')[:400]}"
                   + (f" (tried: {d.get('tried', '')[:200]})" if d.get("tried") else ""))
@@ -3319,7 +3349,7 @@ class Orchestrator:
                   f"defect report ({d.get('error', '')[:200]}). Redo the task now USING "
                   "the repaired tool — do not keep the degraded workaround. Your previous "
                   "attempt, for reference:\n---\n" + out[:4000] + "\n---")
-        spec2 = AgentSpec(id=f"{stage.id}.retool", role=spec.role, goal=spec.goal,
+        spec2 = AgentSpec(id=f"{spec.id}.retool", role=spec.role, goal=spec.goal,
                           capabilities=spec.capabilities, depends_on=spec.depends_on)
         return await self._run_agent_with_reflection(
             spec2, caps, objective, upstream, history, workspace, task_context=note)
