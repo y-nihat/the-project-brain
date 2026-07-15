@@ -5,6 +5,91 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
 [Semantic Versioning](https://semver.org/) — `0.x` while the core algorithm
 and behavior are still expected to change between releases.
 
+## [0.17.0] — 2026-07-15
+
+The review-convergence + measurement-truth release, from the campaign's
+cycle-3 report (owner-approved fix queue). Cycle 3 proved every v0.16.0
+change did its mechanical job and exposed the next wall: reviews acted but
+did not CONVERGE, and the single largest cause was a load-bearing
+deterministic check with wrong semantics — the section counter counted the
+document's H1 title as a section, so a fully compliant deliverable (title +
+exactly N sections) measured N+1 VIOLATED, and reviewers, contractually
+bound to trust engine measurements over their own eyes, burned every
+bounded round chasing a phantom. Two compliant, factually strong runs
+shipped `unverified` on exactly this. The rest of the queue: measurement
+aimed at the wrong object, revisions that traded one measured defect for
+another, exhausted reviews holding critiques nobody could apply, a revision
+run blocked by one silent LLM judgment the plan itself contradicted, cached
+tools serving alien interfaces or overwriting their own outputs, and
+evidence lookups denying text that was verbatim in the corpus.
+
+### Fixed
+- **Section counting semantics** (`criteria.py`): sections are counted at
+  the body's top heading level; a single leading heading strictly shallower
+  than every other heading is the document TITLE, not a section; deeper
+  subheadings are structure inside a section, not more sections. The
+  `heading` unit still counts every heading. The counting rule is STATED
+  (`SECTION_RULE`) wherever measurements are shown — authors and reviewers
+  see what the engine counts, not just the number.
+- **`locate_evidence` recall**: matching is typography-normalized (curly
+  quotes, en/em dashes, PDF ligatures, soft hyphens, markdown emphasis
+  markers are transparent), decoding is tolerant (`errors="replace"` with a
+  binary guard — one bad byte no longer hides a whole evidence file), and
+  when the exact phrase misses, an ordered token-window pass reports
+  clearly-labeled APPROXIMATE matches. NOT FOUND keeps meaning "not even
+  approximately present", so a miss stays trustworthy.
+- **Output collision discipline** (`runtime._save_outputs`): a tool call
+  can no longer destroy an earlier call's distinct output — identical bytes
+  rewrite in place, different bytes land at a deduped name, and the
+  returned paths are what provenance records (a chart tool writing one
+  fixed path was observed overwriting chart after chart).
+
+### Added
+- **Measurement follows the deliverable of record**: when the run produced
+  a deliverable ARTIFACT file in a text-measurable format (declared
+  artifact role; HTML measured through a deterministic countable-text
+  projection), count criteria are measured against the artifact — the
+  payload may faithfully point at it. Facts blocks, approval-gate voids,
+  and the terminal classification all name the measurement target; the
+  author contract states it. Closes the payload-shape grading lottery
+  (10/11 → 6/11 on unchanged analysis quality).
+- **Deterministic dry-runs before the expensive verdicts**: (a) a
+  deliverable author whose draft violates a measured count constraint gets
+  the measurement and one immediate corrective pass at authoring time
+  (`criteria.presubmit_violation` / `stage.format_fixup`), instead of
+  spending a bounded review round relaying a deterministic fact; (b) a
+  reviser that fixes the critiqued items but introduces a NEW measured
+  violation gets one corrective pass in-round (`review.revision_remeasured`
+  / `review.revision_fixup`); (c) an approval that would void on FIXABLE
+  claims-table mechanics (missing table, citation that does not resolve)
+  gets one re-emission exchange checked by the UNCHANGED gate
+  (`review.claims_fixup`) — substantive defects (unsupported claims,
+  no grounded support) still void outright, never invited to retype.
+  A fix attempt that measures worse is discarded in every path.
+- **Post-review redo, bounded** (`POST_REVIEW_REDOS=1`): a review that
+  exhausts its rounds on a final `revise` verdict holding an
+  author-actionable critique applies it once and buys exactly ONE more
+  fully-gated round (`review.post_redo`). Evidence-absence voids are
+  excluded — no redo can retain evidence. Closes the three
+  `redo_unavailable` drops per cycle.
+- **Deterministic revision fallback**: a plan or objective that references
+  `prior/` run paths in a seeded session IS the revision signal — the prior
+  deliverable is seeded as target-tier evidence even when the planner's
+  `revision` judgment silently fails (`revision.fallback_detected`); the
+  single unchecked LLM emission is no longer an availability SPOF.
+- **Cached-tool interface conformance**: at reuse resolution, every key of
+  the stage's example input must be accepted by the cached tool's declared
+  schema, checked deterministically before any container runs
+  (`capability.contract_mismatch` → re-author); a cached writer serving its
+  birth task's bespoke record schema can no longer ride in on a
+  generalized description.
+- **Markup integrity at verification** (probe epoch → 5): produced `.html`
+  output that is truncated mid-tag, holds an unclosed `<script>`/`<style>`,
+  or shows a structural open/close imbalance ≥ 2 fails the build with the
+  defect named — the third-cycle-running malformed report generator class
+  dies at birth. Developer contract: derive output filenames from input
+  identity (never one fixed path); write markup as one complete document.
+
 ## [0.16.0] — 2026-07-15
 
 The see-your-own-file-state release, from the external campaign's second
