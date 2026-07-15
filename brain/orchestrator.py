@@ -2120,7 +2120,10 @@ class Orchestrator:
                          "from your previous draft VERBATIM — re-deriving untouched "
                          "numbers, quotes, names, or details from memory instead of "
                          "copying them introduces new errors that a later round will "
-                         "reject:\n" + critique)
+                         "reject. A changed FACT propagates: statements whose truth "
+                         "depends on it — figures derived from it, comparisons built "
+                         "on it, restatements of it elsewhere — are part of the fix, "
+                         "never of the verbatim carry-over:\n" + critique)
             spec_fix = AgentSpec(id=f"{_spec.id}.fix", role=_spec.role, goal=_spec.goal,
                                  capabilities=_spec.capabilities, depends_on=_spec.depends_on)
             fixed = await self._run_agent_with_reflection(
@@ -2435,7 +2438,10 @@ class Orchestrator:
                          "else over from your previous draft VERBATIM — re-deriving "
                          "untouched numbers, quotes, names, or details from memory "
                          "instead of copying them introduces new errors that a later "
-                         "round will reject:\n" + critique)
+                         "round will reject. A changed FACT propagates: statements "
+                         "whose truth depends on it — figures derived from it, "
+                         "comparisons built on it, restatements of it elsewhere — are "
+                         "part of the fix, never of the verbatim carry-over:\n" + critique)
             spec_fix = AgentSpec(id=f"{_spec.id}.fix", role=_spec.role, goal=_spec.goal,
                                  capabilities=_spec.capabilities, depends_on=_spec.depends_on)
             fixed = await self._run_agent_with_reflection(
