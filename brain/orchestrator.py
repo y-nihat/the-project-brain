@@ -2382,7 +2382,7 @@ class Orchestrator:
                           history: Optional[str], workspace: Path) -> str:
         if not stage.depends_on:
             return f"(review stage '{stage.id}': nothing to review)"
-        draft_id = stage.depends_on[0]
+        draft_id = workflow.review_subject(stage, list(self._stages_by_id.values()))
         draft = outputs.get(draft_id, "")
 
         # Evidence: the draft stage's underlying notes (its dependencies' outputs),
@@ -2392,7 +2392,9 @@ class Orchestrator:
         if draft_stage is not None:
             for dep in draft_stage.depends_on:
                 evidence.update(self._stage_notes.get(dep) or {})
-        for dep in stage.depends_on[1:]:
+        for dep in stage.depends_on:
+            if dep == draft_id:
+                continue
             evidence.update(self._stage_notes.get(dep) or
                             ({dep: outputs[dep]} if dep in outputs else {}))
 

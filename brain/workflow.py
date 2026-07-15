@@ -84,6 +84,27 @@ def extract_deliverable(text: str):
     return payload or None
 
 
+def review_subject(stage: StageSpec, stages: list[StageSpec]) -> Optional[str]:
+    """The stage a review verifies and routes revisions to: the first
+    deliverable-MARKED dependency when one exists (ownership is plan-level
+    knowledge, same authority rule as deliverable_stage_ids), else the first
+    dependency. The planner contract nowhere requires the draft to be listed
+    first, so dependency ORDER is not a signal. Observed failure this closes:
+    a review whose depends_on listed a prerequisite stage first spent every
+    round judging that stage's status report as 'the draft' and routing
+    revisions to its agent — who rightly answered that the deliverable was
+    not its task — while the marked deliverable stage's draft went exactly
+    as far as round one's fixup could carry it; two runs with
+    review-verified content shipped unverified."""
+    if not stage.depends_on:
+        return None
+    marked = {s.id for s in stages if getattr(s, "deliverable", False)}
+    for dep in stage.depends_on:
+        if dep in marked:
+            return dep
+    return stage.depends_on[0]
+
+
 def deliverable_stage_ids(stages: list["StageSpec"]) -> set[str]:
     """Stages whose output IS the artifact-of-record. Planner-marked
     (`deliverable: true`) stages are authoritative when present — ownership is
