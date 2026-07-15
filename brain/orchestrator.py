@@ -167,6 +167,22 @@ _FIXABLE_GATE_PREFIXES = ("approval without a claim-support table",
                           "miscited support")
 
 
+class CapabilityInsufficientError(RuntimeError):
+    """A held tool was reported defective/insufficient for THIS stage's need
+    and the bounded repair path could not clear it (budget exhausted, or the
+    defect recurred after a repair). Raised after the stage completes so the
+    run re-enters strategy adjudication — the observed dead end was a run
+    that filed ten precise defect reports against a cached tool whose
+    computation menu had a prior task's parameter frozen into it, spent both
+    repairs without clearing the class, and then could only block: honest,
+    but the loop never got to author a DIFFERENT tool for the same data."""
+
+    def __init__(self, capability: str, stage_id: str, detail: str):
+        self.capability = capability
+        self.stage_id = stage_id
+        super().__init__(detail)
+
+
 def _failure_signature(text: str) -> str:
     """Normalize an error detail so REPEATS of the same failure are countable
     across attempts and across differently-named contracts: hex ids, numbers
@@ -695,6 +711,8 @@ class Orchestrator:
         self._session_context: Optional[str] = None
         self._fix_notes: dict[str, str] = {}
         self._tool_repairs = 0
+        self._insufficient: dict[str, tuple] = {}
+        self._repaired_caps: set[str] = set()
         self._presubmit_fixes_left = max(0, config.PRESUBMIT_FORMAT_FIXES)
         self._revision_fixups_left = max(0, config.REVISION_FORMAT_FIXUPS)
         self._gate_fixups_left = max(0, config.REVIEW_GATE_FIXUPS)
@@ -881,6 +899,8 @@ class Orchestrator:
         self._help_request = None       # set when the brain decides to stop and ask the user
         self._fix_notes = {}            # stage id -> accumulated fix-round lessons
         self._tool_repairs = 0          # agent-reported tool-defect repairs spent
+        self._insufficient = {}         # stage id -> (tool, why) past repair's reach
+        self._repaired_caps = set()     # tools repaired this run (recurrence detector)
         self._presubmit_fixes_left = max(0, config.PRESUBMIT_FORMAT_FIXES)
 
         last_done: Optional[str] = None
@@ -892,6 +912,13 @@ class Orchestrator:
             try:
                 with self.tracer.span("stage", stage.id, pattern=stage.pattern) as sp:
                     out = await self._run_stage(stage, stages, outputs, objective, history, workspace)
+                    # A stage may COMPLETE while its capability was adjudicated
+                    # insufficient (defect reports outlived the repair budget):
+                    # its output is a gap report, not the requirement — treat
+                    # it as a method failure so recovery can author a NEW tool.
+                    ins = self._insufficient.pop(stage.id, None)
+                    if ins is not None:
+                        raise CapabilityInsufficientError(ins[0], stage.id, ins[1])
                     # Surface the stage's result in the live view: mid-run output
                     # meant for the user (a how-to, a warning) must not be
                     # invisible until the run ends.
@@ -1738,6 +1765,12 @@ class Orchestrator:
         learned, so recovery is adjudicated from evidence — failure phase, class,
         attempt history, retained observations — not from a bare retry count."""
         files = self._workspace_files(workspace)
+        if isinstance(exc, CapabilityInsufficientError):
+            return MethodOutcome(
+                stage_id=stage.id, requirement=stage.goal, phase="execution",
+                failure_class="capability_insufficient", detail=str(exc)[:500],
+                capability=exc.capability, attempts=1,
+                retryable=True, partial_evidence=files)
         if isinstance(exc, AcquisitionError):
             return MethodOutcome(
                 stage_id=stage.id, requirement=stage.goal, phase="acquisition",
@@ -3414,10 +3447,25 @@ class Orchestrator:
         for d, _ in mine:
             d["handled"] = True
         self.blackboard.put("tool.defects", defects)
+        recurred = [(d, n) for d, n in mine if n in self._repaired_caps]
+        if recurred:
+            d, name = recurred[-1]
+            self._insufficient[stage.id] = (
+                name, f"tool '{name}' was repaired this run and the defect class "
+                      f"RECURRED: {d.get('error', '')[:300]}")
+            self.tracer.event("capability.insufficient", name, status="failed",
+                              stage=stage.id, note="defect recurred after repair — "
+                              "escalating to strategy re-entry")
+            return out
         if self._tool_repairs >= config.TOOL_DEFECT_REPAIRS_PER_RUN:
+            d, name = mine[-1]
+            self._insufficient[stage.id] = (
+                name, f"tool '{name}' reported defective with the repair budget "
+                      f"exhausted: {d.get('error', '')[:300]}")
             self.tracer.event("capability.defect_unrepaired", stage.id, status="failed",
                               tool=mine[-1][0].get("tool", ""),
-                              note="tool-defect repair budget exhausted")
+                              note="tool-defect repair budget exhausted — escalating "
+                                   "to strategy re-entry")
             return out
         d, name = mine[-1]
         self._tool_repairs += 1
@@ -3431,6 +3479,7 @@ class Orchestrator:
                     broker=self.broker, model=config.model_for("repair") or self.model,
                     tracer=self.tracer, research_fn=self._research, workspace=workspace)
             caps[name] = new_cap
+            self._repaired_caps.add(name)
         except Exception as e:  # noqa: BLE001 — a failed repair leaves the honest fallback
             self.tracer.event("capability.repair_failed", name, status="failed",
                               error=f"{type(e).__name__}: {str(e)[:200]}")
