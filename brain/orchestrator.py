@@ -1265,10 +1265,18 @@ class Orchestrator:
         HTML dashboard measured '0 of 4 sections' because its one-line pointer
         payload was counted, and grading swung 10/11 -> 6/11 on unchanged
         analysis quality — pure measurement-target variance. Same filter as
-        _perceivable_artifacts: DECLARED artifact role only, renders excluded,
-        the LAST-produced file wins (a regeneration supersedes)."""
+        _perceivable_artifacts: DECLARED artifact role only, renders excluded.
+
+        Among candidates, the payload's OWN REFERENCE designates the
+        deliverable of record: an author naming the produced file it ships
+        outranks recency (observed: template-probe invocations after the real
+        artifact made 'last-produced' measure a placeholder file, in a
+        revision remeasure and again at run end — and collision-deduped
+        names guarantee such siblings accumulate). Recency remains the
+        tie-breaker among referenced files and the rule when the payload
+        references none (a regeneration supersedes)."""
         root = Path(workspace)
-        chosen = ""
+        candidates: list[str] = []
         if root.is_dir():
             for rec in evidence_mod._records(root.parent):
                 if rec.get("role") != "artifact" or rec.get("cap") == _RENDER_NEED_KEY:
@@ -1277,7 +1285,10 @@ class Orchestrator:
                     rel = str(f)
                     if (Path(rel).suffix.lower() in self._MEASURABLE_ARTIFACT_EXTS
                             and (root / rel).is_file()):
-                        chosen = rel
+                        candidates.append(rel)
+        referenced = [rel for rel in candidates
+                      if rel in payload or Path(rel).name in payload]
+        chosen = (referenced or candidates)[-1] if candidates else ""
         if not chosen:
             return payload, "the deliverable PAYLOAD"
         try:
