@@ -719,7 +719,24 @@ class Orchestrator:
             # unverifiable: the reviewer rightly refused to diff against
             # narration and the run could not be approved. Seed the prior
             # deliverable as a RETAINED, target-tier evidence file.
-            if getattr(plan, "revision", None):
+            #
+            # DETERMINISTIC FALLBACK: the planner's `revision` judgment is a
+            # single unchecked LLM emission with no second chance — when it
+            # silently fails, the seeding never triggers even though the plan
+            # itself NAMES the prior-run path it expects the deliverable at
+            # (observed: a stage goal referenced the exact prior/<id>/ path,
+            # the run discovered mid-execution that nothing was seeded there,
+            # and a healthy revision blocked). A prior/ path reference in the
+            # plan or objective IS the revision signal, judged by the engine.
+            prior_referenced = "prior/" in (
+                objective + " " + " ".join(f"{s.goal} {s.role}" for s in stages))
+            if prior_referenced and not getattr(plan, "revision", None):
+                self.tracer.event(
+                    "revision.fallback_detected", seed_run, status="info",
+                    note="the plan references prior-run paths but the planner "
+                         "emitted no revision judgment — seeding the prior "
+                         "deliverable deterministically")
+            if getattr(plan, "revision", None) or prior_referenced:
                 prior_out = Path(config.RUNS_DIR) / seed_run / "outputs"
                 for name in ("DELIVERABLE.md", "ANSWER.md"):
                     src = prior_out / name
