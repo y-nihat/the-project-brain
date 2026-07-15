@@ -1267,6 +1267,47 @@ class Orchestrator:
 
     _MEASURABLE_ARTIFACT_EXTS = (".md", ".markdown", ".txt", ".html", ".htm")
 
+    @staticmethod
+    def _dedup_family(rel: str) -> tuple[str, str]:
+        """(parent + stem without the collision ordinal, suffix): write-dedup
+        names one artifact's iterations base.md, base-2.md, base-3.md — one
+        family, one deliverable. Distinct stems are distinct artifacts."""
+        p = Path(rel)
+        stem = re.sub(r"-\d+$", "", p.stem)
+        return str(p.parent / stem), p.suffix.lower()
+
+    def _artifact_of_record(self, payload: str,
+                            workspace: Path) -> tuple[str, list[str]]:
+        """(chosen rel path or '', superseded sibling iterations) — the
+        deliverable-of-record selection shared by measurement and the review
+        context. Siblings are same-family dedup iterations that were NOT
+        chosen: engine-guaranteed debris of multi-round revision (no session
+        can overwrite or delete a workspace file), never part of what ships.
+        Observed: a review whose own verdict called the designated draft
+        criteria-clean refused approval because the sibling drafts 'create
+        ambiguity' and ordered their deletion — an impossible fix."""
+        root = Path(workspace)
+        candidates: list[str] = []
+        if root.is_dir():
+            for rec in evidence_mod._records(root.parent):
+                if rec.get("role") != "artifact" or rec.get("cap") == _RENDER_NEED_KEY:
+                    continue
+                for f in rec.get("files") or []:
+                    rel = str(f)
+                    if (Path(rel).suffix.lower() in self._MEASURABLE_ARTIFACT_EXTS
+                            and (root / rel).is_file()):
+                        candidates.append(rel)
+        referenced = [rel for rel in candidates
+                      if rel in payload or Path(rel).name in payload]
+        chosen = (referenced or candidates)[-1] if candidates else ""
+        if not chosen:
+            return "", []
+        family = self._dedup_family(chosen)
+        superseded = sorted({rel for rel in candidates
+                             if rel != chosen
+                             and self._dedup_family(rel) == family})
+        return chosen, superseded
+
     def _measurement_target(self, payload: str, workspace: Path) -> tuple[str, str]:
         """(text, label): the object count criteria are measured against.
 
@@ -1289,19 +1330,7 @@ class Orchestrator:
         tie-breaker among referenced files and the rule when the payload
         references none (a regeneration supersedes)."""
         root = Path(workspace)
-        candidates: list[str] = []
-        if root.is_dir():
-            for rec in evidence_mod._records(root.parent):
-                if rec.get("role") != "artifact" or rec.get("cap") == _RENDER_NEED_KEY:
-                    continue
-                for f in rec.get("files") or []:
-                    rel = str(f)
-                    if (Path(rel).suffix.lower() in self._MEASURABLE_ARTIFACT_EXTS
-                            and (root / rel).is_file()):
-                        candidates.append(rel)
-        referenced = [rel for rel in candidates
-                      if rel in payload or Path(rel).name in payload]
-        chosen = (referenced or candidates)[-1] if candidates else ""
+        chosen, _ = self._artifact_of_record(payload, workspace)
         if not chosen:
             return payload, "the deliverable PAYLOAD"
         try:
@@ -2556,9 +2585,33 @@ class Orchestrator:
                           "still fail its audience. Slide/page counts are measured "
                           "from the render by the engine; a mismatch voids approval.\n\n")
                 ledger_block = evidence_mod.describe(ledger_entries, self._locators)
+                # The reviewer must know which file ships. The measurement
+                # gate already follows the author's designation; a reviewer
+                # left to infer it from the workspace treats the dedup
+                # iterations every fix round necessarily leaves behind as
+                # "ambiguity" and orders deletions no session can perform.
+                rec_path, superseded = self._artifact_of_record(payload, workspace)
+                record_block = ""
+                if rec_path:
+                    record_block = (
+                        f"DELIVERABLE OF RECORD: {rec_path} — designated by the "
+                        "payload's own reference to it (or by recency when the "
+                        "payload names none). The engine measures and ships THIS "
+                        "file."
+                        + ((" Its sibling iterations (" + ", ".join(superseded)
+                            + ") are SUPERSEDED WORKING DRAFTS from earlier "
+                              "attempts: the workspace keeps one file per write "
+                              "and no session can delete them, and the engine "
+                              "ships none of them. A superseded draft's "
+                              "existence or content is NOT a defect of the "
+                              "deliverable and NOT grounds to revise or withhold "
+                              "approval — judge the deliverable of record.")
+                           if superseded else "")
+                        + "\n\n")
                 ctx = (
                     "DRAFT under review (the deliverable payload):\n---\n" + payload
                     + "\n---" + payload_note + "\n\n"
+                    + record_block
                     + (degraded_note + "\n\n" if degraded_note else "")
                     + (crash_note + "\n\n" if crash_note else "")
                     + ledger_block + "\n\n"
