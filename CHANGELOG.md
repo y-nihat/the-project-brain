@@ -5,6 +5,35 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
 [Semantic Versioning](https://semver.org/) — `0.x` while the core algorithm
 and behavior are still expected to change between releases.
 
+## [0.19.1] — 2026-07-15
+
+Owner-review pass over the v0.19.0 proposals (cycle-2 boundary; process
+corrected: the testlab now only executes tests — all analysis and
+development happen in the owner session). v0.19.0 adopted after audit:
+mechanisms verified in traces (the defect reports that matched nothing
+were confirmed as `mcp__caps__…` display-form names), gates untouched,
+zero residue. Amendments on top:
+
+### Fixed
+- **Referenced siblings are never "superseded"**: a deliverable may
+  legitimately be MANY payload-named files sharing a dedup family
+  (chapters, parts); only UNREFERENCED same-family iterations are debris.
+  Without this, the reviewer would be told to ignore shipped content.
+
+### Added
+- **Changed-fact propagation** (both fix-round prompts + the planner's
+  revision-mode contract): a revision's scope includes every statement
+  whose truth depends on a changed fact — figures derived from it,
+  comparisons built on it, restatements elsewhere — not only text quoting
+  it. The minimal-edit rule's verbatim carry-over explicitly excludes
+  them (a stale derived statement was preserved verbatim under that rule
+  while its premise changed).
+- **Defect-channel discoverability**: the agent system prompt now names
+  report_tool_defect with the insufficiency clause (a tool that runs but
+  cannot express a required property is defective for the run) — the
+  channel existed and worked only for agents that found it in the tool
+  list unprompted.
+
 ## [0.19.0] — 2026-07-15
 
 The defect-repair reach + review-context release, from campaign
