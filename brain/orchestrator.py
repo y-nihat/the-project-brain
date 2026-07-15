@@ -797,13 +797,26 @@ class Orchestrator:
             # plan or objective IS the revision signal, judged by the engine.
             prior_referenced = "prior/" in (
                 objective + " " + " ".join(f"{s.goal} {s.role}" for s in stages))
-            if prior_referenced and not getattr(plan, "revision", None):
+            # A SESSION continuation always seeds the previous turn's
+            # deliverable: the prior deliverable is the conversational
+            # referent whether or not this turn is judged a revision. Both
+            # detectors have now failed on evidence — the LLM revision
+            # judgment silently absent, and the path fallback blind to a
+            # planner that INLINED the prior deliverable's text into a stage
+            # goal (uncitable narration), leaving a preserve-discipline
+            # review no retained baseline to diff against; a healthy run
+            # blocked on an absence the engine could have provisioned.
+            session_turn = session_context is not None
+            if not getattr(plan, "revision", None) and \
+                    (prior_referenced or session_turn):
                 self.tracer.event(
                     "revision.fallback_detected", seed_run, status="info",
-                    note="the plan references prior-run paths but the planner "
-                         "emitted no revision judgment — seeding the prior "
-                         "deliverable deterministically")
-            if getattr(plan, "revision", None) or prior_referenced:
+                    note=("the plan references prior-run paths"
+                          if prior_referenced else
+                          "this run continues a session")
+                         + " but the planner emitted no revision judgment — "
+                           "seeding the prior deliverable deterministically")
+            if getattr(plan, "revision", None) or prior_referenced or session_turn:
                 prior_out = Path(config.RUNS_DIR) / seed_run / "outputs"
                 for name in ("DELIVERABLE.md", "ANSWER.md"):
                     src = prior_out / name
