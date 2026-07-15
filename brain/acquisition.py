@@ -439,13 +439,56 @@ def _irrelevant_input_probe(cap: Capability, manager, extra_env: Optional[dict])
     return True, "ok (irrelevant input handled honestly)"
 
 
+_STRUCTURAL_MARKUP_TAGS = ("html", "body", "section", "table", "div")
+
+
+def _markup_integrity_check(res) -> tuple[bool, str]:
+    """Gross-malformation gate for produced markup files: a generator whose
+    sample run already emits truncated or structurally broken HTML ships
+    defects into every consuming run (observed three cycles running — the
+    same cached report generator produced malformed output each time, and
+    every run burned repair/review budget downstream on defects verification
+    could have refused at birth). Deliberately coarse, only unarguable
+    defects fail: a file ending inside an unterminated tag, an unclosed
+    <script>/<style> block, or a structural open/close imbalance >= 2."""
+    for name, data in (getattr(res, "output_files", None) or {}).items():
+        if not str(name).lower().endswith((".html", ".htm")):
+            continue
+        try:
+            text = bytes(data).decode("utf-8", errors="replace")
+        except Exception:  # noqa: BLE001 — undecodable output is not this gate's call
+            continue
+        problems = []
+        cut = text.rfind("<")
+        if cut >= 0 and ">" not in text[cut:]:
+            problems.append("the file ends inside an unterminated tag (truncated write)")
+        for tag in ("script", "style"):
+            if len(re.findall(rf"(?i)<{tag}\b", text)) > \
+                    len(re.findall(rf"(?i)</{tag}\s*>", text)):
+                problems.append(f"an unclosed <{tag}> block")
+        for tag in _STRUCTURAL_MARKUP_TAGS:
+            opens = len(re.findall(rf"(?i)<{tag}\b[^>]*(?<!/)>", text))
+            closes = len(re.findall(rf"(?i)</{tag}\s*>", text))
+            if abs(opens - closes) >= 2:
+                problems.append(f"<{tag}> open/close imbalance ({opens} open vs "
+                                f"{closes} close)")
+        if problems:
+            return (False,
+                    f"MARKUP INTEGRITY: produced file {name!r} is malformed — "
+                    + "; ".join(problems)
+                    + ". Write the COMPLETE document in one piece and close every "
+                      "element you open, then re-submit.")
+    return True, "ok"
+
+
 # Bump when the probe battery itself changes behavior (the developer contract
 # is fingerprinted automatically; the probes are code, so they need a manual epoch).
 # 3: evidence-contract checks (contradictory yield, observation-role yield fields,
 #    remote lineage + retention) joined verification.
 # 4: observation_state required for observation-role tools + state/coverage
 #    contradiction checks (absence and failure must never share an output shape).
-_PROBE_SUITE_VERSION = "4"
+# 5: markup-integrity gate on produced .html output joined verification.
+_PROBE_SUITE_VERSION = "5"
 
 
 def validation_epoch() -> str:
@@ -605,6 +648,9 @@ def _generic_verify(cap: Capability, sample_input: dict, sample_files: dict, man
                        "filenames the tool actually read (empty list if none). Provenance "
                        "depends on this being reported truthfully.", res)
     ok, detail = _evidence_contract_check(cap, data if isinstance(data, dict) else {}, res)
+    if not ok:
+        return (False, detail, res)
+    ok, detail = _markup_integrity_check(res)
     if not ok:
         return (False, detail, res)
     return (True, f"ok: {str(data)[:120]}", res)
@@ -1002,7 +1048,13 @@ _DEVELOPER_SYSTEM = (
     "  * If your tool needs input FILES, read ALL files under /work/in/. To let callers attach files, "
     "declare an argument named `files` (array of strings) in input_schema; the system places the "
     "referenced files under /work/in/ (do NOT read `files` from the environment).\n"
-    "  * Write any OUTPUT files under /work/out/ (create the directory if needed).\n"
+    "  * Write any OUTPUT files under /work/out/ (create the directory if needed). "
+    "Derive each output FILENAME from the input's identity or an explicit argument — "
+    "never one fixed constant path, which makes consecutive calls overwrite each other "
+    "(the engine dedupes collisions defensively, but distinct outputs deserve distinct "
+    "names). A markup/document artifact (HTML or similar) must be written as ONE "
+    "complete, well-formed document — close every element you open; truncated or "
+    "structurally unbalanced files fail verification.\n"
     "  * ALWAYS print EXACTLY ONE JSON object as the LAST line of stdout summarizing the result "
     "(e.g. the answer, or the list of files you created). On failure, print "
     '{"error": "<reason>"} and exit non-zero. Exit 0 on success.\n\n'

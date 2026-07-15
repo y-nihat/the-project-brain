@@ -197,6 +197,13 @@ def _save_outputs(workspace: Path, cap_name: str, output_files: dict) -> list[st
 
     Handles nested paths (e.g. ``project/bot.py``) and refuses anything that
     would escape the capability's directory. Returns workspace-relative paths.
+
+    COLLISION DISCIPLINE: a call must never destroy an EARLIER call's distinct
+    output — a chart tool writing one fixed path was observed overwriting
+    chart after chart, so four calls yielded one surviving file. Identical
+    bytes rewrite in place (idempotent re-runs stay quiet); different bytes
+    land at a deduped name, and the RETURNED paths are the truth the caller's
+    provenance and result report.
     """
     capdir = (workspace / cap_name).resolve()
     capdir.mkdir(parents=True, exist_ok=True)
@@ -206,6 +213,25 @@ def _save_outputs(workspace: Path, cap_name: str, output_files: dict) -> list[st
         if not str(dest).startswith(str(capdir)):
             continue  # path-traversal guard: tar names come from the container
         dest.parent.mkdir(parents=True, exist_ok=True)
+        if dest.exists():
+            try:
+                same = dest.read_bytes() == data
+            except OSError:
+                same = False
+            if not same:
+                n = 2
+                while True:
+                    cand = dest.with_name(f"{dest.stem}-{n}{dest.suffix}")
+                    if not cand.exists():
+                        dest = cand
+                        break
+                    try:
+                        if cand.read_bytes() == data:
+                            dest = cand   # this exact output is already saved
+                            break
+                    except OSError:
+                        pass
+                    n += 1
         dest.write_bytes(data)
         produced.append(f"{cap_name}/{dest.relative_to(capdir)}")
     return produced

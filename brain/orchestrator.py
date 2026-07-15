@@ -3247,11 +3247,47 @@ class Orchestrator:
                     "verdict rather than guessing.")
         return caps, note
 
+    def _contract_mismatch(self, need: str, cap) -> str:
+        """Deterministic reuse guard: every key of the stage's example_input
+        must be accepted by the cached tool's declared input schema, or the
+        tool serves a DIFFERENT interface than this contract needs, however
+        well its generalized description matches. Returns the mismatch reason,
+        or '' when the interface fits. `files` is exempt (file references are
+        mounted by the engine, and extension compatibility is checked at call
+        time by incompatible_refs); a schema-less tool constrains nothing."""
+        need_spec = self._cap_needs.get(need) or {}
+        example = need_spec.get("example_input") or {}
+        if not isinstance(example, dict) or not example:
+            return ""
+        props = (cap.input_schema or {}).get("properties") or {}
+        if not props:
+            return ""
+        missing = sorted(k for k in example if k not in props and k != "files")
+        if not missing:
+            return ""
+        return (f"stage example_input keys {missing} are not in the cached tool's "
+                f"declared schema (accepts: {sorted(props)}) — its interface serves "
+                "a different contract; re-authoring under this stage's contract")
+
     async def _acquire_caps(self, spec: AgentSpec) -> dict[str, Capability]:
         caps: dict[str, Capability] = {}
         for need in spec.capabilities:
             with self.tracer.span("resolve", need, agent=spec.id):
                 decision = self.resolver.resolve(need)
+                if decision.kind == REUSE and decision.capability is not None:
+                    # INTERFACE CONFORMANCE: description-level matching cannot
+                    # see parameter schemas — a cached writer whose schema
+                    # demanded its birth task's bespoke record fields was
+                    # reused for plain text-and-filename writes and served an
+                    # alien interface for a whole run. The stage's example
+                    # input must be expressible in the tool's declared schema,
+                    # checked deterministically before any container spins up.
+                    mismatch = self._contract_mismatch(need, decision.capability)
+                    if mismatch:
+                        self.tracer.event("capability.contract_mismatch",
+                                          decision.capability.name, status="failed",
+                                          need=need, reason=mismatch[:300])
+                        decision = Decision(kind=CREATE, capability_need=need)
                 if decision.kind == REUSE and decision.capability is not None:
                     cap = decision.capability
                     # Immune system (#9): memory promoted under an older engine
