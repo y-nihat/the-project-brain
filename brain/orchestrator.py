@@ -1303,8 +1303,12 @@ class Orchestrator:
         if not chosen:
             return "", []
         family = self._dedup_family(chosen)
+        # A payload-referenced sibling is part of what ships (a deliverable
+        # may legitimately be MANY files the payload names — chapters, parts);
+        # only UNREFERENCED same-family iterations are dedup debris.
         superseded = sorted({rel for rel in candidates
                              if rel != chosen
+                             and rel not in referenced
                              and self._dedup_family(rel) == family})
         return chosen, superseded
 
