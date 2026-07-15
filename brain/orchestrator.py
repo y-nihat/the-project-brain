@@ -2082,7 +2082,12 @@ class Orchestrator:
                            "them by repeating the mistake):\n" + lessons[:2500])
                           if lessons else "")
                        + "\n\nA reviewer requires these fixes — produce a corrected, "
-                         "complete version of your result:\n" + critique)
+                         "complete version of your result. MINIMAL EDIT RULE: change "
+                         "exactly what the fixes name and carry everything else over "
+                         "from your previous draft VERBATIM — re-deriving untouched "
+                         "numbers, quotes, names, or details from memory instead of "
+                         "copying them introduces new errors that a later round will "
+                         "reject:\n" + critique)
             spec_fix = AgentSpec(id=f"{_spec.id}.fix", role=_spec.role, goal=_spec.goal,
                                  capabilities=_spec.capabilities, depends_on=_spec.depends_on)
             fixed = await self._run_agent_with_reflection(
@@ -2387,7 +2392,12 @@ class Orchestrator:
                            "them by repeating the mistake):\n" + lessons[:2500])
                           if lessons else "")
                        + "\n\nA reviewer requires these fixes — produce a corrected, "
-                         "complete version of the deliverable:\n" + critique)
+                         "complete version of the deliverable. MINIMAL EDIT RULE: "
+                         "change exactly what the fixes name and carry everything "
+                         "else over from your previous draft VERBATIM — re-deriving "
+                         "untouched numbers, quotes, names, or details from memory "
+                         "instead of copying them introduces new errors that a later "
+                         "round will reject:\n" + critique)
             spec_fix = AgentSpec(id=f"{_spec.id}.fix", role=_spec.role, goal=_spec.goal,
                                  capabilities=_spec.capabilities, depends_on=_spec.depends_on)
             fixed = await self._run_agent_with_reflection(
