@@ -5,6 +5,22 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
 [Semantic Versioning](https://semver.org/) — `0.x` while the core algorithm
 and behavior are still expected to change between releases.
 
+## [0.22.1] — 2026-07-16
+
+Campaign-3 closing improvement (post-cycle-3 owner review): the campaign's
+one real false success was mild and precise — an authored speech-to-text
+tool got two surnames wrong, flagged one as uncertain, left the other
+silently plausible, and the review approved: lookup tools cannot
+re-adjudicate audio or pixels, so identity claims from lossy perception
+shipped exactly as written.
+
+### Added
+- **Lossy-perception identity rule (reviewer contract)**: an
+  identity-critical token whose only source is lossy perception
+  (speech-to-text, OCR, image reading) and which carries an uncertainty
+  flag or renders inconsistently caps its criterion at 'unknown', never
+  'met' — an approval must not rest on it.
+
 ## [0.22.0] — 2026-07-16
 
 Scoped measurement + coverage escalation — campaign-3 cycle-2 owner
