@@ -196,3 +196,37 @@ def test_agent_contract_escalates_required_coverage_gaps():
         AgentSpec(id="a", role="R", goal="g", capabilities=[]),
         ["mcp__caps__t"], team_stages=["s1"])
     assert "COVERAGE GAP" in text and "re-observation" in text
+
+
+def test_reviewer_contract_gates_lossy_perception_identity(tmp_path, monkeypatch):
+    """Two surnames wrong, one flagged, review approved: lookup tools cannot
+    re-adjudicate audio, so flagged/inconsistent identity tokens must cap
+    their criterion at 'unknown' — approval must not rest on them."""
+    from brain.memory.blackboard import Blackboard
+    from brain.planner import StubPlanner
+    monkeypatch.setattr(config, "RUNS_DIR", tmp_path / "runs")
+    prompts = {}
+
+    async def runner(_t, name, prompt, options):
+        prompts[name] = prompt
+        if name.startswith("check.r"):
+            return "VERDICT: approved\nok"
+        return "```deliverable\nthe work\n```"
+
+    planner = StubPlanner(
+        [StageSpec(id="draft", pattern="single", role="D", goal="write",
+                   deliverable=True),
+         StageSpec(id="check", pattern="review", role="C", goal="verify",
+                   depends_on=["draft"], rounds=2)])
+    bb = Blackboard(tmp_path / "lp.db", "lossy1")
+    orch = Orchestrator(session="lossy1", manager=None, ledger=None,
+                        registry=None, blackboard=bb, broker=None,
+                        planner=planner, resolver=None, session_runner=runner,
+                        tracer=NullTracer())
+    try:
+        asyncio.run(orch.run("write the thing"))
+    finally:
+        bb.close()
+    ctx = prompts.get("check.r1", "")
+    assert "LOSSY-PERCEPTION IDENTITY RULE" in ctx
+    assert "never met" in ctx
