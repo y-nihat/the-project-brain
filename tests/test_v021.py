@@ -264,3 +264,43 @@ def test_developer_contract_has_binary_vs_text_rule():
     from brain.acquisition import _DEVELOPER_SYSTEM
     assert "BINARY VS TEXT" in _DEVELOPER_SYSTEM
     assert "struct.unpack" in _DEVELOPER_SYSTEM
+
+
+# --- v0.23.2: repaired tools quarantined cross-run (campaign-4 t6 cycle-2) ----------- #
+def test_repaired_tool_quarantined_at_run_end(tmp_path):
+    """A broken parser reused-and-repaired every cycle never got a clean
+    re-author because the patch reseeds the broken approach. A tool that
+    needed mid-run repair is quarantined so the next run re-authors it.
+    The run-end sweep quarantines every capability in _repaired_caps."""
+    quarantined = []
+
+    class Reg:
+        def get(self, n): return type("C", (), {"description": "parse a file"})()
+        def quarantine(self, name, reason): quarantined.append((name, reason))
+
+    orch = object.__new__(Orchestrator)
+    orch.tracer = NullTracer()
+    orch.registry = Reg()
+    orch._repaired_caps = {"parse_aslog_export", "ocr_cert"}
+    # exercise the run-end sweep body directly
+    for name in sorted(orch._repaired_caps):
+        orch._quarantine_insufficient(name, "required mid-run repair")
+    names = {n for n, _ in quarantined}
+    assert names == {"parse_aslog_export", "ocr_cert"}, quarantined
+    assert all("insufficient" in r for _, r in quarantined)
+
+
+def test_quarantine_insufficient_is_best_effort(tmp_path):
+    orch = object.__new__(Orchestrator)
+    orch.tracer = NullTracer()
+    orch.registry = None
+    orch._quarantine_insufficient("x", "reason")  # no registry -> no crash
+
+
+def test_agent_contract_has_citation_integrity_rule():
+    from brain import factory
+    from brain.models import AgentSpec
+    t = factory.agent_system_prompt(
+        AgentSpec(id="a", role="R", goal="g", capabilities=[]), ["mcp__caps__t"])
+    assert "CITATION INTEGRITY" in t
+    assert "ACTUALLY RESOLVED" in t and "not-found/404" in t

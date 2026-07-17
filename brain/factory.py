@@ -153,6 +153,16 @@ def agent_system_prompt(spec: AgentSpec, allowed_tools: list[str],
         "title. Describe your design in YOUR OWN output; keep it out of the artifact's text."
     )
     lines.append(
+        "CITATION INTEGRITY: when you attach evidence to a finding, cite only an "
+        "observation that ACTUALLY RESOLVED — the specific record, register, or "
+        "response that carries the fact, quoted as it actually returned. A tool call, "
+        "register read, or lookup that returned an ERROR, a not-found/404, or an empty "
+        "result is NOT evidence and must never be cited as support (cite the absence "
+        "honestly instead, in words). Do not cite a whole-sweep summary ('all pages, "
+        "SEQ 1-1240') where a single decisive record is what supports the claim: name "
+        "that record. A citation a verifier replays must reproduce the value you stated."
+    )
+    lines.append(
         "CLAIM STRENGTH MUST MATCH EVIDENCE STRENGTH. COVERAGE CLAIMS: before asserting "
         "'every/all/no X' (every discrepancy, all items, nothing missing), perform and "
         "STATE the systematic sweep that grounds it — what space you enumerated and what "

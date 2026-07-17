@@ -30,7 +30,7 @@ INBOX_DIR = DATA_DIR / "inbox"        # sanctioned drop folder: files named here
 # change invalidates promoted capabilities even without a release bump).
 # KEEP IN LOCKSTEP WITH THE RELEASE TAG — a stale label here let a biased reader
 # skip revalidation for a whole release cycle.
-ENGINE_VERSION = "0.23.0"
+ENGINE_VERSION = "0.23.2"
 
 
 def _git_commit() -> str:

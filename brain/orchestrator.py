@@ -1088,6 +1088,21 @@ class Orchestrator:
                     self.tracer.event("capability.quarantined", name, status="failed",
                                       reason="artifact defects persisted after repair")
 
+        # CROSS-RUN IMMUNE STEP: a tool that needed a mid-run repair was
+        # promoted-while-defective; its in-place patch is best-effort and NOT
+        # trusted for future reuse (observed: a parser that misread a binary
+        # file as text was reused and re-patched every cycle, the patch always
+        # reseeding the broken text approach). Quarantine it so the NEXT run
+        # re-authors a clean replacement under the current contract + the
+        # input-nature signal. Self-limiting: a correctly authored tool never
+        # needs repair, so it is never quarantined — the loop converges on a
+        # working tool and then reuses it.
+        if self.registry is not None:
+            for name in sorted(self._repaired_caps):
+                self._quarantine_insufficient(
+                    name, "required mid-run repair; re-author next run rather "
+                           "than reuse a patched tool")
+
         # Objective-success classification (#17/#20): operational completion is
         # NOT objective success, and the reason names the failing DIMENSION.
         self.classification, reason = self._classify(bool(failure_note), workspace, last_done)
@@ -3444,6 +3459,28 @@ class Orchestrator:
                 return bare
         return ""
 
+    def _quarantine_insufficient(self, name: str, reason: str) -> None:
+        """A tool the engine has declared INSUFFICIENT (repairs cannot clear the
+        reported defect) must not be silently reused next run: quarantine it so
+        the resolver re-AUTHORS it fresh. Observed: a parser that misread a
+        binary file as text was promoted-while-broken, then reused and repaired
+        every cycle — the repair reseeds the broken approach, so a fundamental
+        misperception never gets a clean re-author. Quarantine is reversible:
+        the next run authors a replacement (with the current contract + input-
+        nature signal). Best-effort — a registry hiccup must not fail the run."""
+        if self.registry is None:
+            return
+        try:
+            clean = generalize_description(
+                getattr(self.registry.get(name), "description", "") or name)
+            self.registry.quarantine(name, f"insufficient: {reason}")
+            self.tracer.event("capability.quarantined", name, status="failed",
+                              reason=f"insufficient after repair — re-author next "
+                                     f"run ({reason[:120]})", description=clean[:120])
+        except Exception as e:  # noqa: BLE001
+            self.tracer.event("capability.quarantine_failed", name, status="failed",
+                              error=f"{type(e).__name__}: {str(e)[:150]}")
+
     async def _maybe_repair_and_rerun(self, stage: StageSpec, spec: AgentSpec,
                                       caps: dict, out: str, objective: str,
                                       upstream: dict, history: Optional[str],
@@ -3480,6 +3517,8 @@ class Orchestrator:
             self.tracer.event("capability.insufficient", name, status="failed",
                               stage=stage.id, note="defect recurred after repair — "
                               "escalating to strategy re-entry")
+            self._quarantine_insufficient(name, "defect recurred after repair: "
+                                          + str(d.get('error', ''))[:200])
             return out
         if self._tool_repairs >= config.TOOL_DEFECT_REPAIRS_PER_RUN:
             d, name = mine[-1]
@@ -3490,6 +3529,8 @@ class Orchestrator:
                               tool=mine[-1][0].get("tool", ""),
                               note="tool-defect repair budget exhausted — escalating "
                                    "to strategy re-entry")
+            self._quarantine_insufficient(name, "repair budget exhausted, still "
+                                          "defective: " + str(d.get('error', ''))[:200])
             return out
         d, name = mine[-1]
         self._tool_repairs += 1

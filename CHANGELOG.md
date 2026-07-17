@@ -5,6 +5,29 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
 [Semantic Versioning](https://semver.org/) — `0.x` while the core algorithm
 and behavior are still expected to change between releases.
 
+## [0.23.2] — 2026-07-17
+
+Cross-run tool immunity + citation integrity — campaign-4 task-6 cycle-2.
+The binary parser stayed broken: cycle-1's text parser was promoted
+while broken (verification passes a tool that runs and emits JSON even
+when it mis-parses binary as text), then reused and re-patched every
+cycle — the patch reseeds the broken text approach, so the fundamental
+misperception never got a clean re-author, and the v0.23.1 authoring
+signal never fired because nothing re-authored.
+
+### Added
+- **Repaired tools are quarantined cross-run** (`_quarantine_insufficient`
+  + run-end sweep): a tool that needed a mid-run repair is not trusted for
+  future reuse — the next run re-authors a clean replacement under the
+  current contract and input-nature signal. Self-limiting: a correctly
+  authored tool never needs repair, so is never quarantined; the loop
+  converges on a working tool then reuses it. Also fires on insufficiency
+  escalation (recurrence / repair-budget-exhausted).
+- **Citation-integrity rule** (agent contract): cite only an observation
+  that ACTUALLY RESOLVED — a call/register/lookup returning an error,
+  404, or empty is not evidence; name the decisive record, not a sweep
+  summary. Closes 3 citation fabrications across cycles 1–2.
+
 ## [0.23.1] — 2026-07-17
 
 Binary-vs-text input nature — campaign-4 task-6 cycle-1 boundary. The
