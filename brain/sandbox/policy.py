@@ -29,7 +29,7 @@ class ResourcePolicy:
 
     def docker_kwargs(self) -> dict:
         """Translate the policy into keyword args for docker-py's containers API."""
-        return {
+        kw = {
             "mem_limit": self.mem,
             # Hard cap: without this Docker grants an equal amount of swap, so a
             # "256m" container can silently use ~512m at unpredictable speed.
@@ -43,6 +43,17 @@ class ResourcePolicy:
             # Writable scratch so a read-only rootfs can still run a process.
             "tmpfs": {"/tmp": "size=64m,mode=1777", "/work": "size=64m,mode=0777"},
         }
+        # A networked tool may need to reach a service the run stands up on the
+        # HOST (a device/API simulator, a local endpoint) — not just the open
+        # internet. `host.docker.internal` resolves to the host gateway, giving
+        # access to HOST-PUBLISHED ports only. This is strictly narrower than
+        # the internet egress a bridge tool already has, and crucially does NOT
+        # place the tool on the brain's own network: the docker-socket-proxy
+        # (control plane) stays unreachable, so the sandbox boundary holds.
+        # Isolated (network=none) tools get nothing.
+        if self.network != NETWORK_NONE:
+            kw["extra_hosts"] = {"host.docker.internal": "host-gateway"}
+        return kw
 
 
 def isolated() -> ResourcePolicy:

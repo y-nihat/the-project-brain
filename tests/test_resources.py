@@ -43,6 +43,20 @@ def test_memory_limit_is_hard_no_swap():
     assert kwargs["memswap_limit"] == kwargs["mem_limit"]
 
 
+def test_host_service_doorway_only_for_networked_tools():
+    """A networked tool can reach HOST-published services via
+    host.docker.internal (needed for a run's local device/API simulator) —
+    strictly narrower than its existing internet egress, and it never places
+    the tool on the brain's network, so the socket-proxy stays unreachable.
+    An isolated tool gets no such doorway."""
+    net = policy.egress().docker_kwargs()
+    assert net["extra_hosts"] == {"host.docker.internal": "host-gateway"}
+    assert net["network_mode"] == "bridge"
+    iso = policy.isolated().docker_kwargs()
+    assert "extra_hosts" not in iso
+    assert iso["network_mode"] == "none"
+
+
 def test_for_capability_clamps_to_ceilings():
     pol = policy.for_capability(memory_mb=999999, cpus=64, timeout_seconds=99999, network="bridge")
     assert pol.mem == f"{config.SANDBOX_MAX_MEM_MB}m"
