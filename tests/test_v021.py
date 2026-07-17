@@ -230,3 +230,37 @@ def test_reviewer_contract_gates_lossy_perception_identity(tmp_path, monkeypatch
     ctx = prompts.get("check.r1", "")
     assert "LOSSY-PERCEPTION IDENTITY RULE" in ctx
     assert "never met" in ctx
+
+
+# --- v0.23.1: binary-vs-text input nature (campaign-4 t6 cycle-1) -------------------- #
+def test_input_nature_flags_binary_from_example(tmp_path):
+    from brain.acquisition import _describe_input_files
+    ws = tmp_path / "ws"; (ws / "input").mkdir(parents=True)
+    (ws / "input" / "export.aslog").write_bytes(bytes([0xA5, 0x01]) + b"\x00\x10" * 64)
+    (ws / "input" / "notes.md").write_text("plain text notes, valid utf-8")
+    out = _describe_input_files({"files": ["input/export.aslog", "input/notes.md"]}, ws)
+    assert "input/export.aslog: BINARY" in out and "a5 01" in out
+    assert "open 'rb'" in out and "struct.unpack" in out
+    assert "input/notes.md: UTF-8 TEXT" in out
+
+
+def test_input_nature_falls_back_to_run_inputs_in_repair(tmp_path):
+    """Repair carries no example_input; the run's actual input files must still
+    be described so a reseed doesn't inherit a text misperception."""
+    from brain.acquisition import _describe_input_files
+    ws = tmp_path / "ws"; (ws / "input").mkdir(parents=True)
+    (ws / "input" / "telemetry.bin").write_bytes(b"\xff\xfe\x00\x01" * 40)
+    out = _describe_input_files(None, ws)
+    assert "telemetry.bin: BINARY" in out and "do NOT decode" in out
+
+
+def test_input_nature_silent_without_workspace_or_files():
+    from brain.acquisition import _describe_input_files
+    assert _describe_input_files({"files": ["x"]}, None) == ""
+    assert _describe_input_files({}, None) == ""
+
+
+def test_developer_contract_has_binary_vs_text_rule():
+    from brain.acquisition import _DEVELOPER_SYSTEM
+    assert "BINARY VS TEXT" in _DEVELOPER_SYSTEM
+    assert "struct.unpack" in _DEVELOPER_SYSTEM

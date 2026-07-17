@@ -488,7 +488,8 @@ def _markup_integrity_check(res) -> tuple[bool, str]:
 # 4: observation_state required for observation-role tools + state/coverage
 #    contradiction checks (absence and failure must never share an output shape).
 # 5: markup-integrity gate on produced .html output joined verification.
-_PROBE_SUITE_VERSION = "5"
+# 6: input-nature (binary vs UTF-8) authoring signal + binary-vs-text contract.
+_PROBE_SUITE_VERSION = "6"
 
 
 def validation_epoch() -> str:
@@ -727,6 +728,56 @@ def _evidence_contract_check(cap: Capability, data: dict, res) -> tuple[bool, st
     return (True, "ok")
 
 
+def _describe_input_files(example_input: Optional[dict], workspace) -> str:
+    """State the OBSERVABLE NATURE of each example input file — binary vs
+    UTF-8 text, size, and for binary a hex preview of the first bytes — so a
+    parser is authored for what the file ACTUALLY IS. The engine holds the
+    bytes; the developer does not. Observed failure this closes: a fixed-length
+    little-endian binary record file (documented magic byte, 24-byte records)
+    was tokenized as delimited TEXT, every record parsed wrong, and two repairs
+    inherited the same text misperception because nothing ever stated the file
+    was not text."""
+    if workspace is None:
+        return ""
+    root = Path(workspace)
+    refs = (example_input or {}).get("files")
+    if not isinstance(refs, list) or not refs:
+        # Repair mode carries no example_input — describe the run's actual
+        # input files so a reseed still learns a file is binary, not text.
+        indir = root / "input"
+        refs = ([str(p.relative_to(root)) for p in sorted(indir.iterdir())
+                 if p.is_file()] if indir.is_dir() else [])
+    if not refs:
+        return ""
+    lines: list[str] = []
+    for ref in refs[:8]:
+        p = (root / str(ref))
+        if not p.is_file():
+            continue
+        try:
+            head = p.read_bytes()[:4096]
+            size = p.stat().st_size
+        except OSError:
+            continue
+        try:
+            head.decode("utf-8")
+            lines.append(f"- {ref}: UTF-8 TEXT, {size:,} bytes.")
+        except UnicodeDecodeError:
+            hexs = " ".join(f"{b:02x}" for b in head[:16])
+            lines.append(
+                f"- {ref}: BINARY, {size:,} bytes, NOT valid UTF-8. First bytes: "
+                f"{hexs}. Parse it as BYTES (open 'rb', struct.unpack per its "
+                "documented record layout / magic / endianness) — do NOT decode "
+                "it to str and split it as delimited text. If a format spec file "
+                "is provided, follow its record structure exactly and verify your "
+                "record count and field ranges against it.")
+    if not lines:
+        return ""
+    return ("\n\nOBSERVED NATURE OF THE INPUT FILE(S) (engine-measured from the "
+            "actual bytes — author the parser for what the file IS):\n"
+            + "\n".join(lines))
+
+
 async def _author_capability(
     need_key, description, *, manager, registry, broker, model, developer, max_attempts, tracer,
     seed: Optional[dict] = None, repair_reason: Optional[str] = None, pre_interaction=None,
@@ -759,7 +810,8 @@ async def _author_capability(
                 + (f"\n\nConcrete example input for THIS task (use it in `sample_input` so the "
                    f"tool is verified against the real target; NEVER hardcode these values into "
                    f"the program or Dockerfile — they arrive as arguments at run time): "
-                   f"{json.dumps(example_input)}" if example_input else ""))
+                   f"{json.dumps(example_input)}" if example_input else "")
+                + _describe_input_files(example_input, workspace))
 
         def _fail(reason: str) -> AcquisitionError:
             if registry is not None and getattr(registry, "record_failure", None):
@@ -1100,6 +1152,13 @@ _DEVELOPER_SYSTEM = (
     "generation is the AGENT's job: the agent authors the complete final content and passes "
     "it whole. (A note-templating writer was observed slicing strings mid-word into every "
     "artifact it produced — that tool class is banned.)\n"
+    "BINARY VS TEXT (hard rule): before parsing an input file, know what it IS. A "
+    "file that is not valid UTF-8 — or whose spec describes fixed-length records, a "
+    "magic byte, or an endianness — is BINARY: open it 'rb' and struct.unpack it per "
+    "the documented record layout; NEVER decode it to str and split it on whitespace/"
+    "delimiters (that silently mangles every record). The engine states each input's "
+    "observed nature; honor it, and verify your record count and field ranges against "
+    "any provided format spec. "
     "SUPPLIED-QUANTITY PARAMETERIZATION (hard rule): any quantity the task supplies "
     "or could plausibly vary on the next call — a time window, threshold, count, unit, "
     "label set, grouping — MUST be an input_schema argument (with the current task's "

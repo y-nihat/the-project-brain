@@ -5,6 +5,28 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
 [Semantic Versioning](https://semver.org/) — `0.x` while the core algorithm
 and behavior are still expected to change between releases.
 
+## [0.23.1] — 2026-07-17
+
+Binary-vs-text input nature — campaign-4 task-6 cycle-1 boundary. The
+brain authored a text tokenizer for a fixed-length little-endian binary
+record file (documented magic byte, 24-byte records): it decoded the
+bytes to str and split on delimiters, mangling every record, and both
+repairs inherited the same misperception because nothing ever stated the
+file was not text. Every sweep/CRC/format claim failed (corpus_stats
+came back -1). The brain was HONEST about it — marked those claims
+UNVERIFIABLE, did not fabricate — so the gap is capability, not honesty.
+
+### Added
+- **Input-nature authoring signal** (`_describe_input_files`): the engine
+  states each input file's OBSERVED nature — binary vs UTF-8, size, a hex
+  preview of the first bytes — in the developer's context, so a parser is
+  authored for what the file IS. Falls back to the run's actual `input/`
+  files in repair mode, so a reseed cannot inherit a text misperception.
+- **BINARY VS TEXT contract rule**: a non-UTF-8 file (or one whose spec
+  names fixed-length records / magic / endianness) is parsed as bytes
+  (`open('rb')`, `struct.unpack` per the layout), never decoded and split
+  as delimited text. Probe epoch → 6.
+
 ## [0.23.0] — 2026-07-17
 
 Host-published service doorway for networked tools — enabling a new class
