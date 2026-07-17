@@ -5,6 +5,19 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
 [Semantic Versioning](https://semver.org/) — `0.x` while the core algorithm
 and behavior are still expected to change between releases.
 
+## [0.23.0] — 2026-07-17
+
+Host-published service doorway for networked tools — enabling a new class
+of task where the run stands up a live service (a device/API simulator, a
+local endpoint) the brain must interrogate.
+
+### Added
+- **`extra_hosts host.docker.internal:host-gateway` on networked sandbox
+  containers** (`sandbox/policy.py`): reaches HOST-PUBLISHED ports only —
+  strictly narrower than the internet egress a bridge tool already has,
+  and never places the tool on the brain's network, so the docker
+  socket-proxy stays unreachable. Isolated tools unchanged.
+
 ## [0.22.1] — 2026-07-16
 
 Campaign-3 closing improvement (post-cycle-3 owner review): the campaign's
