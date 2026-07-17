@@ -5,6 +5,22 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
 [Semantic Versioning](https://semver.org/) — `0.x` while the core algorithm
 and behavior are still expected to change between releases.
 
+## [0.23.3] — 2026-07-17
+
+Citation scoping — campaign-4 task-6 cycle-3. The binary parser
+breakthrough landed (a quarantine forced a fresh re-author, the input-
+nature signal fired, and the tool parsed the binary structurally — v1
+record count exact, v1->v2 recovery achieved). Score stayed capped by
+citation fabrications; one was a real hygiene gap: a battery-absence
+claim's evidence mentioned an unrelated watchdog event and the grader
+held the citation to the watchdog's ground truth.
+
+### Changed
+- **Citation-integrity rule extended** (agent contract): scope each
+  evidence item to the ONE fact it supports; name a record with its
+  identifying detail (id/sequence AND exact value/timestamp); follow the
+  output contract's allowed source values exactly.
+
 ## [0.23.2] — 2026-07-17
 
 Cross-run tool immunity + citation integrity — campaign-4 task-6 cycle-2.

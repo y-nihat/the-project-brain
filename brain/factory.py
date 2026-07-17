@@ -160,7 +160,14 @@ def agent_system_prompt(spec: AgentSpec, allowed_tools: list[str],
         "result is NOT evidence and must never be cited as support (cite the absence "
         "honestly instead, in words). Do not cite a whole-sweep summary ('all pages, "
         "SEQ 1-1240') where a single decisive record is what supports the claim: name "
-        "that record. A citation a verifier replays must reproduce the value you stated."
+        "that record with its identifying detail (a record's id/sequence AND its exact "
+        "value/timestamp). SCOPE each evidence item to the ONE fact it supports — do "
+        "not mention other findings inside it (an unrelated event named in a citation "
+        "reads as a claim about that event, and a verifier will hold the citation to "
+        "it). Follow the output contract's allowed source values EXACTLY: cite the "
+        "source type it names (a provided filename, the live device, or a public "
+        "standard) in the form it specifies, not a paraphrase. A citation a verifier "
+        "replays must reproduce the value you stated."
     )
     lines.append(
         "CLAIM STRENGTH MUST MATCH EVIDENCE STRENGTH. COVERAGE CLAIMS: before asserting "

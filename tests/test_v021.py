@@ -304,3 +304,5 @@ def test_agent_contract_has_citation_integrity_rule():
         AgentSpec(id="a", role="R", goal="g", capabilities=[]), ["mcp__caps__t"])
     assert "CITATION INTEGRITY" in t
     assert "ACTUALLY RESOLVED" in t and "not-found/404" in t
+    assert "SCOPE each evidence item" in t
+    assert "output contract's allowed source values" in t
