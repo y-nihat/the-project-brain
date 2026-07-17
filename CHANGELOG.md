@@ -5,6 +5,21 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
 [Semantic Versioning](https://semver.org/) — `0.x` while the core algorithm
 and behavior are still expected to change between releases.
 
+## [0.24.0] — 2026-07-17
+
+Operator-provisioned credentials for unattended runs (from PB-T07, a task
+that requires authenticated data access). An interactive session collects a
+secret when a tool asks; a headless campaign cannot — so the operator may
+pre-provision a credential via the environment.
+
+### Added
+- **`ApprovalBroker.preseed_from_env()`**: loads `BRAIN_SECRET_<NAME>` (value)
+  or `BRAIN_SECRET_<NAME>_FILE` (path whose contents are the value — keeps the
+  secret off every command line) into the session secret store. The value is
+  handled exactly like an interactively-typed one: memory-only, injected into
+  the sandbox at call time, and NEVER traced/stored — only the NAME is
+  recorded (`secret.preseeded`). Called once at session start.
+
 ## [0.23.3] — 2026-07-17
 
 Citation scoping — campaign-4 task-6 cycle-3. The binary parser

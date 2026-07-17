@@ -18,6 +18,7 @@ boundary:
 """
 from __future__ import annotations
 
+import pathlib
 import sys
 from dataclasses import dataclass, field
 from typing import Callable, Iterable, Optional
@@ -65,6 +66,42 @@ class ApprovalBroker:
         # into sandbox environments at run time and are NEVER written to the
         # trace, the registry, or disk.
         self.secrets: dict[str, str] = {}
+
+    def preseed_from_env(self) -> list[str]:
+        """Load operator-provisioned credentials from the environment so an
+        UNATTENDED run can use a secret a human would otherwise type when a tool
+        asks. Two forms per credential NAME:
+
+          * ``BRAIN_SECRET_<NAME>``       — the value directly, or
+          * ``BRAIN_SECRET_<NAME>_FILE``  — a path whose file CONTENTS are the
+            value (preferred: keeps the secret off every command line).
+
+        The value enters :attr:`secrets` exactly like an interactively-collected
+        one — memory-only, injected into sandbox env at call time, and NEVER
+        written to the trace/registry/disk; only the NAME is recorded. Returns
+        the names loaded (for the caller to log by NAME only)."""
+        import os
+
+        loaded: list[str] = []
+        for key, val in list(os.environ.items()):
+            if not key.startswith("BRAIN_SECRET_") or not val:
+                continue
+            if key.endswith("_FILE"):
+                name = key[len("BRAIN_SECRET_"):-len("_FILE")]
+                try:
+                    value = pathlib.Path(val).read_text().strip()
+                except OSError:
+                    continue
+            else:
+                name = key[len("BRAIN_SECRET_"):]
+                value = val.strip()
+            if name and value and name not in self.secrets:
+                self.secrets[name] = value
+                loaded.append(name)
+        if loaded:
+            self.tracer.event("secret.preseeded", "operator", status="info",
+                              names=sorted(loaded))  # NAMES only — never values
+        return sorted(loaded)
 
     def request(self, action: str, reason: str, requirements: Iterable[str] = ()) -> bool:
         req = ApprovalRequest(action=action, reason=reason, requirements=list(requirements))

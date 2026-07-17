@@ -60,6 +60,15 @@ class BrainSession:
         self.registry = Registry(config.DB_PATH, config.CAPABILITIES_STORE)
         # Interactive gate: real prompts reach the human running the session.
         self.broker = ApprovalBroker(input_fn=input_fn, output_fn=output_fn, tracer=self.tracer)
+        # Operator-provisioned credentials for UNATTENDED runs: an interactive
+        # session collects a secret when a tool asks; a headless run cannot, so
+        # the operator may pre-provision credentials via the environment —
+        # BRAIN_SECRET_<NAME> (value) or BRAIN_SECRET_<NAME>_FILE (a path whose
+        # CONTENTS are the value; keeps the secret off every command line). A
+        # tool that declares it needs <NAME> then receives it exactly as if a
+        # human had typed it: held in memory for the run, injected into the
+        # sandbox at call time, and NEVER traced (only the name is recorded).
+        self.broker.preseed_from_env()
         # Session revision memory: the previous objective and its deliverable,
         # so a follow-up like "I don't like the layout" is understood as
         # FEEDBACK to revise, not a fresh task to rebuild from scratch.
