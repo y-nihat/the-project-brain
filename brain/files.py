@@ -23,6 +23,21 @@ _MENTION = re.compile(r'@(?:"([^"]+)"|([^\s"\'@]+))')
 # "v3.12" — digit- or single-char tails — do not).
 _DESIGNATED = re.compile(r'`([^`]+)`|([^\s`"\'<>|]+\.[A-Za-z][A-Za-z0-9]{1,5})\b')
 _HAS_EXT = re.compile(r'\.[A-Za-z][A-Za-z0-9]{1,5}$')
+# An output verb IMMEDIATELY before a filename ('produce submission.csv',
+# 'write report.md') marks it as a thing to PRODUCE, not read.
+_IMMEDIATE_OUTPUT = re.compile(
+    r"(?i)\b(produc\w*|deliver\w*|writ\w*|sav\w*|output\w*|generat\w*|creat\w*|"
+    r"return\w*|export\w*|nam\w*|call\w*|emit\w*)\W+$")
+
+
+def _is_output_context(before: str) -> bool:
+    """True when the text BEFORE a designated filename marks it as a produced
+    DELIVERABLE (so it must not be treated as a missing input): an output verb
+    right before it, or a 'deliverable' section nearby. Kept conservative — a
+    verb far from the token (e.g. 'produce a chart from data.csv') does NOT
+    match, so a real input is still flagged."""
+    return bool(_IMMEDIATE_OUTPUT.search(before[-35:])
+                or "deliverabl" in before.lower())
 
 
 def parse_mentions(text: str) -> tuple[str, list[str]]:
@@ -106,6 +121,16 @@ def resolve_local_sources(text: str) -> tuple[str, list[str], list[str]]:
     resolved: list[str] = []
     unresolved: list[str] = []
 
+    # Pre-scan: a filename in an output/deliverable context ANYWHERE in the
+    # objective is a produced deliverable — its OTHER mentions ('the pipeline
+    # regenerates submission.csv') must not be read as missing inputs either.
+    output_names: set[str] = set()
+    for m in _DESIGNATED.finditer(text):
+        raw = m.group(1) if m.group(1) is not None else (m.group(2) or "")
+        tok = raw.strip().strip('\'"').rstrip(".,;:!?)]}")
+        if _looks_like_file(tok) and _is_output_context(text[max(0, m.start() - 200):m.start()]):
+            output_names.add(tok.rsplit("/", 1)[-1].lower())
+
     def _sub(m: re.Match) -> str:
         raw = m.group(1) if m.group(1) is not None else (m.group(2) or "")
         tok = raw.strip().strip('\'"').rstrip(".,;:!?)]}")
@@ -116,6 +141,13 @@ def resolve_local_sources(text: str) -> tuple[str, list[str], list[str]]:
             if str(hit) not in resolved:
                 resolved.append(str(hit))
             return m.group(0).replace(tok, f"input/{hit.name}")
+        # A filename the objective asks the system to PRODUCE (a deliverable) is
+        # NOT a missing INPUT: flagging it as unresolved makes the engine tell
+        # the agent to fatal-block on a file it is supposed to CREATE. Skip any
+        # token that is a deliverable here OR anywhere in the objective.
+        if (tok.rsplit("/", 1)[-1].lower() in output_names
+                or _is_output_context(text[max(0, m.start() - 200):m.start()])):
+            return m.group(0)
         if tok not in unresolved:
             unresolved.append(tok)
         return m.group(0)

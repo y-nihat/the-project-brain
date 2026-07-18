@@ -5,6 +5,66 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
 [Semantic Versioning](https://semver.org/) — `0.x` while the core algorithm
 and behavior are still expected to change between releases.
 
+## [0.24.3] — 2026-07-18
+
+Run-context ordering (PB-T07 cycle-2 crash). v0.24.1 initialized
+`_run_ctx = None` (fixing an AttributeError) but the unguarded unpackers
+`objective, history, workspace = self._run_ctx` in the research / knowledge
+/ proxy-correction paths then raised 'cannot unpack non-iterable NoneType'
+when a CROSS-RUN-SEEDED cycle exercised them during pre-stage setup —
+before run() assigned the real value.
+
+### Fixed
+- **`_run_ctx` is assigned as soon as the workspace exists**, before
+  planning, cross-run seeding, knowledge research and proxy correction —
+  all of which consume it. (Previously set only just before stage
+  execution.)
+
+## [0.24.2] — 2026-07-18
+
+Credential usage + filename-global deliverables (PB-T07 cycle-1 block).
+The Brain planned correctly, authored a Kaggle download tool that declared
+and received the credential — then rejected the valid bearer token as
+'malformed; expected username:key' and blocked asking the operator for a
+credential that was fine. A hard-coded format assumption misattributed a
+usage bug to the input.
+
+### Added
+- **Credential-usage rule (developer contract)**: an injected credential
+  is operator-provided and PRESUMED VALID — use it the way the service's
+  own standard client/CLI/library expects; do not assume one internal
+  shape (e.g. 'username:key') and reject others; a token may be opaque.
+  On auth failure, YOUR usage is the likely fault — investigate the
+  service's documented auth method before reporting the credential
+  missing/malformed.
+
+### Fixed
+- **Deliverable detection is filename-global** (`files.resolve_local_sources`):
+  a filename in an output/deliverable context ANYWHERE in the objective is
+  not read as a missing input at its other mentions (v0.24.1 missed the
+  third 'the pipeline regenerates submission.csv' mention).
+
+## [0.24.1] — 2026-07-18
+
+Deliverable filenames vs. missing inputs (PB-T07 cycle-1 crash). A task
+whose objective NAMES its deliverables ('produce submission.csv',
+'deliver method_report.md') crashed at the gate: the file resolver read
+those output names as designated INPUT files, and finding none, the
+engine told the agent to fatal-block on files it was supposed to CREATE;
+the early-block path then referenced self._run_ctx before run() set it
+and raised AttributeError.
+
+### Fixed
+- **Output-context filenames are not treated as missing inputs**
+  (`files.resolve_local_sources`): a designated filename immediately
+  preceded by an output verb (produce/write/deliver/output/generate/…) or
+  sitting in a 'deliverable' section is a produced deliverable, skipped
+  from input resolution. Conservative — a verb far from the token
+  ('produce a chart from data.csv') still flags the real input.
+- **`_run_ctx` initialized at construction**: the early-failure and
+  help-request paths guard with `if self._run_ctx`, so the attribute must
+  exist even when a run fails before run() assigns it.
+
 ## [0.24.0] — 2026-07-17
 
 Operator-provisioned credentials for unattended runs (from PB-T07, a task

@@ -713,6 +713,12 @@ class Orchestrator:
         self._tool_repairs = 0
         self._insufficient: dict[str, tuple] = {}
         self._repaired_caps: set[str] = set()
+        # Run context (objective, history, workspace); set for real once run()
+        # knows the workspace. Initialized here so the early-failure/help-request
+        # paths — which guard with ``if self._run_ctx`` — never AttributeError
+        # when a run fails BEFORE that point (observed: a run that blocked at
+        # file resolution crashed with 'no attribute _run_ctx').
+        self._run_ctx = None
         self._presubmit_fixes_left = max(0, config.PRESUBMIT_FORMAT_FIXES)
         self._revision_fixups_left = max(0, config.REVISION_FORMAT_FIXUPS)
         self._gate_fixups_left = max(0, config.REVIEW_GATE_FIXUPS)
@@ -742,6 +748,13 @@ class Orchestrator:
         # file-consuming tools across agents.
         workspace = Path(config.RUNS_DIR) / self.session / "workspace"
         workspace.mkdir(parents=True, exist_ok=True)
+        # Set the run context AS SOON as the workspace exists: sub-methods called
+        # during planning, cross-run seeding, knowledge research and proxy
+        # correction (which unpack ``objective, history, workspace = self._run_ctx``)
+        # run BEFORE stage execution. Observed: a cross-run-seeded cycle crashed
+        # 'cannot unpack non-iterable NoneType' because _run_ctx (None until set)
+        # was consumed by the research path during pre-stage setup.
+        self._run_ctx = (objective, history, workspace)
 
         # Risk-scaled review (#13): a user-REFERENCED source is evidence whether
         # it is local (attached file) or remote (a locator named in the
