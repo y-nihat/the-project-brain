@@ -31,9 +31,16 @@ async def _amain(objective: str) -> int:
 
 
 def _history_note(session: BrainSession, objective: str) -> str:
+    import os
+
     from . import config
     from .memory import history as history_mod
 
+    # Match the run's actual decision: in independent-trial mode the run does
+    # not seed, so the note must not claim it did (it is display-only, computed
+    # separately from BrainSession.run's own seed logic).
+    if os.environ.get("BRAIN_DISABLE_HISTORY_SEED"):
+        return "[memory]     independent-trial mode: not seeding from prior runs"
     hist, seed = history_mod.history_block(config.DB_PATH, config.RUNS_DIR, objective)
     if not hist:
         return ""
