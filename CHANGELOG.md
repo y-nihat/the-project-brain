@@ -5,6 +5,20 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
 [Semantic Versioning](https://semver.org/) — `0.x` while the core algorithm
 and behavior are still expected to change between releases.
 
+## [0.24.4] — 2026-07-18
+
+Independent-trial mode (PB-T07 cycle-2 reproduction). Running the SAME
+task repeatedly as separate comparable attempts, each run was seeded from
+the last — so the system re-derived the prior deliverable (byte-identical
+submission, no fresh research) instead of solving afresh.
+
+### Added
+- **`BRAIN_DISABLE_HISTORY_SEED`** (session): skips relevance-based
+  history seeding so a repeated task is solved independently each time.
+  The capability REGISTRY still persists and authored tools are reused —
+  only the prior-deliverable/workspace carry-over is suppressed. For
+  benchmarks, A/Bs, and competition re-runs.
+
 ## [0.24.3] — 2026-07-18
 
 Run-context ordering (PB-T07 cycle-2 crash). v0.24.1 initialized

@@ -167,7 +167,22 @@ class BrainSession:
                 "paths and NEVER fabricate its contents.")
             self.tracer.event("files.unavailable", "attach", status="failed", tokens=missing)
 
-        hist_text, seed_run = history_mod.history_block(config.DB_PATH, config.RUNS_DIR, objective)
+        # Independent-trial mode: an operator running the SAME task repeatedly
+        # as separate, comparable attempts (a benchmark, an A/B, a competition
+        # re-run) does not want each run seeded from the last — that makes the
+        # system re-derive the prior deliverable instead of solving afresh.
+        # BRAIN_DISABLE_HISTORY_SEED skips relevance-based history seeding; the
+        # capability REGISTRY (authored tools) still persists and is reused, so
+        # only the prior-deliverable/workspace carry-over is suppressed.
+        import os as _os
+
+        if _os.environ.get("BRAIN_DISABLE_HISTORY_SEED"):
+            hist_text, seed_run = "", None
+            self.tracer.event("history.seed_disabled", "session", status="info",
+                              reason="independent-trial mode (BRAIN_DISABLE_HISTORY_SEED)")
+        else:
+            hist_text, seed_run = history_mod.history_block(
+                config.DB_PATH, config.RUNS_DIR, objective)
         # Session continuity: the previous run OF THIS SESSION outranks the
         # relevance-picked seed (a follow-up revises what was just made), and
         # its summary goes to the planner as SESSION CONTEXT so feedback is
