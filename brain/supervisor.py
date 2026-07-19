@@ -24,6 +24,8 @@ from . import config
 ACTIONS = ("proceed", "inform_user", "redo_stage", "abort")
 # Persistence judgment at a failure/recovery boundary (Component 2).
 PERSIST_ACTIONS = ("keep_trying", "stop_and_ask", "stop")
+# Continuation judgment inside the tool-authoring loop.
+CONTINUE_ACTIONS = ("continue", "stop")
 
 _PERSIST_SYSTEM = (
     "You are the executive judgment of an autonomous run at a FAILURE/RECOVERY boundary: a "
@@ -43,7 +45,15 @@ _PERSIST_SYSTEM = (
     "Judge PROGRESS from the attempt history and the expectation-vs-observation gap, NOT from a "
     "fixed attempt count. A hard safety ceiling bounds the run regardless, so your job is to "
     "stop EARLY when more attempts are futile, and to keep going when they are still "
-    "productive. Be decisive; call emit_decision exactly once."
+    "productive.\n"
+    "INFORMATION EPOCHS: attempt-history lines may carry [epoch N] markers and 'new "
+    "information' boundaries (a credential became available, the first runtime evidence "
+    "arrived, research was delivered). Repetition counts WITHIN an epoch only — attempts made "
+    "BEFORE new information do not discredit approaches that information enables; a person who "
+    "just learned what was missing tries several methods with that new knowledge before "
+    "concluding exhaustion. Never claim something must be provided (a credential, a file) when "
+    "the digest's structured state says the run already HOLDS it. Be decisive; call "
+    "emit_decision exactly once."
 )
 
 _PERSIST_SCHEMA = {
@@ -52,6 +62,38 @@ _PERSIST_SCHEMA = {
         "action": {"type": "string", "enum": list(PERSIST_ACTIONS)},
         "needed": {"type": "string",
                    "description": "for stop_and_ask: exactly what you need from the user"},
+        "reason": {"type": "string", "description": "one short sentence"},
+    },
+    "required": ["action", "reason"],
+}
+
+_CONT_SYSTEM = (
+    "You are the executive judgment INSIDE an automated tool-authoring loop: a developer "
+    "agent has been attempting to build one tool and its latest attempt failed. Decide "
+    "whether ANOTHER attempt is justified, like a capable engineer supervising a colleague:\n"
+    "- continue: a materially different next approach exists, or new information (a "
+    "credential now available, fresh runtime evidence, research findings) has not yet been "
+    "seriously exercised. In `next_approach`, state concretely what the next attempt should "
+    "do DIFFERENTLY — it is handed to the developer as guidance.\n"
+    "- stop: the approaches admissible under the CURRENT information state are exhausted — "
+    "more attempts would repeat, not learn.\n"
+    "The history is grouped into INFORMATION EPOCHS: an epoch boundary marks genuinely new "
+    "information entering the loop. Repetition counts WITHIN an epoch only — attempts made "
+    "before new information do not discredit approaches that information enables; a person "
+    "who just learned what was missing tries several methods with it before giving up. "
+    "Distinguish failure kinds: a mechanical slip (a missing declaration, a truncated "
+    "submission) beside real implementation progress is a reason to CONTINUE with the fix "
+    "named, not evidence of a plateau. Never treat a credential the run already HOLDS as "
+    "missing. A hard attempt ceiling bounds the loop regardless, so stop only when "
+    "continuing is genuinely futile. Be decisive; call emit_decision exactly once."
+)
+
+_CONT_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "action": {"type": "string", "enum": list(CONTINUE_ACTIONS)},
+        "next_approach": {"type": "string",
+                          "description": "for continue: what the next attempt should do differently"},
         "reason": {"type": "string", "description": "one short sentence"},
     },
     "required": ["action", "reason"],
@@ -135,6 +177,9 @@ class Supervisor:
         # consultations must never starve the decision that governs whether the
         # run keeps exploring or asks for help.
         self.persist_calls = 0
+        # Authoring-loop continuation judgments: separate again, so a long
+        # authoring struggle cannot starve the stage-level persistence decision.
+        self.cont_calls = 0
 
     async def consult(self, moment: str, digest: str, allowed: tuple = ACTIONS) -> Decision:
         if not config.SUPERVISOR_ENABLED:
@@ -184,6 +229,38 @@ class Supervisor:
                           action=d.action, reason=d.reason)
         return d
 
+    async def continuation(self, digest: str) -> Decision:
+        """Continuation judgment INSIDE the tool-authoring loop: continue (with a
+        materially different or newly-enabled `next_approach`, handed to the
+        developer as guidance) or stop (the current information state is
+        exhausted). Fail-OPEN to continue — the static attempt ceiling still
+        bounds the loop — so this judgment can only stop the loop EARLIER,
+        never remove the safety rail."""
+        if not config.SUPERVISOR_ENABLED:
+            return Decision(action="continue", reason="supervision disabled")
+        if self.cont_calls >= config.CONTINUATION_MAX_CALLS:
+            return Decision(action="continue",
+                            reason="continuation-decision budget exhausted")
+        self.cont_calls += 1
+        try:
+            raw = await (self._decide("continuation", digest) if self._decide
+                         else self._llm_continuation(digest))
+            raw = raw if isinstance(raw, dict) else {}
+            action = str(raw.get("action") or "continue").strip().lower()
+            if action not in CONTINUE_ACTIONS:
+                action = "continue"
+            d = Decision(action=action,
+                         message=str(raw.get("next_approach") or "")[:2000],
+                         reason=str(raw.get("reason") or "")[:300])
+        except Exception as e:  # noqa: BLE001 — continuation must never break a run
+            self.tracer.event("supervisor.error", "continuation", status="failed",
+                              error=str(e)[:200])
+            return Decision(action="continue", reason=f"fail-open: {type(e).__name__}")
+        self.tracer.event("supervisor.continuation", "authoring", status="info",
+                          action=d.action, reason=d.reason,
+                          next_approach=d.message[:200])
+        return d
+
     async def _llm(self, moment: str, digest: str) -> dict:
         return await self._emit(_SYSTEM, _SCHEMA, f"DECISION MOMENT: {moment}\n\n{digest}",
                                 "supervisor")
@@ -195,6 +272,13 @@ class Supervisor:
         return await self._emit(_PERSIST_SYSTEM, _PERSIST_SCHEMA, digest,
                                 "supervisor.persistence",
                                 model=config.model_for("persistence"))
+
+    async def _llm_continuation(self, digest: str) -> dict:
+        # Same strategy tier as persistence: comparing approach categories and
+        # judging whether new information has been exercised is strategy.
+        return await self._emit(_CONT_SYSTEM, _CONT_SCHEMA, digest,
+                                "supervisor.continuation",
+                                model=config.model_for("continuation"))
 
     async def _emit(self, system_prompt: str, schema: dict, prompt: str, label: str,
                     model=None) -> dict:
