@@ -112,6 +112,50 @@ def _aret(v):
     return _c()
 
 
+# --- v0.25.1: the session itself fails open, and knows its budget ---------------- #
+def test_research_session_failure_degrades_not_fatal(tmp_path, monkeypatch):
+    """A research session that dies (the SDK's max-turns error result, a
+    transport failure) must degrade to an honest 'could not be completed'
+    brief — the docstring promises best-effort, and an unguarded seam here
+    killed a whole run during the pre-stage knowledge pass."""
+    monkeypatch.setattr(config, "RUNS_DIR", tmp_path / "runs")
+
+    async def runner(_t, name, prompt, options):
+        raise Exception("Claude Code returned an error result: "
+                        "Reached maximum number of turns (10)")
+
+    orch, bb = _orch(tmp_path, runner)
+    monkeypatch.setattr(orch, "_acquire_caps", lambda spec: _aret({}))
+    try:
+        out = asyncio.run(orch._research("some topic"))
+    finally:
+        bb.close()
+    assert "[research]" in out and "could not be completed" in out
+    assert "maximum number of turns" in out       # the reason reaches the requester
+    assert not orch._research_cache               # a failure is never cached as findings
+
+
+def test_research_agent_is_told_its_turn_budget(tmp_path, monkeypatch):
+    """A bounded agent must SEE its budget to ration effort and reserve the
+    final turns for concluding — a hidden cap produced a session that searched
+    to the limit and never wrote the brief."""
+    monkeypatch.setattr(config, "RUNS_DIR", tmp_path / "runs")
+    seen: dict = {}
+
+    async def runner(_t, name, prompt, options):
+        seen["prompt"] = prompt
+        return "findings"
+
+    orch, bb = _orch(tmp_path, runner)
+    monkeypatch.setattr(orch, "_acquire_caps", lambda spec: _aret({}))
+    try:
+        asyncio.run(orch._research("topic"))
+    finally:
+        bb.close()
+    assert f"at most {config.RESEARCH_AGENT_MAX_TURNS} turns" in seen["prompt"]
+    assert "WRITE THE BRIEF" in seen["prompt"]
+
+
 # --- developer agents finally get the channel ----------------------------------- #
 def test_developer_agent_gets_request_research_only_when_provided(tmp_path, monkeypatch):
     """The exact gap this closes: developer/repair agents had NO orchestrator

@@ -44,6 +44,26 @@ def test_ask_upstream_budget(tmp_path):
         bb.close()
 
 
+def test_ask_upstream_session_failure_degrades_not_fatal(tmp_path):
+    """Same fail-open contract as delegated research: the teammate's follow-up
+    session dying must come back as an honest no-answer to the ASKING agent,
+    never propagate into its session."""
+    bb = Blackboard(tmp_path / "b.db", "team-test")
+
+    async def ask_fn(stage, question):
+        raise Exception("Claude Code returned an error result: "
+                        "Reached maximum number of turns (10)")
+
+    ch = TeamChannel(agent_id="w", completed_stages=["gather"],
+                     ask_fn=ask_fn, blackboard=bb)
+    try:
+        ok, text = asyncio.run(ch.ask("gather", "q"))
+    finally:
+        bb.close()
+    assert not ok
+    assert "follow-up session failed" in text and "continue with what you have" in text
+
+
 def test_report_blocker_records_and_guides(tmp_path):
     ch, bb = _channel(tmp_path)
     try:
