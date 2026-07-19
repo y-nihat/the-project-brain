@@ -5,6 +5,32 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
 [Semantic Versioning](https://semver.org/) — `0.x` while the core algorithm
 and behavior are still expected to change between releases.
 
+## [0.25.1] — 2026-07-19
+
+Auxiliary sessions fail open (manual external-run crash). A pre-stage
+knowledge-research agent hit its turn cap without emitting its brief; the
+SDK's max-turns error propagated through a seam the code documented as
+best-effort/fail-open and killed the entire run before planning finished.
+The failure class is general: a best-effort auxiliary agent session must
+degrade, never be fatal — and a bounded agent must SEE its budget to
+ration effort toward concluding.
+
+### Fixed
+- **`_research` session guarded**: any failure of the research agent's own
+  session (max-turns, transport) degrades to an honest "[research] could
+  not be completed" brief; the requester proceeds or reports a blocker.
+  One seam covers every requester (knowledge pass, developer
+  `request_research`, team channel). Failed sessions are never cached as
+  findings.
+- **`TeamChannel.ask` guarded**: the sibling auxiliary session (a
+  teammate's follow-up answer) dying returns an honest no-answer to the
+  asking agent instead of propagating into its session.
+
+### Changed
+- **Research agent knows its turn budget**: the prompt states the cap and
+  instructs pacing — stop searching in time to write the brief; a concise
+  brief from partial findings beats hitting the cap with none.
+
 ## [0.25.0] — 2026-07-19
 
 Epoch-aware acquisition persistence (manual external-run post-mortem). The
