@@ -113,6 +113,33 @@ def test_recipe_carries_shape_verifier_and_registry_is_gone():
     assert cap.description == bootstrap.OBSERVATION_NEEDS["web_search"]
 
 
+# --- static recipes do not inherit the learning-loop ceiling --------------------- #
+def test_recipe_attempts_clamped_below_authoring_ceiling(tmp_path, monkeypatch):
+    """A recipe is static content — retries rebuild identical bytes, so the
+    raised ACQUISITION_MAX_ATTEMPTS (for loops that LEARN between attempts)
+    must not multiply recipe rebuilds on persistent failure."""
+    from brain import config
+    from brain.acquisition import AcquisitionError
+
+    monkeypatch.setattr(config, "ACQUISITION_MAX_ATTEMPTS", 10)
+    monkeypatch.setattr(acquisition, "_generic_verify",
+                        lambda *a, **k: (False, "always fails", None))
+
+    class _Mgr:
+        builds = 0
+        def build_image(self, tag, ctx):
+            _Mgr.builds += 1
+
+    try:
+        asyncio.run(acquisition.acquire(
+            "web_search", manager=_Mgr(), registry=None, broker=None,
+            tracer=NullTracer()))
+        raise AssertionError("expected AcquisitionError")
+    except AcquisitionError:
+        pass
+    assert _Mgr.builds == acquisition._RECIPE_BUILD_ATTEMPTS  # 3, not 10
+
+
 # --- bootstrap must not import the rest of the engine ---------------------------- #
 def test_bootstrap_is_a_leaf_module():
     import brain.bootstrap as b

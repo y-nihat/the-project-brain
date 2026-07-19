@@ -1248,6 +1248,7 @@ class Orchestrator:
         if not root.is_dir():
             return renderable, images
         seen: set[str] = set()
+        rexts = self._renderable_exts()   # one registry lookup, not one per file
         for rec in evidence_mod._records(root.parent):
             if rec.get("role") != "artifact" or rec.get("cap") == _RENDER_NEED_KEY:
                 continue
@@ -1257,7 +1258,7 @@ class Orchestrator:
                     continue
                 seen.add(rel)
                 ext = Path(rel).suffix.lower()
-                if ext in self._renderable_exts():
+                if ext in rexts:
                     renderable.append(rel)
                 elif ext in _IMAGE_EXTS:
                     images.append(rel)
@@ -1265,10 +1266,13 @@ class Orchestrator:
 
     def _renderable_exts(self) -> frozenset:
         """Engine prior ∪ the promoted renderer's own declared `accepts`: a
-        format the system LEARNED to render is perceived from then on."""
-        return bootstrap.renderable_exts(self.registry)
+        format the system LEARNED to render is perceived from then on.
+        Recomputed per call site (never cached long): the renderer can be
+        promoted or quarantined MID-RUN. getattr: measurement-path test
+        harnesses build partial orchestrators without a registry."""
+        return bootstrap.renderable_exts(getattr(self, "registry", None))
 
-    def _is_render_record(self, rec: dict) -> bool:
+    def _is_render_record(self, rec: dict, rexts: Optional[frozenset] = None) -> bool:
         """A render, identified by SHAPE not name (tools are contracts): the
         call consumed a renderable-format file and produced images. Covers the
         seeded render capability AND any equivalent tool a plan authored."""
@@ -1279,14 +1283,17 @@ class Orchestrator:
             return False
         if not all(Path(str(f)).suffix.lower() in _IMAGE_EXTS for f in files):
             return False
-        return any(Path(str(i)).suffix.lower() in self._renderable_exts()
+        if rexts is None:
+            rexts = self._renderable_exts()
+        return any(Path(str(i)).suffix.lower() in rexts
                    for i in rec.get("inputs") or [])
 
     def _last_render(self, workspace: Path) -> tuple[Optional[int], Optional[dict]]:
         records = evidence_mod._records(Path(workspace).parent)
         idx, last = None, None
+        rexts = self._renderable_exts()   # one lookup for the whole scan
         for i, rec in enumerate(records):
-            if self._is_render_record(rec):
+            if self._is_render_record(rec, rexts):
                 idx, last = i, rec
         return idx, last
 

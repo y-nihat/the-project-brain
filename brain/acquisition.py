@@ -175,6 +175,9 @@ _RECIPES: dict[str, tuple] = {
                    verify_web_search),
 }
 
+# Static recipe content cannot learn between attempts — see _acquire_from_recipe.
+_RECIPE_BUILD_ATTEMPTS = 3
+
 
 # --------------------------------------------------------------------------- #
 # Public entrypoint
@@ -247,7 +250,12 @@ async def _acquire_from_recipe(
 
         last_detail = ""
         build_context: Optional[dict] = None
-        for attempt in range(1, max_attempts + 1):
+        # A recipe is STATIC content: after the optional builder-agent attempt,
+        # retries rebuild identical bytes, so extra attempts only cover
+        # transient infra failures. Clamp to a small count — the authoring
+        # ceiling (ACQUISITION_MAX_ATTEMPTS) is for loops that LEARN between
+        # attempts, which this one cannot.
+        for attempt in range(1, min(max_attempts, _RECIPE_BUILD_ATTEMPTS) + 1):
             source = "recipe"
             if builder is not None and attempt == 1:
                 try:

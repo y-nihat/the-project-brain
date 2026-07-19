@@ -472,7 +472,12 @@ async def trace_query(tracer, name: str, prompt, options, *,
 
     final = ""
     last_text = ""
-    with tracer.span("agent.session", name) as sp:
+    # The SDK's num_turns (recorded as `turns` on completion) counts a FINER
+    # unit than what max_turns caps, so record the configured cap alongside —
+    # a post-mortem comparing `turns` against the cap compares unlike units.
+    cap_turns = getattr(options, "max_turns", None)
+    with tracer.span("agent.session", name,
+                     **({"max_turns": cap_turns} if cap_turns is not None else {})) as sp:
         stream = _iter_with_watchdog(
             query_fn(prompt=prompt, options=options), stall, total, f"agent '{name}'"
         )
