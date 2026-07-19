@@ -357,6 +357,17 @@ _PLAN_SCHEMA = {
 }
 
 
+def _fallback_stages(objective: str) -> list[StageSpec]:
+    """Degraded mode (the model emitted no workflow at all): one generic
+    research stage whose single capability derives from the engine's declared
+    innate observation needs — data, not a name wired into logic."""
+    from . import bootstrap
+
+    return [StageSpec(id="researcher", pattern="single", role="researcher",
+                      goal=objective,
+                      capabilities=[bootstrap.primary_observation_need()])]
+
+
 def _normalize_knowledge_needs(raw) -> list[dict]:
     out = []
     for n in raw or []:
@@ -553,9 +564,7 @@ class Planner:
         for w in warnings:
             self.tracer.event("plan.normalized", "planner", status="info", warning=w)
         if not stages:
-            # Fallback: keep the system robust if the model didn't emit a workflow.
-            stages = [StageSpec(id="researcher", pattern="single", role="researcher",
-                                goal=objective, capabilities=["web_search"])]
+            stages = _fallback_stages(objective)
         criteria = [str(c) for c in (captured.get("success_criteria") or []) if str(c).strip()]
         # The initial method choice must be as auditable as a replan: an
         # unrecorded rationale is where availability quietly becomes the rule.

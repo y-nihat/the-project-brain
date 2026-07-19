@@ -26,7 +26,7 @@ import re
 from pathlib import Path
 from typing import Awaitable, Callable, Optional
 
-from . import config, factory, workflow
+from . import bootstrap, config, factory, workflow
 from . import criteria as criteria_mod
 from . import evidence as evidence_mod
 from .acquisition import (AcquisitionError, acquire, generalize_description,
@@ -41,16 +41,11 @@ _VERDICT_RE = re.compile(r"VERDICT:\s*(approved|revise|needs-evidence)", re.IGNO
 # Audience-perceivable artifact formats that need RENDERING before anyone can
 # look at them (images are directly perceivable via read_file). Modality
 # categories, not task types — same standing as the image-extension set.
-_RENDERABLE_EXTS = {".pptx", ".ppt", ".odp", ".docx", ".doc", ".odt", ".pdf",
-                    ".html", ".htm", ".svg", ".rtf"}
-_RENDER_NEED_KEY = "render_artifact_pages"
-_RENDER_CONTRACT = (
-    "Accepts a document/presentation/page-layout file via the files argument. Renders "
-    "EVERY page/slide/frame of it to sequentially numbered PNG images (one image per "
-    "page, at a resolution where body text is readable) in the output directory. "
-    "Returns page_count and the list of image filenames, reports consumed_inputs, and "
-    "fails honestly when the format cannot be rendered. Purely a converter — no content "
-    "interpretation, no editing, no summarizing.")
+# Innate needs are DECLARED DATA (brain/bootstrap.py), never names wired into
+# logic; these aliases keep the orchestrator's public surface stable.
+_RENDERABLE_EXTS = bootstrap.RENDERABLE_EXTS_DEFAULT
+_RENDER_NEED_KEY = bootstrap.RENDER_NEED_KEY
+_RENDER_CONTRACT = bootstrap.RENDER_CONTRACT
 _CRITERIA_BLOCK_RE = re.compile(r"```criteria\s*\n(.*?)```", re.DOTALL)
 # A remote locator in the objective is user-referenced evidence, exactly like an
 # attached file (defined in the evidence module; re-exported for callers/tests).
@@ -1262,14 +1257,18 @@ class Orchestrator:
                     continue
                 seen.add(rel)
                 ext = Path(rel).suffix.lower()
-                if ext in _RENDERABLE_EXTS:
+                if ext in self._renderable_exts():
                     renderable.append(rel)
                 elif ext in _IMAGE_EXTS:
                     images.append(rel)
         return renderable[:6], images[:12]
 
-    @staticmethod
-    def _is_render_record(rec: dict) -> bool:
+    def _renderable_exts(self) -> frozenset:
+        """Engine prior ∪ the promoted renderer's own declared `accepts`: a
+        format the system LEARNED to render is perceived from then on."""
+        return bootstrap.renderable_exts(self.registry)
+
+    def _is_render_record(self, rec: dict) -> bool:
         """A render, identified by SHAPE not name (tools are contracts): the
         call consumed a renderable-format file and produced images. Covers the
         seeded render capability AND any equivalent tool a plan authored."""
@@ -1280,7 +1279,7 @@ class Orchestrator:
             return False
         if not all(Path(str(f)).suffix.lower() in _IMAGE_EXTS for f in files):
             return False
-        return any(Path(str(i)).suffix.lower() in _RENDERABLE_EXTS
+        return any(Path(str(i)).suffix.lower() in self._renderable_exts()
                    for i in rec.get("inputs") or [])
 
     def _last_render(self, workspace: Path) -> tuple[Optional[int], Optional[dict]]:
@@ -3241,7 +3240,7 @@ class Orchestrator:
                   "rather than trusting index excerpts. If sources disagree or are thin, "
                   "say so, and state what quick check would verify a brittle claim before "
                   "anyone builds on it. Do not pad."),
-            capabilities=["web_search", "fetch_page_text"])
+            capabilities=list(bootstrap.OBSERVATION_NEEDS))
         ctx = (f"A teammate needs to learn this to proceed.\nTOPIC: {topic}\n"
                + (f"WHY (what they're stuck on): {why}\n" if why else "")
                + (f"SPECIFICS (error text / versions / constraints): {specifics}\n" if specifics else "")
@@ -3252,16 +3251,12 @@ class Orchestrator:
                + "\nResearch it now and return the brief. Cite the URLs you used and mark "
                  "each key finding with confidence (confirmed-from-authoritative-page / "
                  "snippet-only / inferred).")
-        # A page fetcher is authored on first use; give it a clean
-        # instance-neutral contract instead of the stage-goal fallback.
-        self._cap_needs.setdefault("fetch_page_text", {
-            "contract": ("Fetch the page or document at a provided URL and extract its "
-                         "readable text content. Inputs: the URL (and optionally a byte/char "
-                         "limit). Output: the extracted text, retained as a payload file, "
-                         "with source_refs naming the URL actually fetched, honest "
-                         "coverage/observation_state reporting, and unresolved needs for "
-                         "content that could not be rendered or extracted."),
-            "example_input": {}})
+        # The research kit is DECLARED DATA (bootstrap.OBSERVATION_NEEDS):
+        # each need is seeded with its instance-neutral contract and authored
+        # on first use like any plan-declared capability.
+        for _need, _contract in bootstrap.OBSERVATION_NEEDS.items():
+            self._cap_needs.setdefault(_need, {"contract": _contract,
+                                               "example_input": {}})
         try:
             caps = await self._acquire_caps(spec)
         except Exception as e:  # noqa: BLE001 — research is best-effort, never fatal

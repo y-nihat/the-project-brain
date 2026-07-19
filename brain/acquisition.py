@@ -23,7 +23,7 @@ from . import config, factory
 from .models import Capability
 from .observability import NullTracer, trace_query
 from .sandbox import policy
-from .verifier import VerificationResult, verify
+from .verifier import VerificationResult, verify_web_search
 
 CAP_IMAGE_PREFIX = "brain/cap-"
 
@@ -132,13 +132,13 @@ if __name__ == "__main__":
 
 
 def web_search_capability() -> Capability:
+    from . import bootstrap
+
     return Capability(
         name="web_search",
-        description=(
-            "Search the live web via DuckDuckGo (ddgs, no API key). "
-            "Input: query (str), optional max_results (int). "
-            "Returns JSON {query, results:[{title, href, body}]}."
-        ),
+        # Single source of truth: the contract lives in bootstrap (the
+        # engine's declared innate needs); the recipe is its implementation.
+        description=bootstrap.OBSERVATION_NEEDS["web_search"],
         image_tag=f"{CAP_IMAGE_PREFIX}web_search:1.0.0",
         command=["python", "-B", "/app/search.py"],
         input_schema={
@@ -163,13 +163,16 @@ def web_search_build_context() -> dict[str, str]:
     return {"Dockerfile": WEB_SEARCH_DOCKERFILE, "search.py": WEB_SEARCH_PROGRAM}
 
 
-# (make_capability, make_build_context, free_hint, sample_input) — the sample
-# input drives the SAME generic evidence-contract verification every authored
-# observer passes; recipes get no privileged bypass.
+# (make_capability, make_build_context, free_hint, sample_input, shape_verify)
+# — the sample input drives the SAME generic evidence-contract verification
+# every authored observer passes; recipes get no privileged bypass. Each
+# recipe CARRIES its own extra known-good shape verifier as data (no
+# name-keyed verifier registry anywhere in the engine).
 _RECIPES: dict[str, tuple] = {
     "web_search": (web_search_capability, web_search_build_context,
                    "ddgs (DuckDuckGo, no API key)",
-                   {"query": "site reliability engineering", "max_results": 3}),
+                   {"query": "site reliability engineering", "max_results": 3},
+                   verify_web_search),
 }
 
 
@@ -235,7 +238,7 @@ async def acquire(
 async def _acquire_from_recipe(
     need_key, recipe, *, manager, registry, builder, max_attempts, tracer
 ) -> Capability:
-    make_cap, make_context, free_hint, sample_input = recipe
+    make_cap, make_context, free_hint, sample_input, shape_verify = recipe
     cap: Capability = make_cap()
 
     with tracer.span("capability.acquire", need_key, mode="recipe", free_path=free_hint):
@@ -277,7 +280,8 @@ async def _acquire_from_recipe(
                 ok, detail, _ = await asyncio.to_thread(
                     _generic_verify, cap, sample_input or {}, {}, manager)
                 if ok:
-                    result: VerificationResult = await asyncio.to_thread(verify, cap, manager)
+                    result: VerificationResult = await asyncio.to_thread(
+                        shape_verify, cap, manager)
                 else:
                     result = VerificationResult(False, f"evidence contract: {detail}")
                 vsp.set(passed=result.passed, detail=result.detail, source=source)

@@ -51,11 +51,7 @@ def verify_web_search(cap: Capability, manager) -> VerificationResult:
     return VerificationResult(True, f"{len(results)} results; first: {str(first.get('title'))[:60]}")
 
 
-VERIFIERS = {"web_search": verify_web_search}
-
-
-def verify(cap: Capability, manager) -> VerificationResult:
-    fn = VERIFIERS.get(cap.name)
-    if fn is None:
-        return VerificationResult(False, f"no verifier registered for capability '{cap.name}'")
-    return fn(cap, manager)
+# NOTE: there is deliberately no name-keyed verifier registry here. A recipe
+# carries its own shape verifier in its tuple (acquisition._RECIPES) — the
+# engine consumes it as recipe data, never by looking a capability name up
+# in module-level logic (generality audit, Tier B1).
