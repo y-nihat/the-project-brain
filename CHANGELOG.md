@@ -5,6 +5,24 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
 [Semantic Versioning](https://semver.org/) — `0.x` while the core algorithm
 and behavior are still expected to change between releases.
 
+## [0.26.1] — 2026-07-19
+
+Focused code review of the v0.25.0–v0.26.0 train (owner session, full
+re-read of the integrated diffs). Three findings, all fixed:
+
+### Fixed
+- **Recipe attempts clamped** (`_RECIPE_BUILD_ATTEMPTS = 3`): static recipe
+  content cannot learn between attempts, so it must not inherit the raised
+  `ACQUISITION_MAX_ATTEMPTS` (10 identical rebuilds on persistent failure).
+- **Renderable-extension lookups hoisted** (one registry read per scan, not
+  per file/record) and guarded for partial-orchestrator test harnesses —
+  the guard fix repairs a regression the hoist itself introduced and the
+  review's own suite run caught.
+- **`agent.session` spans record the configured `max_turns`**: the SDK's
+  `num_turns` (traced as `turns`) counts a finer unit than the cap, and a
+  post-mortem comparing them compared unlike units (observed: a healthy
+  14-"turn" session under a 10-cap misread as a cap bypass).
+
 ## [0.26.0] — 2026-07-19
 
 Generality audit + declared innate needs. A full audit of all 13,014 engine
