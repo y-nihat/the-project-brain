@@ -1955,12 +1955,25 @@ class Orchestrator:
         if failed.expectation:
             lines.append(f"EXPECTED YIELD (what success looks like): {failed.expectation}")
         lines += ["", "ATTEMPT / FAILURE HISTORY THIS RUN "
-                  "(judge PROGRESS — are attempts learning/closing the gap, or repeating?):"]
+                  "(judge PROGRESS — are attempts learning/closing the gap, or repeating? "
+                  "Lines may carry [epoch N] markers and '— new information' boundaries: "
+                  "an epoch boundary means genuinely NEW information entered — a "
+                  "credential, first runtime evidence, research. Repetition counts "
+                  "WITHIN an epoch; attempts before the information do not discredit "
+                  "approaches it enables):"]
         for f in self._failures[-6:]:
             lines.append(f"- '{f.stage_id}' [{f.phase}/{f.failure_class}] "
-                         f"x{max(1, f.attempts)}: {f.detail[:200]}")
-            for h in f.attempt_history[:3]:
-                lines.append(f"    · {h[:160]}")
+                         f"x{max(1, f.attempts)}: {f.detail[:300]}")
+            for h in f.attempt_history[:8]:
+                lines.append(f"    · {h[:220]}")
+        creds = sorted(getattr(self.broker, "secrets", {}) or {}) if self.broker else []
+        if creds:
+            lines.append("\nCREDENTIALS THE RUN ALREADY HOLDS (names only — values are "
+                         "cached in memory and injected into tools automatically): "
+                         + ", ".join(creds))
+            lines.append("Never answer stop_and_ask for a credential named above — the "
+                         "user already provided it; a tool rejecting its FORMAT is a "
+                         "method problem, not a missing-credential problem.")
         # Deterministic repeat detection: the same error signature under
         # different stage/tool names is the SAME approach failing — observed:
         # a supervisor read three identical failures as 'distinct fixable
@@ -3739,6 +3752,7 @@ class Orchestrator:
                         workspace=(self._run_ctx[2] if getattr(self, "_run_ctx", None)
                                    else None),
                         failure_log=getattr(self, "_acq_failures", None),
+                        supervisor=self.supervisor,
                     )
                     caps[cap.name] = cap
         return caps
