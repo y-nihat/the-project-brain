@@ -545,7 +545,10 @@ def test_authoring_failure_is_classified_and_remembered(tmp_path):
             model=None, developer=dev, max_attempts=2, tracer=NullTracer()))
     err = ei.value
     assert err.failure_class == "implementation" and err.attempts == 2
-    assert len(err.history) == 2 and "implementation" in err.history[0]
+    # history carries the 2 attempt records plus epoch-boundary markers (the
+    # first runtime evidence opens a new information epoch).
+    attempt_lines = [h for h in err.history if h.startswith("attempt ")]
+    assert len(attempt_lines) == 2 and "implementation" in attempt_lines[0]
     remembered = reg.last_failures()
     reg.close()
     assert "doomed_probe" in remembered

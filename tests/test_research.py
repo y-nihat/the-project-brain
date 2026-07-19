@@ -173,11 +173,20 @@ def test_acquire_threads_research_fn_to_the_developer(tmp_path, monkeypatch):
 
     monkeypatch.setattr(acquisition, "make_developer_agent", fake_make)
 
+    called: list = []
+
     async def research_fn(*a):
+        called.append(a)
         return "x"
 
     with pytest.raises(acquisition.AcquisitionError):
         asyncio.run(acquisition.acquire("novel_cap", manager=None, registry=reg, broker=None,
                                         tracer=NullTracer(), research_fn=research_fn))
     reg.close()
-    assert seen["research_fn"] is research_fn
+    # The authoring loop wraps research_fn (research delivery opens a new
+    # information epoch), so assert DELEGATION, not identity: the threaded
+    # callable must reach the original and return its value.
+    threaded = seen["research_fn"]
+    assert threaded is not None
+    assert asyncio.run(threaded("topic")) == "x"
+    assert called and called[-1] == ("topic",)
