@@ -3245,6 +3245,10 @@ class Orchestrator:
         ctx = (f"A teammate needs to learn this to proceed.\nTOPIC: {topic}\n"
                + (f"WHY (what they're stuck on): {why}\n" if why else "")
                + (f"SPECIFICS (error text / versions / constraints): {specifics}\n" if specifics else "")
+               + f"\nBUDGET: you have at most {config.RESEARCH_AGENT_MAX_TURNS} turns in this "
+                 "session. Pace yourself: stop searching/fetching in time to WRITE THE BRIEF — "
+                 "a concise brief from partial findings beats hitting the cap with none. "
+                 "Reserve your final turns for composing it."
                + "\nResearch it now and return the brief. Cite the URLs you used and mark "
                  "each key finding with confidence (confirmed-from-authoritative-page / "
                  "snippet-only / inferred).")
@@ -3271,11 +3275,23 @@ class Orchestrator:
         # silent throughout and must not be stall-killed for waiting
         # (observed: a watchdog killed the requesting developer mid-research
         # and the finished research was discarded with the cascade).
-        with activity.working(), self.tracer.span("research", spec.id, topic=key[:120]):
-            findings = await self._run_agent_with_reflection(
-                spec, caps, objective, {}, history, workspace, task_context=ctx,
-                model=config.model_for("research"), team=False,
-                max_turns=config.RESEARCH_AGENT_MAX_TURNS)
+        # The session itself is guarded like acquisition above: a research agent
+        # that dies (the SDK's max-turns error result, a transport failure) must
+        # degrade to an honest no-brief, never propagate — an unguarded seam
+        # here killed a whole run during the pre-stage knowledge pass while the
+        # docstring promised best-effort.
+        try:
+            with activity.working(), self.tracer.span("research", spec.id, topic=key[:120]):
+                findings = await self._run_agent_with_reflection(
+                    spec, caps, objective, {}, history, workspace, task_context=ctx,
+                    model=config.model_for("research"), team=False,
+                    max_turns=config.RESEARCH_AGENT_MAX_TURNS)
+        except Exception as e:  # noqa: BLE001 — research is best-effort, never fatal
+            self.tracer.event("research.failed", spec.id, status="failed",
+                              error=f"{type(e).__name__}: {str(e)[:200]}")
+            return ("[research] the research session could not be completed "
+                    f"({str(e)[:160]}). Proceed with what you already know, or report "
+                    "a blocker if you genuinely cannot continue without it.")
         brief = ("[research findings — METHOD KNOWLEDGE / general web testimony, NOT source "
                  "evidence about your task's designated target; use it to choose your "
                  "approach, never present it as an observation of the target. Before an "

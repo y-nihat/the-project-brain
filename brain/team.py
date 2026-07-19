@@ -74,7 +74,16 @@ class TeamChannel:
         self.questions_used += 1
         self.tracer.event("team.question", self.agent_id, status="info",
                           to=stage, question=question[:300], n=self.questions_used)
-        answer = await self._ask_fn(stage, question)
+        # Same fail-open contract as delegated research: an auxiliary session
+        # (the teammate's follow-up) that dies must degrade to an honest
+        # no-answer, never propagate into the asking agent's session.
+        try:
+            answer = await self._ask_fn(stage, question)
+        except Exception as e:  # noqa: BLE001 — an aux session is never fatal
+            self.tracer.event("team.question_failed", self.agent_id, status="failed",
+                              to=stage, error=f"{type(e).__name__}: {str(e)[:200]}")
+            return False, (f"the teammate's follow-up session failed "
+                           f"({str(e)[:120]}); continue with what you have.")
         return True, answer
 
     def block(self, issue: str, needed: Optional[str] = None,
