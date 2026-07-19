@@ -436,7 +436,11 @@ def test_recipe_web_search_holds_the_full_evidence_contract(tmp_path):
     assert "search-results-" in p                       # unique per call: no overwrite
     assert "observation_state" in p
     assert "source_refs" in p and "coverage" in p and "unresolved_needs" in p
-    assert len(acquisition._RECIPES["web_search"]) == 4  # sample_input drives generic verify
+    # (make_cap, make_context, free_hint, sample_input, shape_verify):
+    # sample_input drives the generic verify; the shape verifier rides as
+    # recipe DATA (no name-keyed verifier registry in the engine).
+    recipe = acquisition._RECIPES["web_search"]
+    assert len(recipe) == 5 and recipe[3] and callable(recipe[4])
 
 
 # --- perception: image observations are presentable -------------------------------- #
