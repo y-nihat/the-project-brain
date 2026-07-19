@@ -5,6 +5,34 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
 [Semantic Versioning](https://semver.org/) — `0.x` while the core algorithm
 and behavior are still expected to change between releases.
 
+## [0.26.0] — 2026-07-19
+
+Generality audit + declared innate needs. A full audit of all 13,014 engine
+lines against the core-loop invariant (docs/GENERALITY_AUDIT.md) found **no
+task-specific functionality** — zero task nouns in logic/prompts/contracts,
+no fixed pipelines, every capability contract-mediated — and four places
+where engine code NAMED a capability instead of declaring a contract. The
+defect class: innate behavior encoded as code instead of data.
+
+### Added
+- **`brain/bootstrap.py`** — the engine's innate needs declared as DATA:
+  `OBSERVATION_NEEDS` (the research channel's contracts),
+  `RENDER_NEED_KEY`/`RENDER_CONTRACT`, `RENDERABLE_EXTS_DEFAULT`, and
+  `renderable_exts(registry)` — the engine's format prior unioned with the
+  promoted renderer's own declared `accepts`, so a format the system
+  LEARNED to render is perceived from then on.
+- **docs/GENERALITY_AUDIT.md** — method, verdict, findings, the
+  deliberately-closed vocabularies (safety enums, evidence ontology,
+  measurement grammar), and a standing vocabulary test for future changes.
+
+### Changed
+- Research agent kit and its seeded contracts derive from
+  `OBSERVATION_NEEDS` (inline names/contract removed); planner degraded-mode
+  fallback derives its capability from `primary_observation_need()`;
+  perceptual-review checks and render-record detection use the learned
+  extension set; recipes carry their own shape verifier as tuple data — the
+  name-keyed `VERIFIERS` registry is deleted.
+
 ## [0.25.1] — 2026-07-19
 
 Auxiliary sessions fail open (manual external-run crash). A pre-stage
