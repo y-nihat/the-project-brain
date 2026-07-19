@@ -5,6 +5,43 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
 [Semantic Versioning](https://semver.org/) — `0.x` while the core algorithm
 and behavior are still expected to change between releases.
 
+## [0.25.0] — 2026-07-19
+
+Epoch-aware acquisition persistence (manual external-run post-mortem). The
+authoring loop died at a static 3-attempt ceiling with the fix IN HAND: the
+final attempt embodied a new solution category — enabled by runtime evidence
+and by a credential the user had already provided — but was counted as "the
+third repetition", and the stage-boundary judge, reading truncated one-line
+history, concluded a plateau and re-asked for a credential the run already
+held. Repetition must be judged per information state, not per retry count.
+
+### Added
+- **Information epochs** (acquisition): attempts are grouped by information
+  state — a new epoch begins when a credential becomes available that earlier
+  attempts ran without, when the first runtime verification evidence arrives,
+  or when research is delivered mid-loop. Epoch boundaries ride in the
+  attempt history (`— new information: …`), and each fresh epoch is
+  guaranteed `ACQUISITION_EPOCH_GRACE` (default 2) attempts before any
+  judgment may stop the loop — new information deserves real use.
+- **Continuation judgment** (supervisor): past the grace floor, the
+  supervisor decides after each failure whether another attempt is justified.
+  Continue requires naming a materially different `next_approach` (handed to
+  the developer as guidance); stop ends the loop honestly. Fail-open to
+  continue, own budget (`CONTINUATION_MAX_CALLS`) — it can only stop the
+  loop EARLIER than the ceiling, never remove the rail.
+- **`approach` submission field**: the developer self-declares each
+  attempt's approach, so the judgment compares solution categories rather
+  than counting retries.
+
+### Changed
+- **Authoring ceiling** is config-driven and higher: `ACQUISITION_MAX_ATTEMPTS`
+  (default 10; was a hard-coded 3) — now a safety rail, not the governor.
+- **Persistence digest** (stage boundary): full-width attempt lines with
+  epoch markers and the epoch-repetition instruction, plus the NAMES of
+  credentials the run already holds — "authentication only the user can
+  supply" can no longer be concluded for a credential sitting in the
+  broker's cache.
+
 ## [0.24.4] — 2026-07-18
 
 Independent-trial mode (PB-T07 cycle-2 reproduction). Running the SAME
