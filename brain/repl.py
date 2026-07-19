@@ -144,6 +144,11 @@ def format_event(record: dict) -> Optional[str]:
         return f"  🧭 supervisor [{name}]: {data.get('action')} — {str(data.get('reason', ''))[:80]}"
     if kind == "supervisor.redo":
         return f"  🧭 supervisor sent {name} back: {str(data.get('guidance', ''))[:80]}"
+    if kind == "supervisor.continuation":
+        verb = "another attempt" if data.get("action") == "continue" else "STOP authoring"
+        return f"     ⚖ continuation judgment: {verb} — {str(data.get('reason', ''))[:80]}"
+    if kind == "acquire.epoch":
+        return f"     ↳ new information (epoch {data.get('epoch')}): {str(data.get('note', ''))[:90]}"
     if kind == "supervisor.error":
         return None  # fail-open is silent; the trace has it
     if kind == "user.informed":

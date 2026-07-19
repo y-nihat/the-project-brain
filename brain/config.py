@@ -216,6 +216,18 @@ SUPERVISOR_MAX_CALLS = int(os.environ.get("SUPERVISOR_MAX_CALLS", "12"))
 # and route to the STRONG model tier — they are strategy, not mechanics.
 PERSISTENCE_MAX_CALLS = int(os.environ.get("PERSISTENCE_MAX_CALLS", "6"))
 
+# Tool authoring: attempts are grouped into INFORMATION EPOCHS — a new epoch
+# begins when genuinely new information enters the loop (a credential became
+# available, the first runtime verification evidence arrived, research was
+# delivered). The ceiling is a static safety rail; WITHIN it, the supervisor's
+# continuation judgment decides after each failure whether another attempt is
+# justified. Repetition only counts within an epoch: a fresh epoch is
+# guaranteed EPOCH_GRACE attempts before that judgment may stop the loop —
+# new information deserves real use before "exhausted" can be concluded.
+ACQUISITION_MAX_ATTEMPTS = int(os.environ.get("ACQUISITION_MAX_ATTEMPTS", "10"))
+ACQUISITION_EPOCH_GRACE = int(os.environ.get("ACQUISITION_EPOCH_GRACE", "2"))
+CONTINUATION_MAX_CALLS = int(os.environ.get("CONTINUATION_MAX_CALLS", "12"))
+
 # User-provided files (@mentions / attach): copied into the run workspace.
 FILE_ATTACH_MAX_MB = int(os.environ.get("FILE_ATTACH_MAX_MB", "50"))
 FILE_ATTACH_TOTAL_MAX_MB = int(os.environ.get("FILE_ATTACH_TOTAL_MAX_MB", "200"))

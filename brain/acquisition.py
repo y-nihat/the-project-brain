@@ -190,13 +190,14 @@ async def acquire(
     developer: Optional[Developer] = None,
     description: Optional[str] = None,
     model: Optional[str] = None,
-    max_attempts: int = 3,
+    max_attempts: Optional[int] = None,
     tracer=None,
     pre_interaction=None,
     example_input: Optional[dict] = None,
     research_fn=None,
     workspace=None,
     failure_log: Optional[list] = None,
+    supervisor=None,
 ) -> Capability:
     """Acquire the capability for ``need_key`` (recipe if known, else author it).
 
@@ -208,8 +209,12 @@ async def acquire(
     ``failure_log`` is the caller's RUN-scoped, cross-contract failure memory:
     entries from earlier acquisitions this run are shown to the developer, and
     this acquisition appends its own failures — per-name memory alone lets an
-    identical approach fail again under every new name a replan invents."""
+    identical approach fail again under every new name a replan invents.
+    ``supervisor`` (optional) provides the continuation judgment that governs
+    the authoring loop between the epoch-grace floor and the static ceiling."""
     tracer = tracer or NullTracer()
+    if max_attempts is None:
+        max_attempts = config.ACQUISITION_MAX_ATTEMPTS
     recipe = _RECIPES.get(need_key)
     if recipe is not None:
         return await _acquire_from_recipe(
@@ -220,7 +225,7 @@ async def acquire(
         need_key, description or need_key, manager=manager, registry=registry, broker=broker,
         model=model, developer=developer, max_attempts=max_attempts, tracer=tracer,
         pre_interaction=pre_interaction, example_input=example_input, research_fn=research_fn,
-        workspace=workspace, failure_log=failure_log,
+        workspace=workspace, failure_log=failure_log, supervisor=supervisor,
     )
 
 
@@ -778,12 +783,54 @@ def _describe_input_files(example_input: Optional[dict], workspace) -> str:
             + "\n".join(lines))
 
 
+def _continuation_digest(need_key: str, description: str, records: list[dict],
+                         epoch_notes: list[str], cred_names: list,
+                         next_attempt: int, max_attempts: int) -> str:
+    """State for the continuation judgment: the contract, the attempt history
+    grouped by information epoch (with each attempt's self-declared approach),
+    the credentials the run already holds, and the remaining budget."""
+    lines = [f"An automated developer is authoring the tool '{need_key}'.",
+             f"CONTRACT: {description[:400]}", "",
+             "ATTEMPT HISTORY, grouped by INFORMATION EPOCH (an epoch boundary "
+             "means genuinely NEW information entered the loop — attempts before "
+             "it could not use that information and do NOT discredit approaches "
+             "it enables):"]
+    for e, note in enumerate(epoch_notes):
+        lines.append(f"epoch {e} — {note}:")
+        eh = [r for r in records if r.get("epoch") == e]
+        for r in eh:
+            appr = f" (approach: {r['approach'][:90]})" if r.get("approach") else ""
+            lines.append(f"  · attempt {r['attempt']}{appr}: "
+                         f"{r['cls']} — {str(r['detail'])[:220]}")
+        if not eh:
+            lines.append("  · (no failed attempts yet under this information)")
+    if cred_names:
+        lines.append("\nCREDENTIALS THE RUN ALREADY HOLDS (names only — values are "
+                     "cached in memory and injected into tools automatically; these "
+                     "are NOT missing): " + ", ".join(str(c) for c in cred_names))
+    lines.append(f"\nBUDGET: about to start attempt {next_attempt} of a hard "
+                 f"ceiling of {max_attempts}.")
+    lines.append("Decide: continue (state in `next_approach` what the next attempt "
+                 "should do differently) / stop (the current information state is "
+                 "exhausted).")
+    return "\n".join(lines)
+
+
 async def _author_capability(
     need_key, description, *, manager, registry, broker, model, developer, max_attempts, tracer,
     seed: Optional[dict] = None, repair_reason: Optional[str] = None, pre_interaction=None,
     example_input: Optional[dict] = None, research_fn=None, workspace=None,
-    failure_log: Optional[list] = None,
+    failure_log: Optional[list] = None, supervisor=None,
 ) -> Capability:
+    # Epoch bump: research delivered DURING a developer session is new
+    # information — the submission it produces belongs to a new epoch.
+    researched = {"flag": False}
+    if developer is None and research_fn is not None:
+        _rf = research_fn
+
+        async def research_fn(*a, **k):  # noqa: A001 — deliberate shadow
+            researched["flag"] = True
+            return await _rf(*a, **k)
     dev = developer or make_developer_agent(model, tracer, research_fn=research_fn)
     mode = "repair" if seed else "author"
 
@@ -806,6 +853,33 @@ async def _author_capability(
         # anything — not from a bare retry count.
         last_class = "submission"
         history: list[str] = []
+        # Attempts are grouped into INFORMATION EPOCHS: a new epoch begins when
+        # genuinely new information enters the loop (a credential became
+        # available, first runtime verification evidence, research delivered).
+        # Repetition is judged WITHIN an epoch — attempts made before new
+        # information do not discredit approaches that information enables.
+        records: list[dict] = []
+        epoch = 0
+        epoch_notes: list[str] = ["initial approach"]
+        epoch_attempts = 0          # failures recorded in the CURRENT epoch
+        creds_seen: set[str] = set()  # credential names earlier attempts ran with
+        verify_reached = False
+
+        def _new_epoch(note: str) -> None:
+            nonlocal epoch, epoch_attempts
+            epoch += 1
+            epoch_attempts = 0
+            epoch_notes.append(note)
+            history.append(f"— new information: {note} (epoch {epoch} begins)")
+            tracer.event("acquire.epoch", need_key, status="info",
+                         epoch=epoch, note=note)
+
+        def _record(cls: str, detail: str, approach: Optional[str] = None) -> None:
+            nonlocal epoch_attempts
+            epoch_attempts += 1
+            records.append({"attempt": attempt, "epoch": epoch, "cls": cls,
+                            "detail": detail, "approach": (approach or "").strip()})
+            history.append(f"attempt {attempt} [epoch {epoch}]: {cls} — {detail}")
         task = (description
                 + (f"\n\nConcrete example input for THIS task (use it in `sample_input` so the "
                    f"tool is verified against the real target; NEVER hardcode these values into "
@@ -821,7 +895,7 @@ async def _author_capability(
                     pass
             return AcquisitionError(f"could not {mode} a working '{need_key}': {reason}",
                                     need=need_key, failure_class=last_class,
-                                    attempts=len(history) or max_attempts, history=history)
+                                    attempts=len(records) or max_attempts, history=history)
 
         # Run-scoped memory: earlier failures THIS RUN (any contract) ride into
         # every authoring attempt — the observed alternative is a replan naming
@@ -830,6 +904,25 @@ async def _author_capability(
         log = failure_log if failure_log is not None else []
 
         for attempt in range(1, max_attempts + 1):
+            # Continuation judgment: past the epoch-grace floor, the supervisor
+            # decides whether another attempt is justified — with a stated next
+            # approach fed to the developer — or the current information state
+            # is exhausted. The static ceiling stays the safety rail.
+            if (supervisor is not None and records
+                    and epoch_attempts >= config.ACQUISITION_EPOCH_GRACE):
+                d = await supervisor.continuation(_continuation_digest(
+                    need_key, description, records, epoch_notes,
+                    sorted(getattr(broker, "secrets", {}) or {}),
+                    attempt, max_attempts))
+                if d.action == "stop":
+                    raise _fail("continuation judgment: "
+                                + (d.reason or "no materially different approach remains")
+                                + f" (after {len(records)} attempt(s))")
+                if (d.message or "").strip():
+                    error = (((error + "\n\n") if error else "")
+                             + "NEXT-APPROACH GUIDANCE (run supervisor — follow it, or "
+                               "justify a better approach in your `approach` note): "
+                             + d.message.strip())
             prior_block = ""
             if log:
                 prior_block = (
@@ -839,10 +932,14 @@ async def _author_capability(
                     "intrinsic blocker instead of resubmitting a variant of these):\n"
                     + "\n".join(f"- {str(x)[:220]}" for x in log[-8:]))
             sub = await dev(need_key, task + prior_block, previous, error)
+            if researched["flag"]:
+                researched["flag"] = False
+                if records:
+                    _new_epoch("research evidence was delivered to the developer")
             if not sub or not sub.get("program") or not sub.get("dockerfile"):
                 last_detail = "developer produced no usable submission"
                 last_class = "submission"
-                history.append(f"attempt {attempt}: submission — nothing usable")
+                _record("submission", "nothing usable")
                 error = last_detail
                 continue
             consumes_files = bool(sub.get("accepts")) or \
@@ -851,7 +948,9 @@ async def _author_capability(
             if observes and not sub.get("emits"):
                 last_detail = "observing tool did not declare its output role"
                 last_class = "contract"
-                history.append(f"attempt {attempt}: contract — missing `emits` declaration")
+                _record("contract", "missing `emits` declaration (mechanical metadata "
+                        "slip — the implementation itself was not exercised)",
+                        approach=sub.get("approach"))
                 error = ("Your submission is missing `emits`. A tool that OBSERVES (consumes "
                          "files or reaches external sources over the network) MUST declare what "
                          "its output IS: 'observation' (verbatim extraction), 'derived' "
@@ -883,16 +982,24 @@ async def _author_capability(
                     )
                     if not approved:
                         last_class = "authority"
-                        history.append(f"attempt {attempt}: authority — approval for {rc} denied")
+                        _record("authority", f"approval for {rc} denied")
                         raise _fail(f"approval denied: it needs {rc}")
                     secret = broker.collect_secret(
                         rc, purpose=f"capability '{need_key}' ({description[:80]})",
                         help_text=sub.get("credential_help"))
                     if not secret:
                         last_class = "authority"
-                        history.append(f"attempt {attempt}: authority — no value for {rc}")
+                        _record("authority", f"no value for {rc}")
                         raise _fail(f"it needs {rc}, but no value was provided")
                     secret_env[rc] = secret
+
+            # A credential earlier attempts ran WITHOUT is new information: the
+            # attempts that lacked it do not count against approaches it enables.
+            new_creds = set(secret_env) - creds_seen
+            if new_creds and records:
+                _new_epoch("credential " + ", ".join(sorted(new_creds))
+                           + " became available (earlier attempts ran without it)")
+            creds_seen |= set(secret_env)
 
             cap = _capability_from_submission(need_key, description, sub)
             cap.requires_credential = rc or None
@@ -925,7 +1032,7 @@ async def _author_capability(
                 tail = _error_tail(str(e))
                 last_detail = f"build failed: {tail}"
                 last_class = "packaging"
-                history.append(f"attempt {attempt}: packaging — {_error_tail(tail, 160)}")
+                _record("packaging", _error_tail(tail, 160), approach=sub.get("approach"))
                 log.append(f"'{need_key}' build [packaging]: {_error_tail(tail, 200)}")
                 error = f"The docker image BUILD failed. Error (tail of build log):\n{tail}"
                 previous = {"program": sub["program"], "dockerfile": sub["dockerfile"]}
@@ -982,10 +1089,19 @@ async def _author_capability(
                 "FABRICATION", "CONTRADICTORY YIELD", "MISSING EVIDENTIARY",
                 "MISSING SOURCE LINEAGE", "UNRETAINED OBSERVATION", "IRRELEVANT-INPUT"))
                 else "implementation")
-            history.append(f"attempt {attempt}: {last_class} — {_error_tail(detail, 160)}")
+            _record(last_class, _error_tail(detail, 160), approach=sub.get("approach"))
             log.append(f"'{need_key}' verify [{last_class}]: {_error_tail(detail, 200)}")
             error = f"The image built, but VERIFICATION of the running tool failed:\n{detail}"
             previous = {"program": sub["program"], "dockerfile": sub["dockerfile"]}
+            # The FIRST runtime verification is new information: the tool now
+            # builds and runs, and its observed behavior (this error detail) is
+            # evidence no earlier attempt had — later attempts form a new
+            # solution category informed by it.
+            if not verify_reached:
+                verify_reached = True
+                _new_epoch("first runtime verification evidence arrived "
+                           "(the tool builds and runs; failures are now about "
+                           "observed behavior)")
 
         raise _fail(last_detail)
 
@@ -1287,8 +1403,11 @@ _DEVELOPER_SYSTEM = (
     "(e.g. `RUN python -c \"...; assert ok\" && test -e /app/resources/<expected-file>`). Never use "
     "quiet/best-effort downloads: a build that 'succeeds' with missing resources crashes at "
     "run time, after the expensive work.\n\n"
-    "Prefer well-known, currently-maintained libraries. You MUST call `submit_tool` exactly once and "
-    "must not answer in prose."
+    "Prefer well-known, currently-maintained libraries. In `approach`, state in ONE line the "
+    "approach this attempt takes and what is materially different from your previous attempt — "
+    "the continuation judgment compares solution categories across attempts, and a resubmission "
+    "that changes nothing is grounds to stop the loop. You MUST call `submit_tool` exactly once "
+    "and must not answer in prose."
 )
 
 _SUBMIT_TOOL_SCHEMA = {
@@ -1315,6 +1434,9 @@ _SUBMIT_TOOL_SCHEMA = {
         "accepts": {"type": "array", "items": {"type": "string"}},
         "emits": {"type": "string",
                   "enum": ["observation", "derived", "artifact", "validation"]},
+        "approach": {"type": "string",
+                     "description": "one line: the approach this attempt takes and what "
+                                    "is materially different from the previous attempt"},
     },
     "required": ["program", "dockerfile", "command", "input_schema", "env_map", "network", "sample_input"],
 }
