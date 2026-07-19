@@ -5,6 +5,18 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
 [Semantic Versioning](https://semver.org/) — `0.x` while the core algorithm
 and behavior are still expected to change between releases.
 
+## [0.26.2] — 2026-07-19
+
+Ultra-review finding (PR #33, one finding, verified): the recipe path's
+exhausted-loop error reported `attempts=max_attempts` (the pre-clamp
+ceiling, now 10) while the v0.26.1 clamp runs at most 3 — inflating the
+count shown to the persistence supervisor and in user-facing failure lines.
+
+### Fixed
+- Recipe `AcquisitionError` reports the count actually run
+  (`min(max_attempts, _RECIPE_BUILD_ATTEMPTS)`), symmetric with the
+  authoring path's `len(records)`; pinned by test.
+
 ## [0.26.1] — 2026-07-19
 
 Focused code review of the v0.25.0–v0.26.0 train (owner session, full
