@@ -135,8 +135,10 @@ def test_recipe_attempts_clamped_below_authoring_ceiling(tmp_path, monkeypatch):
             "web_search", manager=_Mgr(), registry=None, broker=None,
             tracer=NullTracer()))
         raise AssertionError("expected AcquisitionError")
-    except AcquisitionError:
-        pass
+    except AcquisitionError as e:
+        # The error reports the count actually RUN, not the pre-clamp ceiling
+        # (the inflated number fed the persistence digest and failure lines).
+        assert e.attempts == acquisition._RECIPE_BUILD_ATTEMPTS
     assert _Mgr.builds == acquisition._RECIPE_BUILD_ATTEMPTS  # 3, not 10
 
 

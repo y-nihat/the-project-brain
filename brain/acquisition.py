@@ -313,7 +313,11 @@ async def _acquire_from_recipe(
 
         raise AcquisitionError(f"could not build a working '{need_key}': {last_detail}",
                                need=need_key, failure_class="implementation",
-                               attempts=max_attempts)
+                               # The count actually run (the loop above is
+                               # clamped), not the pre-clamp ceiling — this
+                               # feeds the persistence digest and user-facing
+                               # failure lines.
+                               attempts=min(max_attempts, _RECIPE_BUILD_ATTEMPTS))
 
 
 # --------------------------------------------------------------------------- #
