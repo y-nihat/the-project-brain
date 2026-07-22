@@ -209,6 +209,18 @@ _SYSTEM = (
     "series; consistency; no editorial meta-text in audience-facing copy). Mediocrity is "
     "a failure mode: a deliverable can be grounded and still amateur — the quality bar "
     "must be DEFINED, never assumed.\n"
+    "ASPIRATION — the standing goal: when the objective states a MEASURABLE aspiration "
+    "whose TRUE value is observed from the world (a score returned by an external "
+    "evaluator, a latency, a rate, a ranking), declare `aspiration`: metric (what is "
+    "measured), direction (maximize|minimize|reach), target if the user stated one, and "
+    "measured_by (HOW the true value is observed — internal estimates are never it). The "
+    "run's outcome is judged against it at run end and it PERSISTS as a standing goal "
+    "across runs. If a STANDING GOALS block (in context) lists an open goal this "
+    "objective continues, set aspiration.goal_ref to its id instead of redeclaring. If — "
+    "and ONLY if — the user's own words grant an iteration budget ('pursue this, up to N "
+    "attempts', 'keep iterating, budget $X'), set budget_attempts / budget_cost_usd; "
+    "NEVER invent a budget, and never declare an aspiration for a one-shot deliverable "
+    "with no stated measurable outcome.\n"
     "REVISION MODE — session continuity: when SESSION CONTEXT (below, if present) shows a "
     "previous run's deliverable and the new input reads as FEEDBACK on it (dissatisfaction, "
     "change requests, 'make it deeper/cleaner/shorter', complaints about specific parts), "
@@ -352,6 +364,23 @@ _PLAN_SCHEMA = {
                              "description": "what already satisfied the user and must survive"},
             },
         },
+        # Measurable aspiration the objective states (standing goal), if any.
+        "aspiration": {
+            "type": "object",
+            "properties": {
+                "goal_ref": {"type": ["integer", "string"],
+                             "description": "id of the open standing goal this continues"},
+                "metric": {"type": "string"},
+                "direction": {"type": "string", "enum": ["maximize", "minimize", "reach"]},
+                "target": {"type": ["string", "number"]},
+                "measured_by": {"type": "string",
+                                "description": "how the TRUE value is observed from the world"},
+                "budget_attempts": {"type": "integer",
+                                    "description": "ONLY if the user granted one"},
+                "budget_cost_usd": {"type": "number",
+                                    "description": "ONLY if the user granted one"},
+            },
+        },
     },
     "required": ["stages"],
 }
@@ -366,6 +395,32 @@ def _fallback_stages(objective: str) -> list[StageSpec]:
     return [StageSpec(id="researcher", pattern="single", role="researcher",
                       goal=objective,
                       capabilities=[bootstrap.primary_observation_need()])]
+
+
+def _normalize_aspiration(raw) -> dict:
+    """Coerce the emitted aspiration; {} when none was meaningfully declared.
+    A budget survives ONLY as a positive number — the planner is instructed
+    never to invent one, and garbage must not authorize autonomous iteration."""
+    raw = raw if isinstance(raw, dict) else {}
+    out: dict = {}
+    if raw.get("goal_ref") not in (None, ""):
+        out["goal_ref"] = str(raw["goal_ref"])[:20]
+    metric = str(raw.get("metric") or "").strip()
+    if metric:
+        out["metric"] = metric[:400]
+        direction = str(raw.get("direction") or "maximize").strip().lower()
+        out["direction"] = direction if direction in ("maximize", "minimize", "reach") \
+            else "maximize"
+        out["target"] = str(raw.get("target") or "")[:100]
+        out["measured_by"] = str(raw.get("measured_by") or "")[:400]
+    for key in ("budget_attempts", "budget_cost_usd"):
+        try:
+            v = float(raw.get(key))
+            if v > 0:
+                out[key] = int(v) if key == "budget_attempts" else v
+        except (TypeError, ValueError):
+            pass
+    return out if ("metric" in out or "goal_ref" in out) else {}
 
 
 def _normalize_knowledge_needs(raw) -> list[dict]:
@@ -435,7 +490,7 @@ def _normalize_needs(raw) -> dict[str, dict]:
 # below is keyed on these, so extend it when the schema grows.
 _PLAN_KEYS = ("stages", "success_criteria", "strategy_rationale",
               "capability_needs", "direct_observation", "knowledge_needs",
-              "revision")
+              "revision", "aspiration")
 
 
 def _unwrap_plan_args(args) -> tuple[dict, str]:
@@ -580,7 +635,8 @@ class Planner:
                     capability_needs=_normalize_needs(captured.get("capability_needs")),
                     direct_observation=direct,
                     knowledge_needs=_normalize_knowledge_needs(captured.get("knowledge_needs")),
-                    revision=_normalize_revision(captured.get("revision")))
+                    revision=_normalize_revision(captured.get("revision")),
+                    aspiration=_normalize_aspiration(captured.get("aspiration")))
 
     async def extend(self, objective: str, completed: str, gaps: list[dict],
                      existing_ids: list[str]):
@@ -671,7 +727,8 @@ class StubPlanner:
                  strategy_rationale: str = "", capability_needs: Optional[dict] = None,
                  direct_observation: Optional[dict] = None,
                  knowledge_needs: Optional[list] = None,
-                 revision: Optional[dict] = None):
+                 revision: Optional[dict] = None,
+                 aspiration: Optional[dict] = None):
         self._stages = stages
         self._criteria = success_criteria or []
         self._rationale = strategy_rationale
@@ -679,6 +736,7 @@ class StubPlanner:
         self._direct = dict(direct_observation or {})
         self._knowledge = list(knowledge_needs or [])
         self._revision = dict(revision or {})
+        self._aspiration = dict(aspiration or {})
         self.plan_calls = 0
         self.correctives: list[str] = []
         self.session_contexts: list[str] = []
@@ -700,4 +758,5 @@ class StubPlanner:
                     capability_needs=dict(self._needs),
                     direct_observation=dict(self._direct),
                     knowledge_needs=knowledge,
-                    revision=dict(self._revision))
+                    revision=dict(self._revision),
+                    aspiration=dict(self._aspiration))
