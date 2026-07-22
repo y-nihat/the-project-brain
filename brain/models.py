@@ -48,6 +48,13 @@ class Capability:
     # output may be treated as original source evidence downstream — consuming
     # a file does NOT imply producing source evidence (validators do too).
     emits: str = ""
+    # Real-world footprint, DECLARED by the tool's author: "none" (pure
+    # compute), "external_read" (reads a live service), or "external_write"
+    # (ACTS on a live service — a submission, a post, a mutation). An
+    # external_write tool is verified in dry-run mode (it must honor
+    # BRAIN_DRY_RUN) and its stage redos must reuse recorded results — every
+    # real invocation may consume external quota.
+    side_effects: str = "none"
 
 
 @dataclass
@@ -140,6 +147,12 @@ class Plan:
     # previous run's deliverable, {of_run, feedback, preserve} — revise only
     # what the feedback targets, keep what already satisfied the user.
     revision: dict = field(default_factory=dict)
+    # Measurable aspiration the objective states, if any: {goal_ref? | metric,
+    # direction maximize|minimize|reach, target?, measured_by,
+    # budget_attempts?, budget_cost_usd?}. Persists as a STANDING GOAL across
+    # runs; the run's outcome is judged against it at run end. Budgets are
+    # only ever extracted from the user's own words — never invented.
+    aspiration: dict = field(default_factory=dict)
 
 
 @dataclass
