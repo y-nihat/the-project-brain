@@ -400,6 +400,19 @@ def _declares_inputs(cap: Capability, sub: dict) -> bool:
 _FABRICATION_MIN_CHARS = 400
 
 
+def _verification_env(cap: Capability, extra_env: Optional[dict]) -> dict:
+    """The environment for ANY verification-time execution of a tool — the
+    single place the dry-run invariant lives. A world-acting tool must never
+    perform its real action during verification (the generic verify OR either
+    fabrication probe OR the revalidation battery), so BRAIN_DRY_RUN is forced
+    on for external_write caps everywhere the engine runs the tool to judge it,
+    not just in the happy-path verify."""
+    env = dict(extra_env or {})
+    if getattr(cap, "side_effects", "none") == "external_write":
+        env["BRAIN_DRY_RUN"] = "1"
+    return env
+
+
 def _no_input_probe(cap: Capability, sub: dict, manager, extra_env: Optional[dict]):
     """Run the tool with NO inputs. For a tool that declares inputs, producing
     SUBSTANTIVE content (a large payload or output files) from nothing is the
@@ -416,14 +429,19 @@ def _no_input_probe(cap: Capability, sub: dict, manager, extra_env: Optional[dic
     pol = policy.for_capability(cap.memory_mb, cap.cpus, cap.timeout_seconds, cap.network)
     res = manager.run_ephemeral(
         cap.image_tag, cap.command, policy=pol, capability=cap.name,
-        environment=dict(extra_env or {}), input_files=None, capture_output_files=True,
+        environment=_verification_env(cap, extra_env), input_files=None,
+        capture_output_files=True,
     )
     out = (res.stdout or "").strip()
     payload_error = False
     if out:
         try:
             data = json.loads(out.splitlines()[-1])
-            payload_error = isinstance(data, dict) and "error" in data
+            # A dry-run acknowledgement is honest non-fabrication: a world-
+            # acting tool correctly suppressed its action, it did not invent
+            # evidence. Treat it exactly like an error result (probe passes).
+            payload_error = isinstance(data, dict) and (
+                "error" in data or data.get("dry_run") is True)
         except Exception:  # noqa: BLE001
             pass
     substantive = bool(getattr(res, "output_files", None)) or len(out) >= _FABRICATION_MIN_CHARS
@@ -444,7 +462,7 @@ def _irrelevant_input_probe(cap: Capability, manager, extra_env: Optional[dict])
     pol = policy.for_capability(cap.memory_mb, cap.cpus, cap.timeout_seconds, cap.network)
     res = manager.run_ephemeral(
         cap.image_tag, cap.command, policy=pol, capability=cap.name,
-        environment=dict(extra_env or {}),
+        environment=_verification_env(cap, extra_env),
         input_files={"__probe__.txt": b"engine probe: deliberately irrelevant input"},
         capture_output_files=True,
     )
@@ -452,8 +470,9 @@ def _irrelevant_input_probe(cap: Capability, manager, extra_env: Optional[dict])
     payload_error = False
     if out:
         try:
-            payload_error = isinstance(json.loads(out.splitlines()[-1]), dict) and \
-                "error" in json.loads(out.splitlines()[-1])
+            last = json.loads(out.splitlines()[-1])
+            payload_error = isinstance(last, dict) and (
+                "error" in last or last.get("dry_run") is True)
         except Exception:  # noqa: BLE001
             pass
     substantive = bool(getattr(res, "output_files", None)) or len(out) >= _FABRICATION_MIN_CHARS
@@ -604,9 +623,9 @@ def _generic_verify(cap: Capability, sample_input: dict, sample_files: dict, man
     # A tool that ACTS on the world must not act during verification: it is
     # verified in dry-run mode (auth + validation, no mutating call) — the
     # observed failure was a verify run placing a REAL submission on a live
-    # service, and every later rebuild would have repeated it.
-    if getattr(cap, "side_effects", "none") == "external_write":
-        env["BRAIN_DRY_RUN"] = "1"
+    # service, and every later rebuild would have repeated it. Shared with the
+    # fabrication probes so the invariant holds on EVERY verification-time run.
+    env.update({k: v for k, v in _verification_env(cap, {}).items()})
     input_files = {
         name: (content.encode("utf-8") if isinstance(content, str) else bytes(content))
         for name, content in (sample_files or {}).items()
@@ -858,7 +877,7 @@ async def _author_capability(
     need_key, description, *, manager, registry, broker, model, developer, max_attempts, tracer,
     seed: Optional[dict] = None, repair_reason: Optional[str] = None, pre_interaction=None,
     example_input: Optional[dict] = None, research_fn=None, workspace=None,
-    failure_log: Optional[list] = None, supervisor=None,
+    failure_log: Optional[list] = None, supervisor=None, forced_side_effects: str = "",
 ) -> Capability:
     # Epoch bump: research delivered DURING a developer session is new
     # information — the submission it produces belongs to a new epoch.
@@ -995,6 +1014,31 @@ async def _author_capability(
                          "its output IS: 'observation' (verbatim extraction), 'derived' "
                          "(interpretation/summary), 'artifact' (produced deliverable), or "
                          "'validation' (a check result). Resubmit with `emits` set honestly.")
+                previous = {"program": sub["program"], "dockerfile": sub["dockerfile"]}
+                continue
+
+            # side_effects is a SAFETY declaration whose unsafe value ('none')
+            # is the default — so for a tool that can reach a live service
+            # (networked or credentialed), it must be stated EXPLICITLY and
+            # validly, or a world-acting tool silently escapes the dry-run
+            # guard. Fail-CLOSED: omitted/out-of-enum -> resubmit (mechanical).
+            can_reach_world = (sub.get("network") == "bridge"
+                               or bool(sub.get("requires_credential")))
+            se_raw = str(sub.get("side_effects") or "").strip().lower()
+            if forced_side_effects == "external_write":
+                sub["side_effects"] = "external_write"   # repair may not downgrade
+            elif can_reach_world and se_raw not in ("none", "external_read",
+                                                    "external_write"):
+                last_detail = "world-reaching tool did not declare its side effects"
+                last_class = "contract"
+                _record("contract", "missing/invalid `side_effects` declaration "
+                        "(mechanical metadata slip)", approach=sub.get("approach"))
+                error = ("Your submission can reach a live service (network=bridge or "
+                         "requires_credential) but did not declare `side_effects` as one "
+                         "of: 'none' (pure compute), 'external_read' (reads a live "
+                         "service), 'external_write' (ACTS on it — a submission, post, "
+                         "upload, mutation). This governs whether the tool is verified in "
+                         "dry-run mode. Resubmit with `side_effects` set honestly.")
                 previous = {"program": sub["program"], "dockerfile": sub["dockerfile"]}
                 continue
 
@@ -1138,7 +1182,7 @@ async def _author_capability(
             # silently re-injected across five attempts with no re-ask.
             for _name in secret_env:
                 cred_fails[_name] = cred_fails.get(_name, 0) + 1
-                if (cred_fails[_name] == config.CREDENTIAL_REVERIFY_THRESHOLD
+                if (cred_fails[_name] >= config.CREDENTIAL_REVERIFY_THRESHOLD
                         and broker is not None
                         and getattr(broker, "invalidate", None) is not None
                         and broker.invalidate(
@@ -1146,10 +1190,15 @@ async def _author_capability(
                                           f"time(s) while authoring '{need_key}' — "
                                           "re-collecting a fresh value")):
                     creds_seen.discard(_name)   # a fresh value opens a new epoch
+                    # Reset the counter so the freshly collected value gets its
+                    # OWN threshold budget — else a second stale value (mistyped
+                    # at the re-ask) would ride every remaining attempt, the
+                    # exact bug this mechanism exists to prevent.
+                    cred_fails[_name] = 0
                     history.append(
                         f"— cached credential {_name} invalidated after "
-                        f"{cred_fails[_name]} failed verifications; a fresh value "
-                        "will be requested")
+                        f"{config.CREDENTIAL_REVERIFY_THRESHOLD} failed verifications; "
+                        "a fresh value will be requested")
             # The FIRST runtime verification is new information: the tool now
             # builds and runs, and its observed behavior (this error detail) is
             # evidence no earlier attempt had — later attempts form a new
@@ -1187,6 +1236,9 @@ async def repair_capability(
         cap.name, cap.description, manager=manager, registry=registry, broker=broker,
         model=model, developer=developer, max_attempts=max_attempts, tracer=tracer,
         seed=seed, repair_reason=reason, research_fn=research_fn, workspace=workspace,
+        # A repair must not DOWNGRADE a known world-acting tool to unguarded:
+        # the side-effect declaration is sticky across re-authoring.
+        forced_side_effects=getattr(cap, "side_effects", "none"),
     )
     # Record a bumped version for provenance (image tag stays constant on purpose).
     try:

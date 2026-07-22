@@ -117,13 +117,20 @@ class GoalLedger:
 
     def best_value(self, goal: dict) -> Optional[str]:
         """The direction-best MEASURED value across attempts (numeric compare
-        when values parse; None when no attempt carries a parseable value)."""
+        when values parse; None when no attempt carries a parseable value).
+        'reach' = closest to target."""
         vals = [(a["value"], _num(a["value"])) for a in self.attempts(goal["id"])
                 if a.get("value")]
         numeric = [(raw, n) for raw, n in vals if n is not None]
         if not numeric:
             return vals[-1][0] if vals else None
-        pick = min if goal.get("direction") == "minimize" else max
+        direction = goal.get("direction")
+        if direction == "reach":
+            t = _num(goal.get("target"))
+            if t is None:                      # no numeric target — latest is the best read
+                return vals[-1][0]
+            return min(numeric, key=lambda p: abs(p[1] - t))[0]
+        pick = min if direction == "minimize" else max
         return pick(numeric, key=lambda p: p[1])[0]
 
     def close(self) -> None:

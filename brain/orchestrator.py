@@ -781,8 +781,19 @@ class Orchestrator:
         self._research_used = 0
         self._research_cache = {}
         self._knowledge_briefs = ""
+        # The aspiration (standing goal + any user-granted budget) is declared
+        # on the INITIAL plan; a corrective re-emission (proxy-first correction,
+        # knowledge-informed replan) may omit it and must not silently erase
+        # the goal — snapshot it and let a non-empty re-declaration win, else
+        # the initial one survives.
+        initial_aspiration = dict(getattr(plan, "aspiration", {}) or {})
         plan = await self._correct_proxy_first_plan(plan, objective, history)
         plan = await self._resolve_knowledge_needs(plan, objective, history)
+        if not getattr(plan, "aspiration", None) and initial_aspiration:
+            plan.aspiration = initial_aspiration
+            self.tracer.event("goal.carried", "plan", status="info",
+                              note="corrective replan omitted the aspiration; "
+                                   "the initial declaration survives")
         planned, appended = workflow.append_review_if_needed(
             plan.stages, has_user_evidence=has_user_evidence,
             has_external_evidence=has_external_evidence)

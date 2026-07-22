@@ -39,6 +39,10 @@ def test_goal_ledger_roundtrip_and_direction_best(tmp_path):
     gl.record_attempt(g2["id"], "r", value="120", verdict="advanced")
     gl.record_attempt(g2["id"], "r2", value="90", verdict="advanced")
     assert gl.best_value(g2) == "90"                      # minimize picks lowest
+    g3 = gl.get(gl.declare("latency", "reach", target="200"))
+    for v in ("500", "300", "250"):
+        gl.record_attempt(g3["id"], "r", value=v, verdict="advanced")
+    assert gl.best_value(g3) == "250"                     # reach = closest to target
     block = goals_block(gl)
     assert "goal #" in block and "public evaluation score" in block
     assert "goal_ref" in block                            # instructs continuation
@@ -121,13 +125,18 @@ def test_stale_credential_invalidated_and_recollected(tmp_path, monkeypatch):
         def __init__(self):
             self.secrets = {"TOK": "stale-value"}
             self.collected = 0
+            self.invalidations = 0
         def invalidate(self, name, reason=""):
-            return self.secrets.pop(name, None) is not None
+            if self.secrets.pop(name, None) is not None:
+                self.invalidations += 1
+                return True
+            return False
         def request(self, **kw):
             return True
         def collect_secret(self, name, purpose="", help_text=None):
             self.collected += 1
-            return "fresh-value"
+            self.secrets[name] = f"fresh-{self.collected}"   # real broker stores it
+            return self.secrets[name]
 
     class _Mgr:
         def build_image(self, tag, ctx):
@@ -140,16 +149,18 @@ def test_stale_credential_invalidated_and_recollected(tmp_path, monkeypatch):
                 "command": ["python", "-B", "/app/tool.py"],
                 "input_schema": {"type": "object", "properties": {}},
                 "env_map": {}, "network": "none", "sample_input": {},
-                "requires_credential": "TOK"}
+                "requires_credential": "TOK", "side_effects": "external_read"}
 
     try:
         asyncio.run(acquisition._author_capability(
             "cred_probe", "a tool", manager=_Mgr(), registry=reg, broker=broker,
-            model=None, developer=dev, max_attempts=4, tracer=NullTracer()))
+            model=None, developer=dev, max_attempts=5, tracer=NullTracer()))
     except AcquisitionError as e:
         h = "\n".join(e.history)
         assert "credential TOK invalidated" in h
-        assert broker.collected >= 1              # a fresh value was requested
+        # The counter RESETS after invalidation: a second stale value is also
+        # invalidated (the once-per-name bug the review caught).
+        assert broker.invalidations == 2 and broker.collected == 2
         assert "TOK became available" in h        # fresh value opened a new epoch
     else:
         raise AssertionError("expected AcquisitionError")
@@ -205,3 +216,65 @@ def test_side_effects_declared_and_persisted(tmp_path):
     assert reg.get("k").side_effects == "external_write"   # column roundtrip
     reg.close()
     assert "side_effects" in acquisition._SUBMIT_TOOL_SCHEMA["properties"]
+
+
+def test_probes_honor_dry_run_for_external_write():
+    """The dry-run invariant must hold on EVERY verification-time run, not just
+    the happy-path verify — the review caught that the fabrication probes
+    re-ran world-acting tools with real credentials and no BRAIN_DRY_RUN."""
+    cap_write = Capability(name="w", description="acts", image_tag="x", command=["r"],
+                           input_schema={"type": "object",
+                                         "properties": {"q": {"type": "string"}}},
+                           env_map={"q": "Q"}, side_effects="external_write")
+    assert acquisition._verification_env(cap_write, {"KEY": "v"})["BRAIN_DRY_RUN"] == "1"
+    cap_read = Capability(name="r", description="reads", image_tag="x", command=["r"],
+                          input_schema={}, env_map={}, side_effects="external_read")
+    assert "BRAIN_DRY_RUN" not in acquisition._verification_env(cap_read, {})
+
+    captured: dict = {}
+
+    class _Res:
+        ok, oom, exit_code, timed_out = True, False, 0, False
+        stderr, stdout, output_files = "", '{"dry_run": true}', {}
+
+    class _Mgr:
+        def run_ephemeral(self, image, command, *, policy, capability,
+                          environment=None, input_files=None, capture_output_files=False):
+            captured.update(environment or {})
+            return _Res()
+
+    # The no-input fabrication probe on an external_write cap must dry-run.
+    ok, _ = acquisition._no_input_probe(
+        cap_write, {"input_schema": cap_write.input_schema}, _Mgr(), {"KEY": "v"})
+    assert ok and captured.get("BRAIN_DRY_RUN") == "1"
+
+
+def test_world_reaching_tool_must_declare_side_effects(tmp_path):
+    """A networked/credentialed submission that omits side_effects is rejected
+    (mechanical resubmit) — the safety enum's unsafe value must not be the
+    silent default for tools that can reach a live service."""
+    reg = Registry(tmp_path / "r.db", tmp_path / "store")
+    seen: list = []
+
+    async def dev(need_key, description, previous=None, error=None):
+        seen.append(error)                              # omit side_effects always
+        return {"program": "p", "dockerfile": "FROM python:3.12-slim",
+                "command": ["python", "-B", "/app/tool.py"],
+                "input_schema": {"type": "object", "properties": {}},
+                "env_map": {}, "network": "bridge", "sample_input": {},
+                "emits": "observation"}
+
+    class _Mgr:
+        def build_image(self, tag, ctx):
+            pass
+
+    try:
+        asyncio.run(acquisition._author_capability(
+            "netcap", "a networked tool", manager=_Mgr(), registry=reg, broker=None,
+            model=None, developer=dev, max_attempts=2, tracer=NullTracer()))
+    except AcquisitionError as e:
+        assert "side_effects" in "\n".join(e.history)   # rejected on the declaration
+    finally:
+        reg.close()
+    # The resubmit error delivered to the 2nd attempt names the missing field.
+    assert len(seen) == 2 and "side_effects" in (seen[1] or "")

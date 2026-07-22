@@ -361,21 +361,43 @@ class BrainSession:
         return summary
 
     async def _maybe_pursue(self, summary: RunSummary) -> RunSummary:
-        """Piece 4: bounded, user-authorized goal pursuit. Runs ONLY when the
-        objective's own words granted an iteration budget; every iteration is
-        a full normal run (approval gates and prompts unchanged); the judge
-        decides continue/stop between attempts and fails CLOSED; hard
-        ceilings bound the loop regardless."""
+        """Piece 4: bounded, user-authorized goal pursuit. Self-initiated runs
+        happen ONLY when the objective granted a budget AND the human approves
+        the autonomy at the gate — the budget is planner-extracted text and by
+        itself must never authorize spending (it is prompt-injectable via a
+        seeded prior deliverable). Every iteration is a full normal run
+        (approval gates and prompts unchanged); the judge decides continue/stop
+        and fails CLOSED; hard ceilings bound the loop regardless. Fail-open:
+        any bookkeeping error stops pursuit and returns the delivered answer."""
         from . import goals as goals_mod
 
         state = getattr(self, "_goal_state", None)
         if not state or not state.get("budget_attempts"):
             return summary
-        budget = min(int(state["budget_attempts"]), config.GOAL_PURSUIT_MAX_ATTEMPTS)
+        budget = min(max(1, int(state["budget_attempts"])),
+                     config.GOAL_PURSUIT_MAX_ATTEMPTS)
         goal_id = state["goal_id"]
+        # HARD GATE: autonomous, self-initiated runs are an outward, hard-to-
+        # reverse capability — they cost real compute and may act on live
+        # services. The extracted budget is a REQUEST; only the human at the
+        # gate grants it. Deny-by-default (the broker's contract for auto runs).
+        if not self.broker.request(
+                action=f"pursue standing goal #{goal_id} with up to {budget} "
+                       "SELF-INITIATED run(s)",
+                reason="the objective requested autonomous iteration toward a "
+                       "measurable goal; each iteration is a full run that spends "
+                       "compute and may act on external services",
+                requirements=[f"approve up to {budget} autonomous run(s) "
+                              "(deny to stop after this run and only PROPOSE next steps)"]):
+            summary.answer += ("\n[goal pursuit] autonomous iteration was not "
+                               "approved; stopping after this run. The proposed "
+                               "next step above can be run manually.")
+            self.tracer.event("goal.pursuit", f"goal#{goal_id}", status="info",
+                              action="denied", reason="autonomy not approved at the gate")
+            return summary
         self._pursuing = True
+        done = 0
         try:
-            done = 0
             while done < budget:
                 goal = self.goals.get(goal_id)
                 if goal is None or goal["status"] != "open":
@@ -407,6 +429,22 @@ class BrainSession:
                     self.goals.record_attempt(
                         goal_id, summary.run_id, verdict="unknown",
                         diagnosis="(run did not judge itself against the goal)")
+        except asyncio.CancelledError:
+            # Ctrl-C during an inner iteration: the OUTER run's answer is
+            # already complete and recorded. Absorb the cancel (the inner run
+            # marked itself aborted before re-raising), note it, and return the
+            # finished deliverable instead of discarding it.
+            summary.answer += (f"\n[goal pursuit] interrupted by user after {done} "
+                               "self-initiated iteration(s); this answer was completed "
+                               "before the interrupt.")
+            task = asyncio.current_task()
+            if task is not None and hasattr(task, "uncancel"):
+                task.uncancel()
+        except Exception as e:  # noqa: BLE001 — pursuit must never break delivery
+            self.tracer.event("goal.error", "pursuit", status="failed",
+                              error=f"{type(e).__name__}: {str(e)[:200]}")
+            summary.answer += ("\n[goal pursuit] stopped early on an internal error; "
+                               "the answer above is complete.")
         finally:
             self._pursuing = False
         return summary

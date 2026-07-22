@@ -468,8 +468,16 @@ def build_caps_server(
                 # index snippets while a page-fetch capability sat unused.
                 from .. import bootstrap as bootstrap_mod
 
-                deeper = [k for k in bootstrap_mod.OBSERVATION_NEEDS
-                          if k != cap.name]
+                # DEEPER = declared later in OBSERVATION_NEEDS (shallow->deep),
+                # AND actually bound into this agent's toolset. So a survey
+                # channel is nudged toward retrieval, the deepest channel is
+                # never told to go deeper (the observed misfire: telling the
+                # page-fetcher that search is 'deeper'), and we never advertise
+                # a tool the agent cannot call.
+                order = list(bootstrap_mod.OBSERVATION_NEEDS)
+                deeper = (order[order.index(cap.name) + 1:]
+                          if cap.name in order else [])
+                deeper = [k for k in deeper if k in _bound_names]
                 if deeper and "http" in (text or ""):
                     text += ("\n[engine note] This result references retrievable "
                              "sources. Deeper observation channels exist "
@@ -497,5 +505,9 @@ def build_caps_server(
 
         return handler
 
-    tools = [make(cap) for cap in capabilities]
+    caps_list = list(capabilities)
+    # Names actually bound into this agent's toolset — the depth nudge must
+    # never advertise a channel the agent cannot call.
+    _bound_names = {c.name for c in caps_list}
+    tools = [make(cap) for cap in caps_list]
     return create_sdk_mcp_server(name=server_name, version="1.0.0", tools=tools)

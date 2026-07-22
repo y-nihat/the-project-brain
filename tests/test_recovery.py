@@ -463,7 +463,7 @@ def test_remote_authoring_requires_full_evidence_contract(tmp_path):
     reg = Registry(tmp_path / "r.db", tmp_path / "store")
     feedback: list[str] = []
     subs = iter([
-        {"network": "bridge"},                                     # no emits
+        {"network": "bridge", "side_effects": "external_read"},    # no emits
         {"network": "bridge", "emits": "observation",
          "stdout": json.dumps({"data": "adjacent text"})},         # no yield fields
         {"network": "bridge", "emits": "observation",
@@ -481,7 +481,7 @@ def test_remote_authoring_requires_full_evidence_contract(tmp_path):
                 "input_schema": {"type": "object", "properties": {"q": {"type": "string"}}},
                 "env_map": {"q": "Q"}, "network": s["network"],
                 "sample_input": {"q": "probe"}, "emits": s.get("emits"),
-                "_stdout": None}
+                "side_effects": "external_read", "_stdout": None}
 
     mgr = ScriptedManager([
         _res(json.dumps({"data": "adjacent text"})),               # attempt 2 verify

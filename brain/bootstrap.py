@@ -19,6 +19,10 @@ from __future__ import annotations
 # The observation channel: how a research agent reaches the live world. Both
 # entries are instance-neutral contracts; `web_search` also has a verified
 # bootstrap recipe (acquisition._RECIPES) as its fallback implementation.
+# ORDER IS MEANINGFUL — declared SHALLOW to DEEP: earlier keys survey (an
+# index of what exists), later keys retrieve the full content a survey only
+# points at. primary_observation_need() and the depth nudge both rely on this
+# ordering; a channel is "deeper" than another iff it appears later here.
 OBSERVATION_NEEDS: dict[str, str] = {
     "web_search": (
         "Search the live web via DuckDuckGo (ddgs, no API key). "

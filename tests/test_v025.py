@@ -42,6 +42,7 @@ def _sub(emits=None, approach=None, rc=None):
         d["approach"] = approach
     if rc:
         d["requires_credential"] = rc
+        d["side_effects"] = "external_read"   # credentialed => must declare
     return d
 
 

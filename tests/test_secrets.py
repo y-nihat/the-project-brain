@@ -279,6 +279,7 @@ def test_author_credentialed_tool_collects_and_verifies_with_secret(tmp_path):
                 "command": ["python", "-B", "/app/tool.py"],
                 "input_schema": {"type": "object"}, "env_map": {}, "network": "none",
                 "sample_input": {}, "requires_credential": "fake service token",
+                "side_effects": "external_read",
                 "credential_help": "1. open the fake console\n2. copy the token"}
 
     try:
