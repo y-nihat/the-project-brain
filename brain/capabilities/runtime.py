@@ -461,6 +461,21 @@ def build_caps_server(
                             "(the channel was adequately examined and the property is not "
                             "there) can support an absence claim; say 'no X was detected', "
                             "never 'there is no X'."))
+                # DEPTH DISCIPLINE: partial coverage naming retrievable
+                # locators, with a deeper innate observation channel available,
+                # must not quietly become the evidence base — a run doing
+                # 'thorough research' was observed settling for 8 rounds of
+                # index snippets while a page-fetch capability sat unused.
+                from .. import bootstrap as bootstrap_mod
+
+                deeper = [k for k in bootstrap_mod.OBSERVATION_NEEDS
+                          if k != cap.name]
+                if deeper and "http" in (text or ""):
+                    text += ("\n[engine note] This result references retrievable "
+                             "sources. Deeper observation channels exist "
+                             f"({', '.join(deeper)}) — when the task demands "
+                             "thoroughness, FETCH the actual pages/documents "
+                             "rather than concluding from index snippets.")
             from .. import config as config_mod
 
             # TRANSPORT SAFETY: the whole result — text plus encoded images —

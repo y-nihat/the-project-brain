@@ -350,6 +350,9 @@ def _capability_from_submission(need_key: str, description: str, sub: dict) -> C
         # Undeclared output role defaults to "derived" — fail-CLOSED for
         # evidence: derived output is never treated as original source.
         emits=str(sub.get("emits") or "derived").strip().lower(),
+        side_effects=(str(sub.get("side_effects") or "none").strip().lower()
+                      if str(sub.get("side_effects") or "none").strip().lower()
+                      in ("none", "external_read", "external_write") else "none"),
     )
 
 
@@ -598,6 +601,12 @@ def _generic_verify(cap: Capability, sample_input: dict, sample_files: dict, man
     # Session secrets LAST so the real credential always wins over any
     # placeholder a sample_input smuggled in under the same env var.
     env.update(extra_env or {})
+    # A tool that ACTS on the world must not act during verification: it is
+    # verified in dry-run mode (auth + validation, no mutating call) — the
+    # observed failure was a verify run placing a REAL submission on a live
+    # service, and every later rebuild would have repeated it.
+    if getattr(cap, "side_effects", "none") == "external_write":
+        env["BRAIN_DRY_RUN"] = "1"
     input_files = {
         name: (content.encode("utf-8") if isinstance(content, str) else bytes(content))
         for name, content in (sample_files or {}).items()
@@ -663,6 +672,19 @@ def _generic_verify(cap: Capability, sample_input: dict, sample_files: dict, man
     if isinstance(data, dict) and "error" in data:
         return (False, f"tool reported error: {str(data['error'])[:400]} "
                        f"(env vars provided: {sorted(env)})", res)
+    # Dry-run acceptance for world-acting tools: verification proves auth +
+    # input validation + honoring the dry-run contract — it must NOT produce
+    # a real action, so the observation-yield contract does not apply here.
+    if getattr(cap, "side_effects", "none") == "external_write":
+        if isinstance(data, dict) and data.get("dry_run") is True:
+            return (True, "ok (dry-run verified: authenticated and validated "
+                          "without performing the real action)", res)
+        return (False, "an external_write tool MUST honor BRAIN_DRY_RUN=1 during "
+                       "verification: authenticate and validate fully, perform NO "
+                       'mutating call, and print {"dry_run": true, ...} on the last '
+                       "stdout line. The output did not declare dry_run — the tool "
+                       "either acted for real during verification or ignored the "
+                       "dry-run contract.", res)
     # Observation-reporting contract (#10): a file-consuming tool must state
     # what it actually read, or downstream provenance is unverifiable.
     if input_files and isinstance(data, dict) and "consumed_inputs" not in data:
@@ -879,6 +901,7 @@ async def _author_capability(
         epoch_notes: list[str] = ["initial approach"]
         epoch_attempts = 0          # failures recorded in the CURRENT epoch
         creds_seen: set[str] = set()  # credential names earlier attempts ran with
+        cred_fails: dict[str, int] = {}  # verify failures per injected credential
         verify_reached = False
 
         def _new_epoch(note: str) -> None:
@@ -1109,6 +1132,24 @@ async def _author_capability(
             log.append(f"'{need_key}' verify [{last_class}]: {_error_tail(detail, 200)}")
             error = f"The image built, but VERIFICATION of the running tool failed:\n{detail}"
             previous = {"program": sub["program"], "dockerfile": sub["dockerfile"]}
+            # A credential that keeps failing verification is STALE information,
+            # not a wall: invalidate the cached value so a fresh one is
+            # collected — the observed failure was a wrong-shaped cached value
+            # silently re-injected across five attempts with no re-ask.
+            for _name in secret_env:
+                cred_fails[_name] = cred_fails.get(_name, 0) + 1
+                if (cred_fails[_name] == config.CREDENTIAL_REVERIFY_THRESHOLD
+                        and broker is not None
+                        and getattr(broker, "invalidate", None) is not None
+                        and broker.invalidate(
+                            _name, reason=f"failed verification {cred_fails[_name]} "
+                                          f"time(s) while authoring '{need_key}' — "
+                                          "re-collecting a fresh value")):
+                    creds_seen.discard(_name)   # a fresh value opens a new epoch
+                    history.append(
+                        f"— cached credential {_name} invalidated after "
+                        f"{cred_fails[_name]} failed verifications; a fresh value "
+                        "will be requested")
             # The FIRST runtime verification is new information: the tool now
             # builds and runs, and its observed behavior (this error detail) is
             # evidence no earlier attempt had — later attempts form a new
@@ -1397,6 +1438,14 @@ _DEVELOPER_SYSTEM = (
     "for the user (no stdin, no UI). NEVER author a tool whose job is to collect input, "
     "credentials, or confirmation from a human — declare requires_credential instead and the "
     "engine collects the value.\n"
+    "REAL-WORLD FOOTPRINT (hard rule): declare `side_effects` honestly — 'none' (pure "
+    "compute), 'external_read' (reads a live service), or 'external_write' (ACTS on a live "
+    "service: a submission, a post, an upload, any mutation). An external_write tool MUST "
+    "honor the env var BRAIN_DRY_RUN: when it is '1', authenticate and validate inputs "
+    "fully but perform NO mutating call, and print {\"dry_run\": true, plus what WOULD "
+    "have been done} on the last stdout line, exit 0. Verification always runs with "
+    "BRAIN_DRY_RUN=1 — a tool that performs its real action during verification acts on "
+    "the world every time it is rebuilt, spending real quota to prove itself.\n"
     "Sandbox facts (respect these — they are why tools fail):\n"
     "  * The image BUILD always has internet access; at RUNTIME the container has internet ONLY if "
     "you set network=\"bridge\".\n"
@@ -1453,6 +1502,8 @@ _SUBMIT_TOOL_SCHEMA = {
         "approach": {"type": "string",
                      "description": "one line: the approach this attempt takes and what "
                                     "is materially different from the previous attempt"},
+        "side_effects": {"type": "string",
+                         "enum": ["none", "external_read", "external_write"]},
     },
     "required": ["program", "dockerfile", "command", "input_schema", "env_map", "network", "sample_input"],
 }

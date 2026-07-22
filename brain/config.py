@@ -228,6 +228,16 @@ ACQUISITION_MAX_ATTEMPTS = int(os.environ.get("ACQUISITION_MAX_ATTEMPTS", "10"))
 ACQUISITION_EPOCH_GRACE = int(os.environ.get("ACQUISITION_EPOCH_GRACE", "2"))
 CONTINUATION_MAX_CALLS = int(os.environ.get("CONTINUATION_MAX_CALLS", "12"))
 
+# A cached credential that keeps failing verification is STALE information,
+# not a wall: after this many verify failures of attempts that ran with it,
+# the cached value is invalidated and re-collected (fresh value = new epoch).
+CREDENTIAL_REVERIFY_THRESHOLD = int(os.environ.get("CREDENTIAL_REVERIFY_THRESHOLD", "3"))
+
+# Standing-goal pursuit: self-initiated iterations run ONLY under a budget the
+# user's own words granted; this ceiling clamps any granted budget (safety
+# rail — the goal judge stops earlier on plateau or target).
+GOAL_PURSUIT_MAX_ATTEMPTS = int(os.environ.get("GOAL_PURSUIT_MAX_ATTEMPTS", "5"))
+
 # User-provided files (@mentions / attach): copied into the run workspace.
 FILE_ATTACH_MAX_MB = int(os.environ.get("FILE_ATTACH_MAX_MB", "50"))
 FILE_ATTACH_TOTAL_MAX_MB = int(os.environ.get("FILE_ATTACH_TOTAL_MAX_MB", "200"))

@@ -149,6 +149,17 @@ def format_event(record: dict) -> Optional[str]:
         return f"     ⚖ continuation judgment: {verb} — {str(data.get('reason', ''))[:80]}"
     if kind == "acquire.epoch":
         return f"     ↳ new information (epoch {data.get('epoch')}): {str(data.get('note', ''))[:90]}"
+    if kind == "goal.declared":
+        return f"  🎯 standing goal: {str(data.get('metric', ''))[:90]}"
+    if kind == "goal.verdict":
+        return (f"  🎯 goal outcome [{name}]: {str(data.get('verdict', '')).upper()}"
+                + (f" (measured: {data.get('value')})" if data.get("value") else ""))
+    if kind == "goal.pursuit":
+        return (f"  🎯 goal pursuit [{name}] iteration {data.get('iteration')}/"
+                f"{data.get('budget')}: {data.get('action')} — "
+                f"{str(data.get('reason', ''))[:70]}")
+    if kind == "secret.invalidated":
+        return f"  🔑 cached {name} invalidated: {str(data.get('reason', ''))[:70]}"
     if kind == "supervisor.error":
         return None  # fail-open is silent; the trace has it
     if kind == "user.informed":

@@ -45,7 +45,7 @@ CREATE TABLE IF NOT EXISTS capability_failures (
 _MIGRATIONS = {"memory_mb": "INTEGER", "cpus": "REAL", "timeout_seconds": "INTEGER",
                "requires_credential": "TEXT", "credential_help": "TEXT",
                "validated_engine": "TEXT", "validated_at": "TEXT", "quarantined": "TEXT",
-               "accepts": "TEXT", "emits": "TEXT"}
+               "accepts": "TEXT", "emits": "TEXT", "side_effects": "TEXT"}
 
 
 def _migrate(conn: sqlite3.Connection, table: str, columns: dict[str, str]) -> None:
@@ -89,6 +89,8 @@ class Registry:
             quarantined=r["quarantined"],
             accepts=json.loads(r["accepts"]) if r["accepts"] else [],
             emits=r["emits"] or "",
+            side_effects=(r["side_effects"] or "none")
+            if "side_effects" in r.keys() else "none",
         )
 
     def get(self, name: str) -> Optional[Capability]:
@@ -161,8 +163,9 @@ class Registry:
                 "INSERT OR REPLACE INTO capabilities "
                 "(name, version, description, image_tag, command, input_schema, env_map, network, "
                 " tags, verified, created_at, memory_mb, cpus, timeout_seconds, requires_credential, "
-                " credential_help, validated_engine, validated_at, quarantined, accepts, emits) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                " credential_help, validated_engine, validated_at, quarantined, accepts, emits, "
+                " side_effects) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (
                     cap.name,
                     cap.version,
@@ -185,6 +188,7 @@ class Registry:
                     cap.quarantined,
                     json.dumps(cap.accepts) if cap.accepts else None,
                     cap.emits or None,
+                    cap.side_effects or "none",
                 ),
             )
         # Persist a manifest + build context for reproducibility/audit.

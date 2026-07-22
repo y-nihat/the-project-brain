@@ -123,6 +123,18 @@ class ApprovalBroker:
         if not self.request(action, reason, requirements):
             raise ApprovalDenied(action)
 
+    def invalidate(self, name: str, reason: str = "") -> bool:
+        """Drop a cached secret VALUE that turned out to be stale/unusable, so
+        the next request for it re-collects a fresh one. Traces the NAME and
+        reason only — never the value."""
+        if name not in self.secrets:
+            return False
+        self.secrets.pop(name, None)
+        if self.tracer is not None:
+            self.tracer.event("secret.invalidated", name, status="info",
+                              reason=(reason or "cached value unusable")[:200])
+        return True
+
     def inform(self, text: str) -> None:
         """Show the user something NOW (used by the supervisor when an upcoming
         interaction needs context first). Traced by length/preview only."""
