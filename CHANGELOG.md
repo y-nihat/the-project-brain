@@ -5,6 +5,57 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
 [Semantic Versioning](https://semver.org/) — `0.x` while the core algorithm
 and behavior are still expected to change between releases.
 
+## [0.27.0] — 2026-07-22
+
+The outcome loop: goal-level autonomy across runs. Post-mortem of three
+manual follow-ups on one competition task — the system fetched a real
+external outcome itself and carried it into the next run, yet still needed
+the human to be the outcome monitor ("improve it"), the persistence judge
+("research first"), and the goal memory; and a run classified "succeeded"
+while its measured outcome REGRESSED. This closes the loop at the objective
+level, the same way v0.25 closed it at the tool level. Reviewed by a
+four-lens adversarial workflow; 8 confirmed defects fixed before release.
+
+### Added
+- **Standing goals** (`brain/memory/goals.py`): a `GoalLedger` persists an
+  aspiration a run cannot finish in one shot — {metric, direction (maximize
+  / minimize / reach), target, measured_by} — with the full attempt
+  trajectory (value, verdict, diagnosis). Open goals reach the planner so a
+  continuing objective references one (`aspiration.goal_ref`) instead of
+  restating it.
+- **Outcome judgment** (`brain/goals.py`): after each run, `judge_outcome`
+  compares the REALIZED measured value (never an internal estimate) against
+  the goal — verdict achieved/advanced/unchanged/regressed — records the
+  attempt, and surfaces verdict + diagnosis + a proposed next step in the
+  answer. A regression MANDATES a research-first next step. "Succeeded" can
+  no longer hide a regressed goal.
+- **Bounded goal pursuit** (`brain/session.py`): only when the objective's
+  own words granted an iteration budget AND the human approves the autonomy
+  at the gate, the session self-initiates further iterations, each a full
+  normal run; `next_iteration_decision` governs continue/stop and fails
+  CLOSED; clamped by `GOAL_PURSUIT_MAX_ATTEMPTS`.
+- **`Capability.side_effects`** (none / external_read / external_write): a
+  world-acting tool is verified in dry-run mode (`BRAIN_DRY_RUN=1`, must
+  print `{"dry_run": true}`) on EVERY verification-time run — generic verify
+  and both fabrication probes — so verification never acts on a live service;
+  a redo of an external_write stage verifies from recorded results instead of
+  re-acting. Declaration is mandatory for networked/credentialed tools
+  (mechanical contract check, fail-closed) and sticky across repair.
+
+### Fixed / hardened (from the adversarial review)
+- Autonomous pursuit requires explicit gate approval — the extracted budget
+  is planner text (prompt-injectable via a seeded deliverable) and never
+  authorizes spending by itself.
+- A cached credential failing verification `CREDENTIAL_REVERIFY_THRESHOLD`
+  times is invalidated and re-collected; the counter RESETS so a second
+  stale value is also caught. The fresh value opens a new epoch.
+- Aspiration survives corrective replans (proxy-first correction / knowledge
+  replan can no longer silently erase a standing goal + budget).
+- `best_value` handles direction=reach (closest to target), the depth nudge
+  uses declared shallow→deep ordering and only advertises bound channels,
+  and pursuit is fail-open (a bookkeeping error can't discard a delivered
+  answer or crash the REPL; Ctrl-C mid-iteration keeps the finished answer).
+
 ## [0.26.2] — 2026-07-19
 
 Ultra-review finding (PR #33, one finding, verified): the recipe path's
