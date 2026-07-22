@@ -73,6 +73,12 @@ class BrainSession:
         # so a follow-up like "I don't like the layout" is understood as
         # FEEDBACK to revise, not a fresh task to rebuild from scratch.
         self._last_run: Optional[dict] = None
+        # Standing goals: aspirations that outlive a run. The ledger persists
+        # them; the outcome loop (post-run) judges each run against its goal;
+        # the pursuit loop (opt-in, user-granted budget) iterates on them.
+        from .memory.goals import GoalLedger
+        self.goals = GoalLedger(config.DB_PATH)
+        self._pursuing = False   # guard: inner pursuit runs must not re-pursue
         self._janitor()
 
     def _janitor(self) -> None:
@@ -198,6 +204,12 @@ class BrainSession:
                 f"{self._last_run['deliverable'][:2500]}\n---\n"
                 f"files it produced (seeded under prior/{self._last_run['run_id']}/ in "
                 f"this run's workspace): {self._last_run['files'][:12]}")
+        # Open standing goals reach the planner so a continuing objective can
+        # reference one (aspiration.goal_ref) instead of redeclaring it.
+        from .memory.goals import goals_block
+        gb = goals_block(self.goals)
+        if gb:
+            session_context = (session_context + "\n\n" + gb) if session_context else gb
 
         run = self.tracer.start_run(
             objective, model=(config.model_for("orchestrator") or "sdk-default"))
@@ -274,15 +286,130 @@ class BrainSession:
                               "files": produced}
             if self.auto_export:
                 self._export(session_id)
-            return RunSummary(
+            summary = RunSummary(
                 run_id=session_id, status=status, answer=answer,
                 containers=len(self.ledger.all(session_id)), leaks=len(leaks),
                 used_history=bool(hist_text), seeded_from=seed_run,
                 capabilities=[c.name for c in self.registry.all()],
             )
+            # The outcome loop: judge this run against its standing goal (if
+            # it declared one), record the attempt, surface the verdict and a
+            # next-step proposal in the answer — and, ONLY under a user-granted
+            # budget, pursue the goal with further self-initiated iterations.
+            summary = await self._goal_outcome(
+                summary, dict(getattr(orchestrator, "aspiration", {}) or {}))
+            if not self._pursuing:
+                summary = await self._maybe_pursue(summary)
+            return summary
         finally:
             manager.close()
             blackboard.close()
+
+    async def _goal_outcome(self, summary: RunSummary, aspiration: dict) -> RunSummary:
+        """Piece 2+3 of the outcome loop: resolve the run's aspiration to a
+        standing goal, judge the realized outcome against it, record the
+        attempt, and append the goal banner (verdict + diagnosis + proposed
+        next step) to the answer. Fail-open: any failure here leaves the
+        summary exactly as delivered."""
+        from . import goals as goals_mod
+
+        self._goal_state = None
+        if not aspiration:
+            return summary
+        try:
+            goal = None
+            if aspiration.get("goal_ref"):
+                goal = self.goals.get(aspiration["goal_ref"])
+            if goal is None and aspiration.get("metric"):
+                goal = self.goals.get(self.goals.declare(
+                    aspiration["metric"], aspiration.get("direction", "maximize"),
+                    str(aspiration.get("target", "")), aspiration.get("measured_by", "")))
+            if goal is None:
+                return summary
+            attempts = self.goals.attempts(goal["id"])
+            best = self.goals.best_value(goal)
+            outcome = await goals_mod.judge_outcome(
+                goal, attempts, summary.answer, best=best,
+                model=config.model_for("goal"))
+            self.goals.record_attempt(goal["id"], summary.run_id,
+                                      value=outcome["value"], verdict=outcome["verdict"],
+                                      diagnosis=outcome["diagnosis"],
+                                      next_step=outcome["next_step"])
+            if outcome["verdict"] == "achieved":
+                self.goals.mark(goal["id"], "achieved")
+            self.tracer.event("goal.verdict", f"goal#{goal['id']}", status="info",
+                              verdict=outcome["verdict"], value=outcome["value"],
+                              best=best or "", run_id=summary.run_id)
+            banner = goals_mod.goal_banner(
+                goal, outcome, self.goals.best_value(goal),
+                len(attempts) + 1, pursuing=self._pursuing or
+                bool(aspiration.get("budget_attempts")))
+            summary.answer = (summary.answer or "") + "\n" + banner
+            # The banner is part of the run's record, not only the console.
+            try:
+                ans = Path(config.RUNS_DIR) / summary.run_id / "outputs" / "ANSWER.md"
+                if ans.is_file():
+                    ans.write_text(ans.read_text() + "\n" + banner)
+            except OSError:
+                pass
+            self._goal_state = {"goal_id": goal["id"], "verdict": outcome["verdict"],
+                                "next_step": outcome["next_step"],
+                                "budget_attempts": aspiration.get("budget_attempts")}
+        except Exception as e:  # noqa: BLE001 — the goal layer must never break delivery
+            self.tracer.event("goal.error", "outcome", status="failed",
+                              error=f"{type(e).__name__}: {str(e)[:200]}")
+        return summary
+
+    async def _maybe_pursue(self, summary: RunSummary) -> RunSummary:
+        """Piece 4: bounded, user-authorized goal pursuit. Runs ONLY when the
+        objective's own words granted an iteration budget; every iteration is
+        a full normal run (approval gates and prompts unchanged); the judge
+        decides continue/stop between attempts and fails CLOSED; hard
+        ceilings bound the loop regardless."""
+        from . import goals as goals_mod
+
+        state = getattr(self, "_goal_state", None)
+        if not state or not state.get("budget_attempts"):
+            return summary
+        budget = min(int(state["budget_attempts"]), config.GOAL_PURSUIT_MAX_ATTEMPTS)
+        goal_id = state["goal_id"]
+        self._pursuing = True
+        try:
+            done = 0
+            while done < budget:
+                goal = self.goals.get(goal_id)
+                if goal is None or goal["status"] != "open":
+                    break
+                attempts = self.goals.attempts(goal_id)
+                best = self.goals.best_value(goal)
+                last_verdict = attempts[-1]["verdict"] if attempts else "unknown"
+                d = await goals_mod.next_iteration_decision(
+                    goal, attempts, attempts_left=budget - done, best=best,
+                    model=config.model_for("goal"))
+                self.tracer.event("goal.pursuit", f"goal#{goal_id}", status="info",
+                                  action=d["action"], reason=d["reason"],
+                                  iteration=done + 1, budget=budget)
+                if d["action"] != "continue":
+                    summary.answer += (f"\n[goal pursuit] stopped after {done} "
+                                       f"self-initiated iteration(s): {d['reason']}")
+                    break
+                next_obj = goals_mod.compose_next_objective(
+                    goal, last_verdict, best, d["next_approach"])
+                self.output_fn(f"[goal]       pursuing goal #{goal_id} — iteration "
+                               f"{done + 1}/{budget}: {d['reason'][:120]}")
+                summary = await self.run_objective(next_obj)
+                done += 1
+                # An iteration that failed to judge itself against the goal
+                # (planner declared no aspiration) must still appear in the
+                # trajectory — the judge decides from attempts, and an
+                # invisible attempt would make the loop repeat blindly.
+                if len(self.goals.attempts(goal_id)) <= len(attempts):
+                    self.goals.record_attempt(
+                        goal_id, summary.run_id, verdict="unknown",
+                        diagnosis="(run did not judge itself against the goal)")
+        finally:
+            self._pursuing = False
+        return summary
 
     def _resolve_missing_files(self, objective: str, unresolved: list[str],
                                resolved: list[str]) -> tuple[str, list[str], list[str]]:
@@ -340,4 +467,5 @@ class BrainSession:
     def close(self) -> None:
         self.ledger.close()
         self.registry.close()
+        self.goals.close()
         self.tracer.close()

@@ -714,6 +714,10 @@ class Orchestrator:
         # when a run fails BEFORE that point (observed: a run that blocked at
         # file resolution crashed with 'no attribute _run_ctx').
         self._run_ctx = None
+        # Standing-goal aspiration of the CURRENT run (set at plan time; read
+        # by the session's outcome loop after the run — init here so early
+        # failure paths can't AttributeError, the _run_ctx lesson).
+        self.aspiration: dict = {}
         self._presubmit_fixes_left = max(0, config.PRESUBMIT_FORMAT_FIXES)
         self._revision_fixups_left = max(0, config.REVISION_FORMAT_FIXUPS)
         self._gate_fixups_left = max(0, config.REVIEW_GATE_FIXUPS)
@@ -876,6 +880,16 @@ class Orchestrator:
         self._criteria = list(getattr(plan, "success_criteria", []) or [])
         if self._criteria:
             self.tracer.event("plan.criteria", "plan", status="info", criteria=self._criteria)
+        # Standing-goal aspiration: captured as run state for the session's
+        # outcome loop (judged at run end, persisted across runs).
+        self.aspiration = dict(getattr(plan, "aspiration", {}) or {})
+        if self.aspiration:
+            self.tracer.event("goal.declared", "plan", status="info",
+                              metric=self.aspiration.get("metric", "")[:200],
+                              goal_ref=self.aspiration.get("goal_ref", ""),
+                              direction=self.aspiration.get("direction", ""),
+                              target=str(self.aspiration.get("target", ""))[:80],
+                              budget_attempts=self.aspiration.get("budget_attempts"))
         # The initial method choice is auditable state (P0-F): persist the
         # planner's strategy rationale and the per-capability authoring
         # contracts it compiled (instance-neutral; the concrete task values
@@ -1010,9 +1024,27 @@ class Orchestrator:
                                   f"(pattern '{stage.pattern}')"))
                     else:
                         self._sup_redone.add(stage.id)
+                        guidance = d.guidance
+                        # A redo of a stage whose tool ACTS on the world must
+                        # verify from recorded results, not act again — the
+                        # observed failure: a redo re-submitted an identical
+                        # payload to an external service, consuming real quota
+                        # to re-prove an already-persisted result.
+                        effectful = [n for n, cap in
+                                     (self._stage_caps.get(stage.id) or {}).items()
+                                     if getattr(cap, "side_effects", "none") == "external_write"]
+                        if effectful:
+                            guidance += (
+                                "\n\n[engine rule] This stage's tool(s) "
+                                f"({', '.join(effectful)}) perform REAL external "
+                                "actions. Previous invocation(s) already acted and "
+                                "their results are recorded in the workspace. Verify "
+                                "from the RECORDED results; re-invoke the tool ONLY "
+                                "if no valid record exists — every invocation may "
+                                "consume real external quota.")
                         self.tracer.event("supervisor.redo", stage.id, status="info",
-                                          guidance=d.guidance[:300], reason=d.reason)
-                        out = await redo(d.guidance, out)
+                                          guidance=guidance[:300], reason=d.reason)
+                        out = await redo(guidance, out)
                         outputs[stage.id] = out
                         self.blackboard.put(f"output:{stage.id}", out)
 
