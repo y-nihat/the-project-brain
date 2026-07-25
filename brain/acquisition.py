@@ -456,7 +456,7 @@ def _no_input_probe(cap: Capability, sub: dict, manager, extra_env: Optional[dic
     res = manager.run_ephemeral(
         cap.image_tag, cap.command, policy=pol, capability=cap.name,
         environment=_verification_env(cap, extra_env), input_files=None,
-        capture_output_files=True,
+        capture_output_files=True, purpose="probe",
     )
     out = (res.stdout or "").strip()
     payload_error = False
@@ -490,7 +490,7 @@ def _irrelevant_input_probe(cap: Capability, manager, extra_env: Optional[dict])
         cap.image_tag, cap.command, policy=pol, capability=cap.name,
         environment=_verification_env(cap, extra_env),
         input_files={"__probe__.txt": b"engine probe: deliberately irrelevant input"},
-        capture_output_files=True,
+        capture_output_files=True, purpose="probe",
     )
     out = (res.stdout or "").strip()
     payload_error = False
@@ -708,7 +708,7 @@ def _generic_verify(cap: Capability, sample_input: dict, sample_files: dict, man
     pol = policy.for_capability(cap.memory_mb, cap.cpus, cap.timeout_seconds, cap.network)
     res = manager.run_ephemeral(
         cap.image_tag, cap.command, policy=pol, capability=cap.name, environment=env,
-        input_files=input_files or None, capture_output_files=True,
+        input_files=input_files or None, capture_output_files=True, purpose="verify",
     )
     if not res.ok:
         if res.oom:

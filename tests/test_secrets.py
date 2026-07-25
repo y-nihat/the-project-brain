@@ -212,7 +212,7 @@ class _CapturingManager:
         self.stdout = stdout
 
     def run_ephemeral(self, image, command, *, policy, capability, environment=None,
-                      input_files=None, capture_output_files=False):
+                      input_files=None, capture_output_files=False, **kw):
         from types import SimpleNamespace
 
         self.env = dict(environment or {})

@@ -34,7 +34,8 @@ def verify_web_search(cap: Capability, manager) -> VerificationResult:
         cap.env_map.get("max_results", "SEARCH_MAX_RESULTS"): "3",
     }
     res = manager.run_ephemeral(
-        cap.image_tag, cap.command, policy=pol, capability=cap.name, environment=env, ttl=60
+        cap.image_tag, cap.command, policy=pol, capability=cap.name, environment=env, ttl=60,
+        purpose="verify",
     )
     if not res.ok:
         return VerificationResult(False, f"non-zero exit/timeout: {res.stderr[:300]}")

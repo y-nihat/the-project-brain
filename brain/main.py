@@ -23,17 +23,32 @@ async def _amain(objective: str, quiet: bool = False) -> int:
     try:
         if s := _history_note(session, objective):
             print(s)
+        ticker_task = None
         if not quiet:
             # A run is silent for a median of ~6 minutes and a p90 of ~27. The
             # renderer is pure and already existed for the REPL; the documented
             # one-shot path simply never attached it, so a working system was
-            # indistinguishable from a hung one.
+            # indistinguishable from a hung one. The ticker is the same story
+            # one level down: the events say what JUST happened, and between
+            # them nothing said what is happening now or what it has cost.
+            from . import config
+            from .observability.ticker import Ticker
+
+            ticker = Ticker(output_fn=lambda s: print(s, flush=True),
+                            stall_limit=config.AGENT_STALL_TIMEOUT)
+
             def _on_event(rec: dict) -> None:
+                ticker.observe(rec)
                 if line := format_event(rec):
                     print(line, flush=True)
 
             session.add_listener(_on_event)
-        summary = await session.run_objective(objective)
+            ticker_task = asyncio.create_task(ticker.loop())
+        try:
+            summary = await session.run_objective(objective)
+        finally:
+            if ticker_task is not None:
+                ticker_task.cancel()
         print("\n==== ANSWER ====\n" + summary.answer)
         # The library's SIZE is the fact; naming all of it on every run buried
         # the run's own accounting under a list that has nothing to do with it.

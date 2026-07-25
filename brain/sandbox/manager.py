@@ -193,6 +193,7 @@ class SandboxManager:
         ttl: Optional[int] = None,
         input_files: Optional[dict] = None,
         capture_output_files: bool = False,
+        purpose: Optional[str] = None,
     ) -> RunResult:
         pol = policy or policy_mod.isolated()
         ttl = ttl if ttl is not None else pol.ttl_seconds
@@ -202,6 +203,13 @@ class SandboxManager:
         # session's stream is silent the whole time. Mark the window so the
         # stall watchdog knows waiting is not hanging (a run's ttl can exceed
         # the stall timeout).
+        # WHY this container runs. The engine executes a tool for two very
+        # different reasons — because an agent asked for its result, or because
+        # the engine is JUDGING the tool (verification, fabrication probes,
+        # revalidation) — and a judging run's nonzero exit is frequently the
+        # PASSING outcome. Without this distinction the live stream reported
+        # "ran web_search exit=2" during a healthy revalidation, which reads as
+        # a broken tool being used anyway.
         with activity.working(), self.tracer.span(
             "sandbox.run",
             capability or image,
@@ -210,6 +218,7 @@ class SandboxManager:
             mem=pol.mem,
             cpus=pol.cpus,
             ttl=ttl,
+            **({"purpose": purpose} if purpose else {}),
         ) as sp:
             self.ensure_image(image)
 

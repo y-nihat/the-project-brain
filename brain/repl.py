@@ -27,6 +27,7 @@ except ImportError:  # pragma: no cover — platform without readline
 # records, not terminal state); re-exported so existing callers and the
 # REPL's own use keep one import site.
 from .observability.stream import _ICON, format_event  # noqa: F401
+from .observability.ticker import Ticker
 
 
 def read_objective(first: str, input_fn: Callable[[str], str] = input) -> str:
@@ -79,26 +80,6 @@ _HELP = """commands:
   /quit, /exit  leave (Ctrl-D also works)"""
 
 
-async def _heartbeat(state: dict, stall_limit: float) -> None:
-    """Print a liveness line during silent stretches so 'thinking' is visibly
-    different from 'stuck' (true stalls are killed by the session watchdog)."""
-    last_print = 0.0
-    last_label = ""
-    while True:
-        await asyncio.sleep(5)
-        now = time.monotonic()
-        quiet = now - state["ts"]
-        # Suppress repetition (#23): same phase re-announces only at 60s+
-        # intervals; a phase CHANGE prints promptly.
-        interval = 25 if state["label"] != last_label else 60
-        if quiet >= 25 and now - last_print >= interval:
-            print(f"  … {state['label']} — quiet for {int(quiet)}s "
-                  f"(sessions abort after {int(stall_limit)}s of true silence; "
-                  "long quiet = builds or generation)", flush=True)
-            last_print = now
-            last_label = state["label"]
-
-
 async def _repl(resume: Optional[str] = None) -> int:
     from . import config
     from . import conversation as conversation_mod
@@ -114,11 +95,11 @@ async def _repl(resume: Optional[str] = None) -> int:
         resume = resolved
     session = BrainSession(auto_export=True, resume=resume)
     print(f"conversation: {session.conversation_id}\n")
-    state = {"ts": time.monotonic(), "label": "idle"}
+    ticker = Ticker(output_fn=lambda s: print(s, flush=True),
+                    stall_limit=config.AGENT_STALL_TIMEOUT)
 
     def _on_event(rec: dict) -> None:
-        state["ts"] = time.monotonic()
-        state["label"] = f"{rec.get('kind')}/{rec.get('name')}"
+        ticker.observe(rec)
         line = format_event(rec)
         if line:
             print(line, flush=True)
@@ -199,11 +180,10 @@ async def _repl(resume: Optional[str] = None) -> int:
 
             # An objective. Ctrl-C cancels THIS objective, not the session.
             print(f"\n⟳ working on: {raw}   (Ctrl-C cancels this objective)")
-            state["ts"] = time.monotonic()
-            state["label"] = "planning"
+            ticker.reset()
             loop = asyncio.get_running_loop()
             task = asyncio.create_task(session.run_objective(raw, files=list(attached)))
-            hb = asyncio.create_task(_heartbeat(state, config.AGENT_STALL_TIMEOUT))
+            hb = asyncio.create_task(ticker.loop())
             sig_installed = True
             try:
                 loop.add_signal_handler(signal.SIGINT, task.cancel)

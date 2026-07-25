@@ -14,6 +14,51 @@ from typing import Optional
 _ICON = {"ok": "✓", "succeeded": "✓", "granted": "✓", "passed": "✓",
          "failed": "✗", "denied": "⛔", "running": "…", "info": "·"}
 
+# The engine's OWN structured-emission tools. Each is the single allowed tool
+# of a locked session whose call is captured rather than executed, and each
+# already has a dedicated line below that says what was decided. Rendering them
+# as generic tool calls printed a truncated JSON blob or a truncated copy of the
+# answer immediately BEFORE the line that says it properly.
+# (A test pins this set against the tools actually defined in the engine, so it
+# cannot drift as new structured emissions are added.)
+ENGINE_EMISSIONS = frozenset({"emit_plan", "emit_decision", "emit_analysis"})
+
+# Why a sandbox container ran. A judging run's nonzero exit is often the
+# PASSING outcome, so its raw exit code must not be reported as if an agent's
+# tool call had failed; the verify/revalidate lines carry the verdict instead.
+_JUDGING_PURPOSES = frozenset({"probe", "verify", "revalidate"})
+
+
+def _plan_commitment(stages: list, known: list) -> str:
+    """What the plan COMMITS the turn to, in one line.
+
+    Between "planning the work" and the first stage there was nothing but
+    silence, and the plan line itself named stages without saying what they
+    would cost: whether tools must be BUILT (minutes and containers) or only
+    reused, and whether a review round is coming. All of it is read off the
+    plan — never off the request.
+    """
+    tools, patterns = [], []
+    for s in stages:
+        if not isinstance(s, dict):
+            continue
+        patterns.append(s.get("pattern", "single"))
+        tools += [str(c) for c in (s.get("capabilities") or [])]
+    tools = list(dict.fromkeys(tools))
+    known_set = {str(k) for k in (known or [])}
+    build = [t for t in tools if t not in known_set]
+    reuse = [t for t in tools if t in known_set]
+    bits = []
+    if reuse:
+        bits.append(f"reuses {', '.join(reuse)}")
+    if build:
+        bits.append(f"must BUILD {', '.join(build)} (sandbox build — the slow part)")
+    if not tools:
+        bits.append("no tools — the agents reason unaided")
+    if "review" in patterns:
+        bits.append("a review round is planned")
+    return "; ".join(bits)
+
 
 def format_event(record: dict) -> Optional[str]:
     """Render one trace record as a compact live-progress line, or None to skip.
@@ -34,7 +79,10 @@ def format_event(record: dict) -> Optional[str]:
     if kind == "plan.created":
         stages = data.get("stages") or data.get("agents") or []
         shape = ", ".join(f"{s.get('id', '?')}({s.get('pattern', 'single')})" for s in stages)
-        return f"  📋 plan: {len(stages)} stage(s) — {shape}"
+        line = f"  📋 plan: {len(stages)} stage(s) — {shape}"
+        if commitment := _plan_commitment(stages, data.get("known_capabilities") or []):
+            line += f"\n     ↳ {commitment}"
+        return line
     if kind == "stage":
         if phase == "start":
             return f"  ▶ stage {name} [{data.get('pattern', 'single')}]"
@@ -130,6 +178,11 @@ def format_event(record: dict) -> Optional[str]:
     if kind == "capability.promote" and phase != "start":
         return f"       promoted {name} ✓ (now reusable)"
     if kind == "sandbox.run" and phase != "start":
+        if data.get("purpose") in _JUDGING_PURPOSES:
+            # The engine is judging the tool, not using it. A nonzero exit here
+            # is frequently the passing outcome (a probe the tool must refuse),
+            # so the verdict line — not this exit code — is the honest report.
+            return None
         oom = " OOM!" if data.get("oom") else ""
         return f"       ▸ ran {name} exit={data.get('exit_code')}{oom}{dur_s}"
     if kind == "approval.requested":
@@ -169,14 +222,22 @@ def format_event(record: dict) -> Optional[str]:
     if kind == "secret.provided":
         return (f"  🔑 {name} provided (held in memory for this session only)"
                 if status == "granted" else f"  🔑 {name} NOT provided")
-    if kind == "capability.revalidate" and phase == "start":
-        return f"     🧪 revalidating remembered tool {name} (stamped: {data.get('stamped')})"
+    if kind == "capability.revalidate":
+        if phase == "start":
+            return (f"     🧪 checking the remembered tool {name} still works "
+                    f"(last proven under engine {data.get('stamped')})")
+        ok = data.get("passed")
+        return (f"     🧪 {name} still works{dur_s} — reusing it" if ok else
+                f"     🧪 {name} FAILED its re-check{dur_s}: "
+                f"{str(data.get('detail', ''))[:100]}")
     if kind == "capability.quarantined":
         return f"     ☣ {name} QUARANTINED: {str(data.get('reason', ''))[:80]} — re-authoring"
     if kind == "capability.unavailable":
         return f"     ⛔ tool {name} unavailable this session (needs {data.get('needs')})"
     if kind == "agent.tool_call":
         short = name.split("__")[-1]
+        if short in ENGINE_EMISSIONS:
+            return None  # the engine talking to itself; its verdict line follows
         prev = data.get("args_preview")
         return f"       ⚒ {short}({prev})" if prev else f"       ⚒ {short}"
     return None

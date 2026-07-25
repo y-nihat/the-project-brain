@@ -22,7 +22,7 @@ class _FakeManager:
         self.calls: list[dict] = []
 
     def run_ephemeral(self, image, command, *, policy, capability, environment=None,
-                      input_files=None, capture_output_files=False):
+                      input_files=None, capture_output_files=False, **kw):
         self.calls.append({"input_files": input_files})
         # No input -> whatever the tool would fabricate; kept simple/deterministic.
         return SimpleNamespace(ok=True, oom=False, exit_code=0, timed_out=False,
@@ -132,7 +132,7 @@ class _CapturingManager:
         self.stdout = stdout
 
     def run_ephemeral(self, image, command, *, policy, capability, environment=None,
-                      input_files=None, capture_output_files=False):
+                      input_files=None, capture_output_files=False, **kw):
         return SimpleNamespace(ok=True, oom=False, exit_code=0, timed_out=False,
                                stdout=self.stdout, stderr="", output_files={},
                                error_note=None)

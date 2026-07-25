@@ -133,7 +133,7 @@ class _PassesNoInputFabricatesOnJunkMgr:
 
     def run_ephemeral(self, image, command, *, policy, capability,
                       environment=None, input_files=None,
-                      capture_output_files=False):
+                      capture_output_files=False, **kw):
         return _FabricatingRes() if input_files else _HonestWithoutInputRes()
 
 

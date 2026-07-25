@@ -39,14 +39,19 @@ SCENARIOS: list[Scenario] = [
     ),
     Scenario(
         id="escalation-floor",
-        objective=("What is the current UTC date and time, to the minute? "
-                   "Answer with the timestamp only."),
+        objective=("What is the official current stable version number of Python? "
+                   "Cite the source URL you observed it on."),
         intent=("The other side of the same judgment: this cannot be answered without "
-                "observing something, so the full loop must run. A cheap path that "
-                "swallowed this would be shipping a guess as an answer."),
+                "observing something, so the full loop must run and a real source must "
+                "be cited. A cheap path that swallowed this would ship a guess as an "
+                "answer. (The first attempt at this scenario asked for today's UTC date "
+                "— which the agent runtime injects into its own context, so it was "
+                "answerable without observing anything and the scenario measured "
+                "nothing. A live trial caught it.)"),
         checks=[
             ("status_is", {}),
             ("min_stages", {"limit": 1}),
+            ("cites_url", {"min_count": 1}),
         ],
     ),
     Scenario(

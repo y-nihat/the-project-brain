@@ -183,7 +183,7 @@ def test_external_write_verifies_in_dry_run(tmp_path):
     class _Mgr:
         def run_ephemeral(self, image, command, *, policy, capability,
                           environment=None, input_files=None,
-                          capture_output_files=False):
+                          capture_output_files=False, **kw):
             captured_env.update(environment or {})
             return _Res()
 
@@ -239,7 +239,7 @@ def test_probes_honor_dry_run_for_external_write():
 
     class _Mgr:
         def run_ephemeral(self, image, command, *, policy, capability,
-                          environment=None, input_files=None, capture_output_files=False):
+                          environment=None, input_files=None, capture_output_files=False, **kw):
             captured.update(environment or {})
             return _Res()
 

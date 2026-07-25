@@ -818,7 +818,15 @@ class Orchestrator:
         stages = workflow.topo_order(planned)
         roster = [_stage_dict(s) for s in stages]
         self.blackboard.put("plan", roster)
-        self.tracer.event("plan.created", "plan", status="info", stages=roster)
+        # The library's names ride along so a reader can tell REUSE from BUILD
+        # at the moment the plan is announced — building is the slow, expensive
+        # half, and until now the plan line gave no hint which was coming.
+        try:
+            known_names = [c.name for c in self.registry.all()] if self.registry else []
+        except Exception:  # noqa: BLE001 — an annotation must never fail a run
+            known_names = []
+        self.tracer.event("plan.created", "plan", status="info", stages=roster,
+                          known_capabilities=known_names)
 
         # Cross-run continuity: make the most relevant prior run's files
         # available to this run's file tools.
@@ -3876,9 +3884,14 @@ class Orchestrator:
                     if (cap.validated_engine != epoch
                             and self.manager is not None and self.registry is not None):
                         with self.tracer.span("capability.revalidate", cap.name,
-                                              stamped=cap.validated_engine or "never"):
+                                              stamped=cap.validated_engine or "never") as rv:
                             ok, reason = await asyncio.to_thread(
                                 revalidate_capability, cap, self.manager, self.registry)
+                            # The VERDICT belongs on the span. Without it the
+                            # only visible trace of a revalidation was the raw
+                            # probe container exiting nonzero — which is the
+                            # PASSING outcome, and read as a broken tool.
+                            rv.set(passed=bool(ok), detail=str(reason or "")[:200])
                         if ok:
                             # Legacy migration rides on revalidation: promoted
                             # descriptions predating consolidation hygiene may
