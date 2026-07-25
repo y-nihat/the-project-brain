@@ -5,6 +5,60 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
 [Semantic Versioning](https://semver.org/) — `0.x` while the core algorithm
 and behavior are still expected to change between releases.
 
+## [0.29.0] — 2026-07-25
+
+Giving the CLI a conversation — the first of three capacities that are missing,
+not one feature: a unit of record above the run (this release), an analyze step
+that may conclude nothing is unmet, and a post-plan effort shaped by the plan
+rather than fixed.
+
+### Added
+- **The conversation: the unit of record above a run.** A run was an island —
+  nothing recorded that two runs were things the same person said, one after
+  another, in one sitting, and the only cross-run memory (`_last_run`) was one
+  turn deep, in RAM, and died with the process. Each interactive process now
+  mints a conversation, every run it hosts is stamped with it and given a turn
+  ordinal, and the ordinal is derived from the RECORD rather than from process
+  state — so a resumed conversation keeps numbering without being told where it
+  left off. A self-initiated pursuit run is recorded under the turn that
+  authorized it instead of claiming one: it is a run of the brain, not a thing
+  the user said.
+- **A recorded conversation can be continued.** `python -m brain.repl --resume
+  <id|prefix|last>`, or `/resume` mid-session. What comes back is the record's
+  REFERENTS — what was asked, what came back, which files each turn produced.
+  Nothing live is resurrected: containers are gone and unfinished work is not
+  resumed. A conversation another live process holds is refused rather than
+  joined; two processes appending turns to one conversation would interleave
+  into a record neither of them said.
+- **The record is navigable as a conversation.** `python -m brain.observability
+  conversations` and `conversation <id|prefix|last>`; `/convs` and `/conv` in the
+  REPL; a CONVERSATION column in `list` and in `data/runs/INDEX.md`. Exported
+  traces carry OpenInference `session.id` (plus `input.value`/`output.value` on
+  the root span), so a viewer groups the turns of one process the way the record
+  does.
+
+### Fixed
+- **A second CLI process no longer corrupts the first.** Startup healing assumed
+  one process at a time: it force-removed every brain-labeled container, marked
+  every `running` row aborted, and reaped every `running` ledger row — so a
+  second CLI killed the first's live sandboxes, declared its active run dead,
+  and rewrote exactly the ledger rows that run checks at the end, converting a
+  LEAKING run into a clean-looking one. Liveness is now a file lock, not an
+  assumption: while a process holds its conversation, that conversation's rows
+  and containers are not leftovers. Containers carry a `brain.conversation`
+  label and ledger rows a `conversation` column so the distinction is visible
+  from outside.
+- **The trace store can migrate.** It never could: `CREATE TABLE IF NOT EXISTS`
+  is a no-op against an existing database, so any added column would have
+  existed only for installations that had never recorded a run. Runs recorded
+  before conversations existed are labeled `archive` and stay ungrouped —
+  grouping them after the fact, by time adjacency or anything else, would
+  fabricate conversations that never happened.
+- Concurrent conversations made the default rollback journal a hazard; the
+  trace store now opens WAL with a busy timeout. Run listings no longer smear
+  across lines on a multi-line objective, and the run column is sized to the
+  ids it actually holds (they are 45-65 chars; the fixed width was 18).
+
 ## [0.28.0] — 2026-07-25
 
 Discovery-audit remediation. An end-to-end product and technical review read

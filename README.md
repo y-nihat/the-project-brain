@@ -9,10 +9,10 @@ Its distinguishing property is not autonomy but **honesty**: a deliverable's loa
 trace to files a tool actually retained, and a run that cannot prove its work says so
 (`unverified` / `blocked` / `failed`) instead of narrating success.
 
-> **Status:** engine **v0.28.0**, pre-1.0, actively developed by one author. The safety substrate,
+> **Status:** engine **v0.29.0**, pre-1.0, actively developed by one author. The safety substrate,
 > staged workflows, capability authoring/verification/promotion, the evidence-and-review plane,
 > adaptive recovery, standing goals, the eval harness, and observability are built and covered by
-> 441 tests. `CHANGELOG.md` is the authoritative release record.
+> 456 tests. `CHANGELOG.md` is the authoritative release record.
 > See **[docs/OVERVIEW.md](docs/OVERVIEW.md)** for the stack, how to run it, and where logs live.
 
 ## Try it in about a minute
@@ -82,7 +82,7 @@ Installability is not yet the full M2 milestone: per-project `.brain/` state and
 
 ```sh
 ./scripts/setup-git.sh   # commit template + hooks (secret guard, message format, test gate)
-pytest tests/            # 441 tests; the 11 Docker-gated ones skip without a daemon
+pytest tests/            # 456 tests; the 11 Docker-gated ones skip without a daemon
 ```
 
 `CONTRIBUTING.md` has the git workflow and — read first — the architectural invariant every change
