@@ -270,3 +270,80 @@ def test_undecodable_files_are_still_skipped(tmp_path):
     (ws / "cap" / "empty.png").write_bytes(b"")
     assert image_blocks(["cap/broken.png", "cap/empty.png"], ws,
                         max_images=3, max_bytes=1024) == []
+
+
+# --- the answer must carry the diagnosis the engine already computed -------------- #
+def test_the_answer_envelope_states_why_the_run_did_not_certify(tmp_path, monkeypatch):
+    """Every unverified run in the corpus opened with the same sentence —
+    "its grounding review did not approve the content" — and a pointer to a
+    file. The per-criterion table and typed claim support were computed and
+    written to outputs/<stage>.md, then discarded from the answer, so two runs
+    that failed for completely different reasons were indistinguishable to the
+    reader. This reproduces the real shape of run-20260714-214545, where three
+    of seven criteria came back `unknown` because a prior artifact was never
+    retained — a cause the reader could act on, and never saw."""
+    monkeypatch.setattr(config, "RUNS_DIR", tmp_path / "runs")
+    orch, bb = _orch(tmp_path, None, StubPlanner([]), "trust")
+    try:
+        (tmp_path / "runs" / "trust" / "outputs").mkdir(parents=True)
+        orch._write_review_record("qa_review", [
+            {"round": 1, "verdict": "revise", "criteria": [], "claims": []},
+            {"round": 2, "verdict": "needs-evidence",
+             "criteria": [
+                 {"criterion": "Pricing states EUR 5.99/month", "status": "met",
+                  "evidence": "draft line 12"},
+                 {"criterion": "The 6 unaffected answers are unchanged",
+                  "status": "unknown",
+                  "evidence": "no retained prior artifact to diff against"},
+             ],
+             "claims": [
+                 {"claim": "Premium is EUR 5.99/month", "support": "direct",
+                  "evidence": "brief.md"},
+                 {"claim": "The other answers are untouched", "support": "unsupported",
+                  "evidence": ""},
+             ]},
+        ], "needs-evidence")
+        report = orch._trust_report()
+    finally:
+        bb.close()
+
+    # The reader learns the round, the tally, and the SPECIFIC unmet items.
+    assert "qa_review" in report and "round 2 of 2" in report
+    assert "1 met" in report and "1 unknown" in report
+    assert "The 6 unaffected answers are unchanged" in report
+    assert "no retained prior artifact to diff against" in report
+    assert "[unsupported] The other answers are untouched" in report
+    assert "outputs/qa_review.md" in report
+    # Met criteria are not repeated — only what blocks certification.
+    assert "Pricing states EUR 5.99/month" not in report
+
+
+def test_a_measured_count_violation_is_named_not_hidden(tmp_path, monkeypatch):
+    """An engine-MEASURED count violation outranks any reviewer verdict, but
+    the classifier reports the grounding dimension first, so the measurable,
+    fixable fact never reached the reader."""
+    from brain.criteria import CountCheck
+
+    monkeypatch.setattr(config, "RUNS_DIR", tmp_path / "runs")
+    orch, bb = _orch(tmp_path, None, StubPlanner([]), "measured")
+    try:
+        orch._format_violations = [
+            CountCheck(criterion="exactly 5 sections", op="exact", unit="section",
+                       bound=5, measured=7, ok=False, gating=True)]
+        report = orch._trust_report()
+    finally:
+        bb.close()
+    assert "required exact 5 section(s), measured 7" in report
+    assert "outranks any verdict" in report
+
+
+def test_the_trust_report_never_costs_the_reader_their_answer(tmp_path, monkeypatch):
+    """Fail-open: malformed records must degrade to silence, not an exception."""
+    monkeypatch.setattr(config, "RUNS_DIR", tmp_path / "runs")
+    orch, bb = _orch(tmp_path, None, StubPlanner([]), "broken")
+    try:
+        assert orch._trust_report() == ""          # nothing recorded yet
+        orch._review_summary = {"stage": "r", "final": "x", "record": [{"nope": 1}]}
+        orch._trust_report()                        # must not raise
+    finally:
+        bb.close()

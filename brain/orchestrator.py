@@ -699,6 +699,7 @@ class Orchestrator:
         self._locators: list[str] = []
         self._source_derived = False
         self._format_violations: list = []
+        self._review_summary: Optional[dict] = None
         self._research_used = 0
         self._research_cache: dict[str, str] = {}
         self._help_request: Optional[dict] = None
@@ -940,6 +941,7 @@ class Orchestrator:
         self._suppressed_caps = set()   # methods that failed this run; need new rationale
         self._acq_failures = []         # run-scoped, cross-contract failure memory
         self._format_violations = []    # engine-measured count-criteria failures
+        self._review_summary = None     # final review round, for the answer envelope
         self._help_request = None       # set when the brain decides to stop and ask the user
         self._fix_notes = {}            # stage id -> accumulated fix-round lessons
         self._tool_repairs = 0          # agent-reported tool-defect repairs spent
@@ -1171,7 +1173,10 @@ class Orchestrator:
         self.tracer.event("run.classification", "run", status="info",
                           classification=self.classification, reason=reason)
         if self.classification != "succeeded":
-            answer = (f"[result: {self.classification.upper()}] {reason}\n\n" + answer).strip()
+            banner = f"[result: {self.classification.upper()}] {reason}"
+            if trust := self._trust_report():
+                banner += "\n\n" + trust
+            answer = (banner + "\n\n" + answer).strip()
         # A brain-decided stop-and-ask leads with its structured help request:
         # how far it got, what it tried, why it stopped, and what it needs.
         if self._help_request:
@@ -3177,6 +3182,65 @@ class Orchestrator:
                 lines.append("")
             lines += [r.get("critique") or r.get("error") or "", ""]
         agg.write_text("\n".join(lines))
+        # Keep the structured verdict reachable for the ANSWER envelope. The
+        # per-criterion and claim tables are the only actionable account of why
+        # a run did not certify, and they were written here and nowhere else —
+        # every unverified run shipped the same one-line reason and a pointer to
+        # a file the reader had to go find.
+        self._review_summary = {"stage": stage_id, "final": final, "record": record}
+
+    def _trust_report(self) -> str:
+        """Why the run did not certify, from the engine's own structured state.
+
+        Rendered from the FINAL review round: per-criterion states, typed claim
+        support, and any engine-MEASURED count violation (which outranks a
+        reviewer verdict and is otherwise invisible behind the grounding
+        reason). Best-effort — a formatting fault must never cost the reader
+        their deliverable."""
+        try:
+            summary = getattr(self, "_review_summary", None)
+            violations = list(self._format_violations or [])
+            if not summary and not violations:
+                return ""
+            out: list[str] = []
+            if summary and (summary.get("record") or []):
+                rounds = summary["record"]
+                last = rounds[-1]
+                head = (f"WHY THIS DID NOT CERTIFY — review '{summary['stage']}', "
+                        f"round {last.get('round', len(rounds))} of {len(rounds)}: "
+                        f"{last.get('verdict', 'unknown')}")
+                out.append(head)
+                crits = last.get("criteria") or []
+                if crits:
+                    tally: dict[str, int] = {}
+                    for c in crits:
+                        tally[c.get("status", "unknown")] = \
+                            tally.get(c.get("status", "unknown"), 0) + 1
+                    out.append("  criteria: " + " · ".join(
+                        f"{n} {s}" for s, n in sorted(tally.items())))
+                    for c in crits:
+                        if c.get("status") in ("unmet", "unknown"):
+                            ev = f" — {c['evidence']}" if c.get("evidence") else ""
+                            out.append(f"    [{c['status']}] {c['criterion']}{ev}"[:400])
+                claims = last.get("claims") or []
+                if claims:
+                    tally = {}
+                    for c in claims:
+                        tally[c.get("support", "unknown")] = \
+                            tally.get(c.get("support", "unknown"), 0) + 1
+                    out.append("  claims: " + " · ".join(
+                        f"{n} {s}" for s, n in sorted(tally.items())))
+                    for c in claims:
+                        if c.get("support") == "unsupported":
+                            out.append(f"    [unsupported] {c['claim']}"[:400])
+            for v in violations[:3]:
+                out.append(f"  measured: required {v.op} {v.bound} {v.unit}(s), "
+                           f"measured {v.measured} — a measured count outranks any verdict")
+            if summary:
+                out.append(f"  full critique: outputs/{summary['stage']}.md")
+            return "\n".join(out)
+        except Exception:  # noqa: BLE001 — never lose the answer to a format fault
+            return ""
 
     def _digest(self, pending: Optional[str] = None,
                 just_completed: Optional[tuple] = None) -> str:
