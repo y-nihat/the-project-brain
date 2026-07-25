@@ -112,9 +112,14 @@ def resolve_local_sources(text: str) -> tuple[str, list[str], list[str]]:
     Returns ``(rewritten_text, resolved_abs_paths, unresolved_tokens)``:
       * a token that resolves to a readable file is rewritten in-text to
         ``input/<name>`` and its absolute path returned for materialization;
-      * a token that clearly names a file but does NOT resolve is returned
-        unresolved, so the caller can ASK the user for an accessible path
-        instead of letting the run author a doomed, file-starved pipeline.
+      * a token that names a file but does NOT resolve is returned unresolved,
+        so the caller can ASK for an accessible path instead of letting the run
+        author a doomed, file-starved pipeline.
+
+    An unmarked token carrying more dotted segments than a filename normally
+    does is NOT read as a file: `name.ext` is equally the shape of a hostname,
+    and the engine must not interrogate the user about a file only it believed
+    was named.
 
     Only file-shaped tokens are considered; URLs and ``input/`` tokens are left
     untouched. Run AFTER parse_mentions."""
@@ -132,7 +137,8 @@ def resolve_local_sources(text: str) -> tuple[str, list[str], list[str]]:
             output_names.add(tok.rsplit("/", 1)[-1].lower())
 
     def _sub(m: re.Match) -> str:
-        raw = m.group(1) if m.group(1) is not None else (m.group(2) or "")
+        explicit = m.group(1) is not None          # backticked: the user marked it
+        raw = m.group(1) if explicit else (m.group(2) or "")
         tok = raw.strip().strip('\'"').rstrip(".,;:!?)]}")
         if not _looks_like_file(tok):
             return m.group(0)
@@ -141,6 +147,26 @@ def resolve_local_sources(text: str) -> tuple[str, list[str], list[str]]:
             if str(hit) not in resolved:
                 resolved.append(str(hit))
             return m.group(0).replace(tok, f"input/{hit.name}")
+        # Everything below flags the token for the "give me an accessible path"
+        # gate, so it must only fire on something the user actually designated.
+        # `name.ext` is equally the shape of a HOSTNAME — every TLD matches the
+        # file-extension rule — so an objective naming `shop.example.com`
+        # bought two interrogations for a path that never existed and then told
+        # every agent to report a fatal blocker on it.
+        #
+        # Withdraw the guess when the token carries MORE dotted segments than a
+        # filename normally does, and the user marked nothing: no backticks, no
+        # @, no path separator. `data.csv` still asks; `shop.example.com` and
+        # `cdn.example.net` no longer do. A token that RESOLVES was already
+        # returned above, so nothing that exists is lost either way.
+        #
+        # Known limit, stated rather than papered over: a bare TWO-segment host
+        # (`example.com`) with no scheme and no `www.` is still indistinguishable
+        # from a filename by shape alone. Separating those needs a public-suffix
+        # list, which is a moving external dataset this engine should not carry.
+        if (not explicit and not any(sep in tok for sep in ("/", "\\"))
+                and tok.count(".") > 1):
+            return m.group(0)
         # A filename the objective asks the system to PRODUCE (a deliverable) is
         # NOT a missing INPUT: flagging it as unresolved makes the engine tell
         # the agent to fatal-block on a file it is supposed to CREATE. Skip any

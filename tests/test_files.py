@@ -58,3 +58,77 @@ def test_materialize_enforces_caps_and_existence(tmp_path, monkeypatch):
 def test_manifest_note_names_paths_and_mechanism():
     note = files.manifest_note([{"path": "input/r.pdf", "bytes": 1024 * 1024}])
     assert "input/r.pdf" in note and "`files` argument" in note and "1.0 MB" in note
+
+
+def test_a_host_shaped_token_is_not_read_as_a_designated_file(tmp_path, monkeypatch):
+    """`name.ext` is also the shape of a hostname, and every TLD matched the
+    engine's file-extension rule. An objective naming a domain therefore bought
+    two interrogations for a path that never existed, and then instructed every
+    agent to report a fatal blocker on it — a legitimate turn broken by the
+    engine's own guess.
+    """
+    from brain import config, files as files_mod
+
+    monkeypatch.setattr(config, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(config, "INBOX_DIR", tmp_path / "inbox")
+
+    for token in ("shop.kelvane.com", "api.github.io", "example.co.uk",
+                  "registry.npmjs.org", "cdn.jsdelivr.net"):
+        text = f"deploy the site and point it at {token} when it is live"
+        rewritten, resolved, unresolved = files_mod.resolve_local_sources(text)
+        assert resolved == [] and unresolved == [], token
+        assert rewritten == text, "the objective must reach the planner unchanged"
+
+
+def test_an_explicitly_designated_file_still_earns_the_ask(tmp_path, monkeypatch):
+    """The gate is not weakened. A marked token — backticks, or a path
+    separator — always asks, and so does a plain missing input."""
+    from brain import config, files as files_mod
+
+    monkeypatch.setattr(config, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(config, "INBOX_DIR", tmp_path / "inbox")
+
+    _t, _r, backticked = files_mod.resolve_local_sources(
+        "summarize `data/missing/gone.pdf`")
+    assert backticked == ["data/missing/gone.pdf"]
+
+    _t, _r, with_path = files_mod.resolve_local_sources(
+        "summarize data/missing/gone.pdf")
+    assert with_path == ["data/missing/gone.pdf"]
+
+    # A backticked BARE name is a designation too — the marks are the point.
+    _t, _r, bare_marked = files_mod.resolve_local_sources("summarize `gone.pdf`")
+    assert bare_marked == ["gone.pdf"]
+
+    # And an ordinary unmarked missing input still asks: one dotted segment is
+    # a filename, which is exactly what the gate exists for.
+    _t, _r, plain = files_mod.resolve_local_sources(
+        "Analyze the attached data.csv and summarize.")
+    assert plain == ["data.csv"]
+
+
+def test_the_residual_limit_is_stated_not_hidden():
+    """A bare TWO-segment host with no scheme is still indistinguishable from a
+    filename by shape alone. Separating those needs a public-suffix list — a
+    moving external dataset this engine should not carry — so the limit is
+    recorded here rather than quietly assumed away."""
+    from brain import files as files_mod
+
+    assert "public-suffix" in files_mod.resolve_local_sources.__doc__ or \
+        "public-suffix" in open(files_mod.__file__, encoding="utf-8").read()
+
+
+def test_a_bare_filename_that_exists_is_still_picked_up(tmp_path, monkeypatch):
+    """The convenience the bare-token rule exists for must survive: when the
+    guess RESOLVES it is a file, and nothing about this changes."""
+    from brain import config, files as files_mod
+
+    inbox = tmp_path / "data" / "inbox"
+    inbox.mkdir(parents=True)
+    (inbox / "report.pdf").write_bytes(b"%PDF")
+    monkeypatch.setattr(config, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(config, "INBOX_DIR", inbox)
+
+    text, resolved, unresolved = files_mod.resolve_local_sources("summarize report.pdf")
+    assert resolved == [str((inbox / "report.pdf").resolve())]
+    assert "input/report.pdf" in text and unresolved == []
