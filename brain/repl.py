@@ -62,7 +62,7 @@ def read_objective(first: str, input_fn: Callable[[str], str] = input) -> str:
 
 
 _HELP = """commands:
-  <text>        run an objective (watch it work live)
+  <text>        say something (watch it work live)
                 mention files inline with @path (e.g. @data/inbox/report.pdf)
                 multi-line: paste directly (kept as one objective), or type
                 \"\"\" then your lines, then \"\"\" on its own line
@@ -70,6 +70,9 @@ _HELP = """commands:
   /files        list attached files
   /runs         list recent runs
   /show [id]    print a run's timeline (default: last)
+  /convs        list recorded conversations
+  /conv [id]    print a conversation's turns (default: this one)
+  /resume <id>  continue a recorded conversation (id, unique prefix, or 'last')
   /caps         list the capability library
   /last         re-print the last answer
   /help         this help
@@ -96,13 +99,21 @@ async def _heartbeat(state: dict, stall_limit: float) -> None:
             last_label = state["label"]
 
 
-async def _repl() -> int:
+async def _repl(resume: Optional[str] = None) -> int:
     from . import config
+    from . import conversation as conversation_mod
     from .observability import view
     from .session import BrainSession
 
-    print("The Project Brain — interactive session. Type an objective, or /help.\n")
-    session = BrainSession(auto_export=True)
+    print("The Project Brain — interactive session. Say something, or /help.\n")
+    if resume:
+        resolved = conversation_mod.resolve(config.DB_PATH, resume)
+        if resolved is None:
+            print(f"no conversation matches {resume!r} — starting a new one "
+                  "(/convs lists what is recorded)")
+        resume = resolved
+    session = BrainSession(auto_export=True, resume=resume)
+    print(f"conversation: {session.conversation_id}\n")
     state = {"ts": time.monotonic(), "label": "idle"}
 
     def _on_event(rec: dict) -> None:
@@ -139,6 +150,23 @@ async def _repl() -> int:
                 parts = raw.split()
                 rid = parts[1] if len(parts) > 1 and parts[1] != "last" else view.last_run_id(config.DB_PATH)
                 print(view.render_run(config.DB_PATH, rid) if rid else "(no runs yet)")
+                continue
+            if raw.startswith("/convs"):
+                print(view.render_conversations(config.DB_PATH, limit=15))
+                continue
+            if raw.startswith("/conv"):
+                ref = raw.split(None, 1)[1].strip() if " " in raw else session.conversation_id
+                cid = conversation_mod.resolve(config.DB_PATH, ref) or ref
+                print(view.render_conversation(config.DB_PATH, cid))
+                continue
+            if raw.startswith("/resume"):
+                ref = raw.split(None, 1)[1].strip() if " " in raw else ""
+                cid = conversation_mod.resolve(config.DB_PATH, ref) if ref else None
+                if cid is None:
+                    print(f"no conversation matches {ref or '(missing id)'!r} — "
+                          "/convs lists what is recorded")
+                elif session.switch_conversation(cid):
+                    last_answer = (session._last_run or {}).get("deliverable", "")
                 continue
             if raw == "/caps":
                 for c in session.registry.all():
@@ -207,8 +235,15 @@ async def _repl() -> int:
 def main() -> None:
     import sys
 
+    args = sys.argv[1:]
+    resume: Optional[str] = None
+    if args and args[0] in ("--resume", "-r"):
+        resume = args[1] if len(args) > 1 else "last"
+    elif args:
+        print("usage: python -m brain.repl [--resume <conversation_id|prefix|last>]")
+        sys.exit(2)
     try:
-        sys.exit(asyncio.run(_repl()))
+        sys.exit(asyncio.run(_repl(resume)))
     except KeyboardInterrupt:
         sys.exit(130)
 

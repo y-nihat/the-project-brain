@@ -35,7 +35,10 @@ CREATE TABLE IF NOT EXISTS containers (
 """
 
 # Columns added after the original schema; applied to pre-existing databases.
-_MIGRATIONS = {"peak_mem_mb": "REAL", "oom": "INTEGER"}
+# `session` here is the RUN a container belongs to; `conversation` is the
+# process-level record above it, and it exists so reaping can tell another
+# conversation's live containers from a dead one's leftovers.
+_MIGRATIONS = {"peak_mem_mb": "REAL", "oom": "INTEGER", "conversation": "TEXT"}
 
 
 def _migrate(conn: sqlite3.Connection, table: str, columns: dict[str, str]) -> None:
@@ -69,16 +72,19 @@ class Ledger:
         image: str,
         command: Any,
         policy: Any,
+        conversation: Optional[str] = None,
     ) -> None:
         cmd = command if isinstance(command, str) else json.dumps(command)
         with self._lock, self._conn:
             self._conn.execute(
                 "INSERT OR REPLACE INTO containers "
-                "(id, session, capability, image, command, mem, cpus, pids, network, ttl, status, started_at) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?, 'running', ?)",
+                "(id, session, conversation, capability, image, command, mem, cpus, pids, "
+                " network, ttl, status, started_at) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?, 'running', ?)",
                 (
                     id,
                     session,
+                    conversation,
                     capability,
                     image,
                     cmd,
@@ -107,14 +113,23 @@ class Ledger:
                 (status, exit_code, _utcnow(), peak_mem_mb, int(oom), id),
             )
 
-    def mark_stale_reaped(self) -> int:
-        """Close out 'running' rows left behind by a killed process."""
+    def mark_stale_reaped(self, keep_conversations: Optional[set] = None) -> int:
+        """Close out 'running' rows left behind by a killed process.
+
+        Rows belonging to a conversation a live process still holds are left
+        alone: rewriting them would erase exactly the leak evidence that
+        conversation's own run checks at the end (a leaking run would be
+        reported as clean by whoever started up next).
+        """
+        keep = [c for c in (keep_conversations or ()) if c]
+        sql = "UPDATE containers SET status='reaped', finished_at=? WHERE status='running'"
+        params: list = [_utcnow()]
+        if keep:
+            sql += (" AND (conversation IS NULL OR conversation NOT IN "
+                    f"({','.join('?' * len(keep))}))")
+            params += keep
         with self._lock, self._conn:
-            cur = self._conn.execute(
-                "UPDATE containers SET status='reaped', finished_at=? WHERE status='running'",
-                (_utcnow(),),
-            )
-            return cur.rowcount
+            return self._conn.execute(sql, params).rowcount
 
     def find_leaks(self, session: Optional[str] = None) -> list[dict]:
         """Rows still marked 'running' — i.e. containers we never confirmed gone."""

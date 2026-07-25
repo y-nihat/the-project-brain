@@ -42,6 +42,13 @@ def main(argv: list[str] | None = None) -> int:
     p_show.add_argument("run_id", nargs="?")
     p_show.add_argument("--last", action="store_true", help="show the most recent run")
 
+    p_convs = sub.add_parser("conversations", help="list recorded conversations")
+    p_convs.add_argument("-n", "--limit", type=int, default=20)
+
+    p_conv = sub.add_parser("conversation", help="print one conversation's turns, in order")
+    p_conv.add_argument("conversation_id", nargs="?",
+                        help="full id, a unique prefix, or 'last' (default: last)")
+
     sub.add_parser("stats", help="corpus statistics: outcome mix, spend, capability reuse")
 
     sub.add_parser(
@@ -76,6 +83,21 @@ def main(argv: list[str] | None = None) -> int:
                 print("(no runs recorded yet)")
                 return 1
         print(view.render_run(db, run_id))
+        return 0
+
+    if args.cmd == "conversations":
+        print(view.render_conversations(db, args.limit))
+        return 0
+
+    if args.cmd == "conversation":
+        from .. import conversation as conversation_mod
+
+        cid = conversation_mod.resolve(db, args.conversation_id or "last")
+        if not cid:
+            print(f"no conversation matches {args.conversation_id or 'last'!r} "
+                  "(list them with: python -m brain.observability conversations)")
+            return 1
+        print(view.render_conversation(db, cid))
         return 0
 
     if args.cmd == "stats":

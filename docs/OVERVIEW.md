@@ -45,8 +45,10 @@ DC="docker compose -f docker/docker-compose.yml --env-file .env"
 $DC up -d --build        # first time builds the image; afterwards just: $DC up -d
 $DC exec brain python -m brain.main "<your objective>"     # run an objective
 $DC exec brain python -m pytest                            # tests
-$DC exec brain python -m brain.observability list          # list runs
+$DC exec brain python -m brain.observability list           # list runs
 $DC exec brain python -m brain.observability show --last    # full run timeline
+$DC exec brain python -m brain.observability conversations  # list conversations
+$DC exec brain python -m brain.observability conversation last   # its turns, in order
 ```
 
 > If Docker Desktop restarts, re-run `$DC up -d` (the brain container has no
@@ -90,9 +92,22 @@ to Phoenix if it's running). This is also where the approval gate can actually s
 brain> Build and test a small CSV-sorting tool
 brain> /runs        # recent runs
 brain> /show last   # a run's timeline
+brain> /convs       # recorded conversations
+brain> /conv        # this conversation's turns, in order
+brain> /resume last # continue a recorded conversation
 brain> /caps        # the capability library
 brain> /quit        # (Ctrl-D also) — the script tears the stack down on exit
 ```
+
+**Each process is one conversation.** It is minted at startup, every run it
+hosts is stamped with it and given a turn ordinal, and the record is enough to
+continue it later (`python -m brain.repl --resume <id|prefix|last>`). What a
+resume restores is the conversation's *referents* — what was asked, what came
+back, which files each turn produced — never live state: containers are gone and
+unfinished work is not resumed. A conversation another live process is holding is
+refused rather than joined. Runs recorded before conversations existed are
+`archive` and stay ungrouped; grouping them after the fact would fabricate
+conversations that never happened.
 
 Under the hood both this REPL and the one-shot `python -m brain.main "<objective>"` run through the
 same `BrainSession`, so behavior is identical — the REPL just adds the live stream and reuses

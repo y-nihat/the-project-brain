@@ -23,6 +23,7 @@ DB_PATH = DATA_DIR / "brain.db"
 CAPABILITIES_STORE = DATA_DIR / "capabilities"   # promoted reusable tools (an output, not engine)
 RUNS_DIR = DATA_DIR / "runs"          # per-run trace exports + created-tool artifacts
 INBOX_DIR = DATA_DIR / "inbox"        # sanctioned drop folder: files named here get attached
+LOCKS_DIR = DATA_DIR / "locks"        # liveness locks: which conversations a process still holds
 
 # Engine version stamped onto every traced run (for reproducibility/regression)
 # AND onto capability validation stamps (as part of acquisition.validation_epoch(),

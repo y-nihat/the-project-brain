@@ -65,6 +65,24 @@ CREATE TABLE IF NOT EXISTS events (
 CREATE INDEX IF NOT EXISTS idx_events_run_seq ON events(run_id, seq);
 """
 
+# Columns added after the original schema. `CREATE TABLE IF NOT EXISTS` is a
+# no-op against an existing database, so without this an added column would
+# only exist for installations that never recorded a run. (The ledger keeps its
+# own copy of this four-line helper: the two stores are independent, and
+# coupling them so one can migrate is a worse trade than repeating it.)
+_MIGRATIONS = {"conversation_id": "TEXT", "turn": "INTEGER", "origin": "TEXT"}
+
+_INDEXES = """
+CREATE INDEX IF NOT EXISTS idx_runs_conversation ON runs(conversation_id, started_at);
+"""
+
+
+def _migrate(conn: sqlite3.Connection, table: str, columns: dict[str, str]) -> None:
+    have = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+    for name, decl in columns.items():
+        if name not in have:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {decl}")
+
 
 def _utcnow() -> str:
     return _dt.datetime.now(_dt.timezone.utc).isoformat()
@@ -199,17 +217,30 @@ class NullTracer:
 # Real tracer
 # --------------------------------------------------------------------------- #
 class Tracer:
-    def __init__(self, db_path: str | Path, runs_dir: str | Path, *, engine_version: str = "0.0.0"):
+    def __init__(self, db_path: str | Path, runs_dir: str | Path, *, engine_version: str = "0.0.0",
+                 conversation_id: Optional[str] = None):
         self.db_path = Path(db_path)
         self.runs_dir = Path(runs_dir)
         self.engine_version = engine_version
+        # The conversation this tracer's runs belong to. None keeps the old
+        # behavior exactly: an unstamped, ungrouped run.
+        self.conversation_id = conversation_id
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self.runs_dir.mkdir(parents=True, exist_ok=True)
         self._lock = threading.Lock()
         self._conn = sqlite3.connect(str(self.db_path), check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
+        # Concurrent conversations are now a supported shape, and the default
+        # rollback journal makes any second writer fail instantly.
+        try:
+            self._conn.execute("PRAGMA journal_mode=WAL")
+            self._conn.execute("PRAGMA busy_timeout=5000")
+        except sqlite3.Error:  # pragma: no cover — WAL unavailable (e.g. some network FS)
+            pass
         with self._conn:
             self._conn.executescript(_SCHEMA)
+            _migrate(self._conn, "runs", _MIGRATIONS)
+            self._conn.executescript(_INDEXES)
         self._run: Optional[Run] = None
         self._listeners: list = []
 
@@ -222,24 +253,41 @@ class Tracer:
         self._listeners.append(fn)
 
     # -- run lifecycle ---------------------------------------------------- #
-    def start_run(self, objective: str, *, model: Optional[str] = None) -> "Run":
+    def start_run(self, objective: str, *, model: Optional[str] = None,
+                  origin: str = "user") -> "Run":
         from .redact import scrub
 
         objective = scrub(objective)  # objectives are stored forever; mask secret shapes
         run_id = _run_id(objective)
         with self._lock, self._conn:
+            # The turn ordinal is derived from the record, not from caller
+            # state, so a RESUMED conversation continues its numbering without
+            # the resuming process having to be told where it left off. A
+            # self-initiated run is not a thing the user said: it carries the
+            # ordinal of the turn that authorized it rather than claiming one.
+            turn = None
+            if self.conversation_id:
+                cur = self._conn.execute(
+                    "SELECT COALESCE(MAX(turn), 0) FROM runs "
+                    "WHERE conversation_id=? AND COALESCE(origin,'user')='user'",
+                    (self.conversation_id,)).fetchone()[0]
+                turn = (cur or 0) + 1 if origin == "user" else (cur or None)
             self._conn.execute(
-                "INSERT INTO runs (run_id, objective, status, model, engine_version, started_at) "
-                "VALUES (?,?,?,?,?,?)",
-                (run_id, objective, "running", model, self.engine_version, _utcnow()),
+                "INSERT INTO runs (run_id, objective, status, model, engine_version, "
+                "started_at, conversation_id, turn, origin) VALUES (?,?,?,?,?,?,?,?,?)",
+                (run_id, objective, "running", model, self.engine_version, _utcnow(),
+                 self.conversation_id, turn, origin),
             )
         run = Run(self, run_id, objective)
+        run.turn = turn
         run._dir.mkdir(parents=True, exist_ok=True)
         run._jsonl = run._dir / "trace.jsonl"
         self._run = run
         # contextvars are reset per run so nesting starts clean.
         _current_span.set(None)
-        run.event("run", "start", status="running", objective=objective, model=model)
+        run.event("run", "start", status="running", objective=objective, model=model,
+                  **({"conversation_id": self.conversation_id, "turn": turn, "origin": origin}
+                     if self.conversation_id else {}))
         return run
 
     # -- delegation to current run --------------------------------------- #
@@ -260,9 +308,14 @@ class Tracer:
             return Path(tempfile.mkdtemp())
         return self._run.artifact_path(*parts)
 
-    def abort_stale_runs(self) -> int:
-        """Mark any 'running' runs as aborted — a previous process died mid-run
-        (only one session runs at a time, so a pre-existing 'running' row is a lie).
+    def abort_stale_runs(self, skip_conversations: Optional[set] = None) -> int:
+        """Mark orphaned 'running' runs as aborted — a previous process died mid-run.
+
+        A 'running' row is only a lie when nobody is still running it. Callers
+        pass the conversations a live process currently holds; those rows belong
+        to work in flight, not to a corpse. (Before conversations existed this
+        method assumed one session at a time, so a second CLI marked the first's
+        active run aborted.)
 
         The rollup is applied here too. Without it an interrupted run kept NULL
         cost, tokens, duration and event counts forever, even though its events
@@ -272,9 +325,11 @@ class Tracer:
         run's LAST EVENT rather than the clock in this later process, which is
         what turned one abandoned run into a 20-hour duration.
         """
+        skip = set(skip_conversations or ())
         with self._lock, self._conn:
             stale = [r["run_id"] for r in self._conn.execute(
-                "SELECT run_id FROM runs WHERE status='running'")]
+                "SELECT run_id, conversation_id FROM runs WHERE status='running'")
+                if r["conversation_id"] not in skip]
             for run_id in stale:
                 agg = _rollup(self._conn, run_id)
                 self._conn.execute(
@@ -374,6 +429,7 @@ class Run:
         self._t = tracer
         self.run_id = run_id
         self.objective = objective
+        self.turn: Optional[int] = None      # set by start_run when in a conversation
         self._dir = tracer.runs_dir / run_id
         self._jsonl: Optional[Path] = None
         self._start = time.monotonic()

@@ -34,18 +34,32 @@ def _ns(ts_iso: str) -> int:
     return int(_dt.datetime.fromisoformat(ts_iso).timestamp() * 1_000_000_000)
 
 
+def _column(row, name: str):
+    """A row value that may predate the column (older trace stores)."""
+    try:
+        return row[name]
+    except (IndexError, KeyError):
+        return None
+
+
 def _attr_value(v):
     if isinstance(v, (str, bool, int, float)):
         return v if not isinstance(v, str) else v[:2000]
     return json.dumps(v)[:2000]
 
 
-def _attributes(kind: str, name: str, run_id: str, data: dict) -> dict:
+def _attributes(kind: str, name: str, run_id: str, data: dict,
+                conversation_id: Optional[str] = None) -> dict:
     attrs = {
         "openinference.span.kind": _SPAN_KINDS.get(kind, _DEFAULT_KIND),
         "brain.kind": kind,
         "brain.run_id": run_id,
     }
+    # OpenInference's session grouping. Omitted (never emitted empty) for runs
+    # recorded before conversations existed, so they stay ungrouped rather than
+    # collapsing into one fictitious catch-all session.
+    if conversation_id:
+        attrs["session.id"] = conversation_id
     for key, value in (data or {}).items():
         if value is None:
             continue
@@ -119,7 +133,11 @@ def export_run(db_path: str | Path, run_id: str, endpoint: str) -> int:
     provider.add_span_processor(processor)
     tracer = provider.get_tracer("brain.observability")
 
-    # Root span: the run itself (one trace per run).
+    # Root span: the run itself (one trace per run). A run that belongs to a
+    # conversation carries it as the OpenInference session, so a viewer groups
+    # the turns of one CLI process the way the record already does.
+    conv = _column(run, "conversation_id")
+    turn = _column(run, "turn")
     run_start = _ns(run["started_at"])
     run_end = _ns(run["finished_at"]) if run["finished_at"] else None
     root = tracer.start_span(
@@ -128,6 +146,10 @@ def export_run(db_path: str | Path, run_id: str, endpoint: str) -> int:
         attributes={
             "openinference.span.kind": "AGENT",
             "brain.run_id": run_id,
+            **({"session.id": conv} if conv else {}),
+            **({"brain.turn": int(turn)} if turn else {}),
+            "input.value": (run["objective"] or "")[:2000],
+            "output.value": (run["outcome"] or "")[:2000],
             "brain.status": run["status"] or "",
             "brain.model": run["model"] or "(default)",
             "brain.engine_version": run["engine_version"] or "",
@@ -159,7 +181,7 @@ def export_run(db_path: str | Path, run_id: str, endpoint: str) -> int:
             f"{e['kind']}/{e['name']}",
             context=set_span_in_context(parent),
             start_time=start,
-            attributes=_attributes(e["kind"], e["name"] or "", run_id, data),
+            attributes=_attributes(e["kind"], e["name"] or "", run_id, data, conv),
         )
         status = e["status"] or ""
         if status in _ERROR_STATUSES or e["error"]:

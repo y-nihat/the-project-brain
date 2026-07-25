@@ -39,18 +39,121 @@ def last_run_id(db_path: str | Path) -> Optional[str]:
         conn.close()
 
 
+ARCHIVE_LABEL = "archive"
+
+
+def _conv_label(row: dict) -> str:
+    """How a run's conversation reads in a listing.
+
+    Runs recorded before conversations existed are ARCHIVE, not "(none)":
+    grouping them after the fact — by time adjacency or anything else — would
+    fabricate conversations that never happened.
+    """
+    cid = row.get("conversation_id")
+    if not cid:
+        return ARCHIVE_LABEL
+    turn = row.get("turn")
+    origin = row.get("origin") or "user"
+    mark = "" if origin == "user" else "+"
+    return f"{cid}#{turn}{mark}" if turn else cid
+
+
 def render_list(db_path: str | Path, limit: int = 20) -> str:
     runs = list_runs(db_path, limit)
     if not runs:
         return "(no runs recorded yet)"
-    lines = [f"{'RUN':<18} {'STATUS':<10} {'CONT':>4} {'COST$':>8}  OBJECTIVE"]
-    for r in runs:
+    convs = [_conv_label(r) for r in runs]
+    # Run ids are 45-65 chars; the old fixed width never aligned anything.
+    w_run = max(len("RUN"), *(len(r["run_id"]) for r in runs))
+    w_conv = max(len("CONVERSATION"), *(len(c) for c in convs))
+    lines = [f"{'RUN':<{w_run}} {'CONVERSATION':<{w_conv}} {'STATUS':<11} "
+             f"{'CONT':>4} {'COST$':>8}  OBJECTIVE"]
+    for r, conv in zip(runs, convs):
         cost = r["cost_usd"] or 0.0
         lines.append(
-            f"{r['run_id']:<18} {str(r['status']):<10} {r['n_containers'] or 0:>4} "
-            f"{cost:>8.4f}  {(r['objective'] or '')[:60]}"
+            f"{r['run_id']:<{w_run}} {conv:<{w_conv}} {str(r['status']):<11} "
+            f"{r['n_containers'] or 0:>4} {cost:>8.4f}  "
+            f"{' '.join((r['objective'] or '').split())[:60]}"
         )
     return "\n".join(lines)
+
+
+def list_conversations(db_path: str | Path, limit: int = 20) -> list[dict]:
+    """Recorded conversations, most recently active first."""
+    conn = _connect(db_path)
+    try:
+        try:
+            rows = conn.execute(
+                "SELECT conversation_id, "
+                "       COUNT(*) runs, "
+                "       SUM(COALESCE(origin,'user')='user') turns, "
+                "       MIN(started_at) started, MAX(started_at) last, "
+                "       COALESCE(SUM(cost_usd),0) cost "
+                "FROM runs WHERE conversation_id IS NOT NULL "
+                "GROUP BY conversation_id ORDER BY last DESC LIMIT ?", (limit,)
+            ).fetchall()
+        except sqlite3.Error:
+            return []       # a store written before conversations existed
+        out = []
+        for r in rows:
+            first = conn.execute(
+                "SELECT objective FROM runs WHERE conversation_id=? "
+                "ORDER BY started_at LIMIT 1", (r["conversation_id"],)).fetchone()
+            d = dict(r)
+            d["opened_with"] = (first["objective"] if first else "") or ""
+            out.append(d)
+        return out
+    finally:
+        conn.close()
+
+
+def render_conversations(db_path: str | Path, limit: int = 20) -> str:
+    convs = list_conversations(db_path, limit)
+    if not convs:
+        return ("(no conversations recorded yet — runs from before conversations "
+                "existed are archive)")
+    w = max(len("CONVERSATION"), *(len(c["conversation_id"]) for c in convs))
+    lines = [f"{'CONVERSATION':<{w}} {'TURNS':>5} {'RUNS':>5} {'COST$':>8}  "
+             f"{'LAST ACTIVE':<19}  OPENED WITH"]
+    for c in convs:
+        lines.append(
+            f"{c['conversation_id']:<{w}} {c['turns'] or 0:>5} {c['runs']:>5} "
+            f"{c['cost'] or 0.0:>8.4f}  {local_ts(c['last']):<19}  "
+            f"{c['opened_with'][:60]}")
+    return "\n".join(lines)
+
+
+def render_conversation(db_path: str | Path, conversation_id: str) -> str:
+    """One conversation as its turns, in order."""
+    conn = _connect(db_path)
+    try:
+        try:
+            rows = conn.execute(
+                "SELECT * FROM runs WHERE conversation_id=? ORDER BY started_at",
+                (conversation_id,)).fetchall()
+        except sqlite3.Error:
+            rows = []
+    finally:
+        conn.close()
+    if not rows:
+        return f"conversation {conversation_id} not found"
+    total = sum(r["cost_usd"] or 0.0 for r in rows)
+    turns = sum(1 for r in rows if (r["origin"] or "user") == "user")
+    out = [f"# Conversation {conversation_id}", "",
+           f"- **Turns:** {turns}   **Runs:** {len(rows)}   **Spend:** ${total:.4f}",
+           f"- **Opened:** {local_ts(rows[0]['started_at'])}   "
+           f"**Last active:** {local_ts(rows[-1]['started_at'])}", "",
+           "## Turns", ""]
+    for r in rows:
+        origin = r["origin"] or "user"
+        head = (f"### Turn {r['turn']}" if origin == "user"
+                else f"### (self-initiated, under turn {r['turn']})")
+        out += [f"{head} — {r['status']}   ${r['cost_usd'] or 0.0:.4f}   "
+                f"{local_ts(r['started_at'])}",
+                "", f"**Asked:** {(r['objective'] or '')[:600]}", "",
+                f"**Answered:** {(r['outcome'] or '(no outcome recorded)')[:600]}", "",
+                f"*(timeline: `python -m brain.observability show {r['run_id']}`)*", ""]
+    return "\n".join(out)
 
 
 def _summary(kind: str, data: dict) -> str:
@@ -130,13 +233,13 @@ def refresh_index(db_path: str | Path, runs_dir: str | Path) -> None:
         "",
         f"**Latest:** `{runs[0]['run_id']}` — {(runs[0]['objective'] or '')[:80]}",
         "",
-        "| started | run | status | cost $ | objective |",
-        "|---|---|---|---|---|",
+        "| started | run | conversation | status | cost $ | objective |",
+        "|---|---|---|---|---|---|",
     ]
     for r in runs:
         started = local_ts(r["started_at"])
         lines.append(
-            f"| {started} | [{r['run_id']}]({r['run_id']}/) | {r['status']} "
+            f"| {started} | [{r['run_id']}]({r['run_id']}/) | {_conv_label(r)} | {r['status']} "
             f"| {r['cost_usd'] or 0.0:.2f} | {(r['objective'] or '').replace('|', '/')[:80]} |"
         )
     (runs_dir / "INDEX.md").write_text("\n".join(lines) + "\n")

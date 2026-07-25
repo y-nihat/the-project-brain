@@ -82,8 +82,13 @@ class RunResult:
 
 
 class SandboxManager:
-    def __init__(self, session: str, ledger, *, base_url: Optional[str] = None, tracer=None):
+    def __init__(self, session: str, ledger, *, base_url: Optional[str] = None, tracer=None,
+                 conversation: Optional[str] = None):
         self.session = session
+        # The conversation this run belongs to. Labeled on every container so a
+        # process cleaning up leftovers can tell another live conversation's
+        # containers from orphans.
+        self.conversation = conversation
         self.ledger = ledger
         self.tracer = tracer or NullTracer()
         base_url = base_url if base_url is not None else config.DOCKER_HOST
@@ -95,6 +100,8 @@ class SandboxManager:
             f"{LABEL_PREFIX}.session": self.session,
             f"{LABEL_PREFIX}.created_at": str(time.time()),
         }
+        if self.conversation:
+            labels[f"{LABEL_PREFIX}.conversation"] = self.conversation
         if capability:
             labels[f"{LABEL_PREFIX}.capability"] = capability
         if extra:
@@ -231,6 +238,7 @@ class SandboxManager:
             self.ledger.record_start(
                 id=container.id,
                 session=self.session,
+                conversation=self.conversation,
                 capability=capability,
                 image=image,
                 command=command,

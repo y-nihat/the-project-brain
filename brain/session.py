@@ -15,6 +15,7 @@ from dataclasses import dataclass, field
 from typing import Callable, Optional
 
 from . import config
+from . import conversation as conversation_mod
 from .approval import ApprovalBroker
 from .ledger import Ledger
 from .memory import history as history_mod
@@ -39,6 +40,30 @@ class RunSummary:
     capabilities: list = field(default_factory=list)
 
 
+def _turn_referents(run_id: str, objective: str, status: str,
+                    fallback_text: str = "") -> dict:
+    """What a finished turn leaves behind for the next one to refer to.
+
+    The deliverable head and the files it produced — read from the run's own
+    directory, so this reconstructs identically whether the turn just finished
+    in this process or is being read back out of a recorded conversation.
+    """
+    out_dir = Path(config.RUNS_DIR) / run_id / "outputs"
+    ws = Path(config.RUNS_DIR) / run_id / "workspace"
+    try:
+        deliverable = (out_dir / "DELIVERABLE.md").read_text()[:4000] \
+            if (out_dir / "DELIVERABLE.md").is_file() else (fallback_text or "")[:2000]
+    except OSError:
+        deliverable = (fallback_text or "")[:2000]
+    produced = []
+    if ws.is_dir():
+        produced = [str(p.relative_to(ws)) for p in sorted(ws.rglob("*"))
+                    if p.is_file()
+                    and p.relative_to(ws).parts[0] not in ("prior", "input")][:20]
+    return {"run_id": run_id, "objective": objective, "status": status,
+            "deliverable": deliverable, "files": produced}
+
+
 class BrainSession:
     """Long-lived brain session. Call ``run_objective`` per objective; ``close``
     once at the end."""
@@ -49,13 +74,32 @@ class BrainSession:
         input_fn: Callable[[str], str] = input,
         output_fn: Callable[[str], None] = print,
         auto_export: bool = True,
+        resume: Optional[str] = None,
     ):
         config.enforce_auth_invariant()
         self.output_fn = output_fn
         self.auto_export = auto_export
 
+        # This process IS one conversation. Minting the id here (rather than at
+        # the first objective) means even a session that never runs anything
+        # holds an identity, and every run it does host is grouped under it.
+        # `resume` continues a RECORDED conversation instead of starting a new
+        # one: its turns keep numbering, and what comes back is the record's
+        # referents — never live state.
+        self.conversation_id = resume or conversation_mod.new_id()
+        self._live = conversation_mod.Liveness(config.LOCKS_DIR, self.conversation_id)
+        if resume and not self._live.held:
+            # Another live process is already appending to it. Two processes in
+            # one conversation would interleave into a record neither of them
+            # said, so this one starts its own instead of joining.
+            output_fn(f"[conversation] {resume} is held by another live session — "
+                      "starting a new conversation instead")
+            resume = None
+            self.conversation_id = conversation_mod.new_id()
+            self._live = conversation_mod.Liveness(config.LOCKS_DIR, self.conversation_id)
         self.tracer = Tracer(config.DB_PATH, config.RUNS_DIR,
-                             engine_version=f"{config.ENGINE_VERSION}@{config.GIT_COMMIT}")
+                             engine_version=f"{config.ENGINE_VERSION}@{config.GIT_COMMIT}",
+                             conversation_id=self.conversation_id)
         self.ledger = Ledger(config.DB_PATH)
         self.registry = Registry(config.DB_PATH, config.CAPABILITIES_STORE)
         # Interactive gate: real prompts reach the human running the session.
@@ -80,10 +124,20 @@ class BrainSession:
         self.goals = GoalLedger(config.DB_PATH)
         self._pursuing = False   # guard: inner pursuit runs must not re-pursue
         self._janitor()
+        if resume:
+            self._restore_conversation(resume)
 
     def _janitor(self) -> None:
         """On wake, observe the environment and heal what a killed session left:
-        leftover sandbox containers, runs stuck 'running', stale ledger rows."""
+        leftover sandbox containers, runs stuck 'running', stale ledger rows.
+
+        Scoped to conversations NOBODY is holding. This used to heal everything
+        it could see, which was correct only while one process existed at a
+        time: a second CLI force-removed the first's live sandboxes, marked its
+        active run aborted, and rewrote its ledger rows — converting a leaking
+        run into a clean-looking one.
+        """
+        live = conversation_mod.live_ids(config.LOCKS_DIR, own=self.conversation_id)
         removed = 0
         try:
             import docker
@@ -91,6 +145,8 @@ class BrainSession:
             client = (docker.DockerClient(base_url=config.DOCKER_HOST)
                       if config.DOCKER_HOST else docker.from_env())
             for c in client.containers.list(all=True, filters={"label": "brain.session"}):
+                if (c.labels or {}).get("brain.conversation") in live:
+                    continue        # another conversation is still using it
                 try:
                     c.remove(force=True)
                     removed += 1
@@ -99,8 +155,8 @@ class BrainSession:
             client.close()
         except Exception:  # noqa: BLE001  (docker unreachable — best effort)
             pass
-        aborted = self.tracer.abort_stale_runs()
-        reaped = self.ledger.mark_stale_reaped()
+        aborted = self.tracer.abort_stale_runs(skip_conversations=live)
+        reaped = self.ledger.mark_stale_reaped(keep_conversations=live)
         if aborted or reaped or removed:
             self.output_fn(
                 f"[janitor]    healed leftovers from a previous session: "
@@ -113,6 +169,53 @@ class BrainSession:
                 refresh_index(config.DB_PATH, config.RUNS_DIR)
             except Exception:  # noqa: BLE001
                 pass
+
+    def _restore_conversation(self, conversation_id: str) -> None:
+        """Continue a recorded conversation: pick its last user turn back up.
+
+        Only referents are restored — what was asked, what came back, which
+        files it produced. Nothing live is resurrected: containers from that
+        conversation are gone (its own process reaped them, or this process's
+        janitor just did), and unfinished work is not resumed. Saying so is the
+        point; a resume that implied otherwise would be the dishonest kind.
+        """
+        rows = conversation_mod.turns(config.DB_PATH, conversation_id)
+        last = conversation_mod.last_user_turn(config.DB_PATH, conversation_id)
+        if last is None:
+            self.output_fn(f"[conversation] {conversation_id} has no recorded turns — "
+                           "continuing it as a fresh one")
+            return
+        self._last_run = _turn_referents(
+            last["run_id"], last["objective"] or "", last["status"] or "unknown",
+            last["outcome"] or "")
+        user_turns = sum(1 for r in rows if (r.get("origin") or "user") == "user")
+        self.output_fn(
+            f"[conversation] resumed {conversation_id} — {user_turns} turn(s) on record; "
+            f"continuing from turn {last['turn'] or user_turns}: "
+            f"{(last['objective'] or '')[:80]}")
+
+    def switch_conversation(self, conversation_id: str) -> bool:
+        """Continue a different recorded conversation from here on.
+
+        Refuses when another live process already holds it: two processes
+        appending turns to one conversation would interleave into a record
+        neither of them said.
+        """
+        if conversation_id == self.conversation_id:
+            return True
+        live = conversation_mod.Liveness(config.LOCKS_DIR, conversation_id)
+        if not live.held:
+            live.release()
+            self.output_fn(f"[conversation] {conversation_id} is held by another live "
+                           "session — not switching")
+            return False
+        self._live.release()
+        self._live = live
+        self.conversation_id = conversation_id
+        self.tracer.conversation_id = conversation_id
+        self._last_run = None
+        self._restore_conversation(conversation_id)
+        return True
 
     def add_listener(self, fn) -> None:
         self.tracer.add_listener(fn)
@@ -216,8 +319,11 @@ class BrainSession:
         if gb:
             session_context = (session_context + "\n\n" + gb) if session_context else gb
 
+        # A self-initiated pursuit run is a run of the brain, not a turn of the
+        # conversation: it is recorded, but it must not consume a turn ordinal.
         run = self.tracer.start_run(
-            objective, model=(config.model_for("orchestrator") or "sdk-default"))
+            objective, model=(config.model_for("orchestrator") or "sdk-default"),
+            origin="pursuit" if self._pursuing else "user")
         session_id = run.run_id
         if attach_paths:
             try:
@@ -234,7 +340,8 @@ class BrainSession:
                               total_bytes=sum(m["bytes"] for m in manifest))
             objective += files_mod.manifest_note(manifest)
         blackboard = Blackboard(config.DB_PATH, session_id)
-        manager = SandboxManager(session_id, self.ledger, tracer=self.tracer)
+        manager = SandboxManager(session_id, self.ledger, tracer=self.tracer,
+                                 conversation=self.conversation_id)
         # Catalog hygiene BEFORE planning (P1-B): the planner sees current,
         # qualified affordances — quarantined tools excluded, stale contracts
         # labeled, previously-failed needs carrying their failure — instead of
@@ -276,21 +383,7 @@ class BrainSession:
             run.finish(status, outcome=answer)
             # Remember this run for the session: the next objective may be
             # feedback on THIS deliverable.
-            out_dir = Path(config.RUNS_DIR) / session_id / "outputs"
-            ws = Path(config.RUNS_DIR) / session_id / "workspace"
-            try:
-                deliverable = (out_dir / "DELIVERABLE.md").read_text()[:4000] \
-                    if (out_dir / "DELIVERABLE.md").is_file() else (answer or "")[:2000]
-            except OSError:
-                deliverable = (answer or "")[:2000]
-            produced = []
-            if ws.is_dir():
-                produced = [str(p.relative_to(ws)) for p in sorted(ws.rglob("*"))
-                            if p.is_file()
-                            and p.relative_to(ws).parts[0] not in ("prior", "input")][:20]
-            self._last_run = {"run_id": session_id, "objective": objective,
-                              "status": status, "deliverable": deliverable,
-                              "files": produced}
+            self._last_run = _turn_referents(session_id, objective, status, answer)
             if self.auto_export:
                 self._export(session_id)
             summary = RunSummary(
@@ -572,3 +665,6 @@ class BrainSession:
         self.registry.close()
         self.goals.close()
         self.tracer.close()
+        # Released last: while this is held, no other process may treat this
+        # conversation's rows or containers as leftovers.
+        self._live.release()
