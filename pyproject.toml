@@ -27,3 +27,11 @@ packages = ["brain", "brain.sandbox", "brain.capabilities", "brain.memory"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+# Collect ONLY the engine's own suite. Without this, a bare `pytest` from the
+# repo root walks data/ — the git-ignored RUN OUTPUT tree — and collects test
+# files that agents authored and tools extracted during past runs. That both
+# breaks the documented `pytest` command (unimportable modules => collection
+# errors) and violates the project's central safety property: agent-generated
+# code must never execute on the host, only in a sandbox container.
+testpaths = ["tests"]
+norecursedirs = ["data", ".venv", ".git", "docker", "scripts", "*.egg-info"]
