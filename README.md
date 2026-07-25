@@ -12,7 +12,7 @@ trace to files a tool actually retained, and a run that cannot prove its work sa
 > **Status:** engine **v0.30.0**, pre-1.0, actively developed by one author. The safety substrate,
 > staged workflows, capability authoring/verification/promotion, the evidence-and-review plane,
 > adaptive recovery, standing goals, the eval harness, and observability are built and covered by
-> 513 tests. `CHANGELOG.md` is the authoritative release record.
+> 517 tests. `CHANGELOG.md` is the authoritative release record.
 > See **[docs/OVERVIEW.md](docs/OVERVIEW.md)** for the stack, how to run it, and where logs live.
 
 ## Try it in about a minute
@@ -85,7 +85,7 @@ Installability is not yet the full M2 milestone: per-project `.brain/` state and
 
 # Run the suite INSIDE the container — that is the environment it targets.
 DC="docker compose -f docker/docker-compose.yml --env-file .env"
-$DC exec brain python -m pytest tests/            # 513 tests
+$DC exec brain python -m pytest tests/            # 517 tests
 ```
 
 On the host the suite still runs; the 11 sandbox tests skip and say why. They gate
