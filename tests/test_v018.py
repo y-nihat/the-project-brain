@@ -234,7 +234,8 @@ def test_session_turn_seeds_the_prior_deliverable_without_any_detector(
     try:
         asyncio.run(orch.run("the details changed; update the document",
                              seed_run="prev-run",
-                             session_context="previous run id: prev-run"))
+                             session_context="previous run id: prev-run",
+                             continues_session=True))
     finally:
         bb.close()
     ws = tmp_path / "runs" / "sessturn1" / "workspace"

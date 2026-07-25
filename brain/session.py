@@ -194,6 +194,7 @@ class BrainSession:
         # its summary goes to the planner as SESSION CONTEXT so feedback is
         # recognized as feedback.
         session_context = None
+        continues_session = bool(self._last_run)
         if self._last_run:
             seed_run = self._last_run["run_id"]
             session_context = (
@@ -205,7 +206,11 @@ class BrainSession:
                 f"files it produced (seeded under prior/{self._last_run['run_id']}/ in "
                 f"this run's workspace): {self._last_run['files'][:12]}")
         # Open standing goals reach the planner so a continuing objective can
-        # reference one (aspiration.goal_ref) instead of redeclaring it.
+        # reference one (aspiration.goal_ref) instead of redeclaring it. They
+        # ride the same planner block but must NOT imply continuity: an open
+        # goal says what the operator is pursuing, never that this run follows
+        # a previous turn. `continues_session` above is the only continuity
+        # signal, and it is a fact, not an inference.
         from .memory.goals import goals_block
         gb = goals_block(self.goals)
         if gb:
@@ -252,7 +257,8 @@ class BrainSession:
             try:
                 answer = await orchestrator.run(objective, history=hist_text,
                                                 seed_run=seed_run,
-                                                session_context=session_context)
+                                                session_context=session_context,
+                                                continues_session=continues_session)
                 # Objective-success class (#17) — operational completion is not
                 # the same as meeting the objective.
                 status = orchestrator.classification

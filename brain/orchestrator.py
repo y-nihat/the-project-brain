@@ -704,6 +704,7 @@ class Orchestrator:
         self._help_request: Optional[dict] = None
         self._knowledge_briefs = ""
         self._session_context: Optional[str] = None
+        self._continues_session = False
         self._fix_notes: dict[str, str] = {}
         self._tool_repairs = 0
         self._insufficient: dict[str, tuple] = {}
@@ -727,8 +728,10 @@ class Orchestrator:
     # ------------------------------------------------------------------ #
     async def run(self, objective: str, history: Optional[str] = None,
                   seed_run: Optional[str] = None,
-                  session_context: Optional[str] = None) -> str:
+                  session_context: Optional[str] = None,
+                  continues_session: bool = False) -> str:
         self._session_context = session_context
+        self._continues_session = continues_session
         with self.tracer.span("plan", "planner"):
             plan = await self.planner.plan(objective, history=history,
                                            session_context=session_context)
@@ -847,7 +850,15 @@ class Orchestrator:
             # goal (uncitable narration), leaving a preserve-discipline
             # review no retained baseline to diff against; a healthy run
             # blocked on an absence the engine could have provisioned.
-            session_turn = session_context is not None
+            # Continuity is a FACT the caller knows (a previous turn of THIS
+            # session), never an inference from the planner-context block: that
+            # block also carries open standing goals, so deriving continuity
+            # from it made one open goal turn every later run — in any session
+            # — into a "continuation" of whatever run keyword-matching picked.
+            # That run's ANSWER.md (agent NARRATION) was then recorded as a
+            # designated source, i.e. target-tier evidence about a target it
+            # never observed. Agent prose must never enter the ledger.
+            session_turn = self._continues_session
             if not getattr(plan, "revision", None) and \
                     (prior_referenced or session_turn):
                 self.tracer.event(
