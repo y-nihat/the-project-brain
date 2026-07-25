@@ -89,9 +89,15 @@ def test_deliverable_skip_is_filename_global():
     """A filename that is a deliverable ANYWHERE (under Deliverables) must not
     be read as an input at its OTHER mentions ('pipeline regenerates X')."""
     from brain.files import resolve_local_sources
+    # The re-mention must sit OUTSIDE any deliverable context, or the local
+    # _is_output_context check saves it and the filename-global pre-scan — the
+    # mechanism this test is named for — is never load-bearing.
     obj = ("Produce a submission.\n## Deliverables\n1. `submission.csv` - format.\n"
-           "2. `report.md` - writeup.\n3. the pipeline that regenerates "
-           "`submission.csv` end-to-end.")
+           "2. `report.md` - writeup.\n\n"
+           + "Background: " + "the team has been iterating on this for weeks. " * 8
+           + "\nThe pipeline must regenerate `submission.csv` end-to-end.")
+    tail = obj[:obj.rfind("`submission.csv`")]
+    assert "deliverabl" not in tail[-200:].lower(), "fixture no longer isolates the pre-scan"
     _, _, unresolved = resolve_local_sources(obj)
     assert unresolved == [], unresolved
 

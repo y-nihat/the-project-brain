@@ -151,6 +151,10 @@ def test_revision_prompt_demands_minimal_edits(tmp_path, monkeypatch):
         bb.close()
     assert seen and "MINIMAL EDIT RULE" in seen[0]
     assert "VERBATIM" in seen[0]
+    # Folded in from test_v019: a changed fact PROPAGATES — that is part of the
+    # fix, not of the carry-over. It was a second, byte-for-byte identical
+    # end-to-end run asserting one more substring of the same string.
+    assert "A changed FACT propagates" in seen[0]
 
 
 # --- the payload's own reference designates the deliverable of record --------------- #
@@ -220,3 +224,42 @@ def test_author_contract_binds_structure_not_just_count():
     # defect that does not exist.
     text = workflow.deliverable_instruction()
     assert "heading level" in text and "additional section" in text
+
+
+def test_the_reduce_fix_round_carries_the_same_minimal_edit_rule(tmp_path, monkeypatch):
+    """The redo closure is duplicated: once in _run_single and once in
+    _run_reduce. Two tests exercised the first copy — one of them a
+    byte-for-byte duplicate run of the other — and NOTHING reached the second,
+    so the two could diverge indefinitely. Reduce is the pattern used for
+    multi-worker synthesis, where a non-minimal edit does the most damage."""
+    monkeypatch.setattr(config, "RUNS_DIR", tmp_path / "runs")
+    seen: list[str] = []
+
+    async def runner(_t, name, prompt, options):
+        if name == "merge.fix":
+            seen.append(prompt)
+            return "```deliverable\nmerged, fixed\n```"
+        if name == "check.r1":
+            return "VERDICT: revise\n1. fix the synthesis"
+        if name.startswith("check.r"):
+            return "VERDICT: approved\nok"
+        if name == "gather":
+            return "```manifest\n[\"a\", \"b\"]\n```"
+        return "```deliverable\nmerged\n```"
+
+    planner = StubPlanner([
+        StageSpec(id="gather", pattern="single", role="G", goal="enumerate"),
+        StageSpec(id="survey", pattern="map", role="W", goal="process",
+                  depends_on=["gather"], shard_from="gather", shard_size=1),
+        StageSpec(id="merge", pattern="reduce", role="M", goal="consolidate",
+                  depends_on=["survey"], deliverable=True),
+        StageSpec(id="check", pattern="review", role="C", goal="verify",
+                  depends_on=["merge"], rounds=2)])
+    orch, bb = _orch(tmp_path, runner, planner, "reducefix", RecordingTracer())
+    try:
+        asyncio.run(orch.run("survey and synthesize"))
+    finally:
+        bb.close()
+    assert seen, "the reduce stage's fix round never ran"
+    assert "MINIMAL EDIT RULE" in seen[0]
+    assert "VERBATIM" in seen[0]

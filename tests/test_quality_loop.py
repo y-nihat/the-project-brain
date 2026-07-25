@@ -172,9 +172,19 @@ def test_session_context_reaches_planner_and_revision_is_traced(tmp_path, monkey
         revision={"of_run": "prev-42", "feedback": "shorten section two",
                   "preserve": "the structure the user accepted"})
     orch, bb = _orch(tmp_path, runner, planner, "rev1", tracer)
-    ctx = ("previous run id: prev-42\nprevious objective: make it\n"
-           "previous result: succeeded\nprevious deliverable (payload head):\n"
-           "---\nthe long draft\n---")
+    # The shape BrainSession._conversation_context ACTUALLY builds. The old
+    # fixture was the pre-v0.30 positional format ("previous run id: /
+    # previous result:"), which the engine no longer produces — it passed while
+    # documenting a dead wire format as if it were current.
+    ctx = ("EARLIER TURNS OF THIS CONVERSATION (context only — this turn does "
+           "NOT necessarily continue them):\n"
+           "- turn 1 (run prev-42, succeeded): make it\n\n"
+           "REFERENT — a stated requirement of THIS turn depends on what turn 1 "
+           "produced (run prev-42):\n"
+           "it was asked: make it\nit ended: succeeded\n"
+           "what it produced (payload head):\n---\nthe long draft\n---\n"
+           "files it produced (seeded under prior/prev-42/ in this run's "
+           "workspace): ['draft.md']")
     try:
         asyncio.run(orch.run("shorten section two", session_context=ctx))
         stored = bb.get("plan.revision")
@@ -309,13 +319,24 @@ def test_review_renders_artifact_and_page_count_gates_approval(tmp_path, monkeyp
 
 
 def test_render_contract_is_instance_neutral():
+    """The architectural-law guard: the render contract every future run reads
+    must teach a RULE, never a trial's product.
+
+    The two assertions this drops carried no signal — the contract's text opens
+    with 'Renders EVERY page/slide/frame', so asserting it contains 'page' and
+    'render' could not fail, and the _RENDERABLE_EXTS membership re-asserted
+    two literals of a frozenset that
+    tests/test_v026.py::test_renderable_exts_learn_from_promoted_renderer
+    already covers properly.
+    """
     from brain.orchestrator import _RENDER_CONTRACT
     low = _RENDER_CONTRACT.lower()
-    assert "page" in low and "render" in low
     for residue in ("powerpoint", "board", "quarter", "helioroute"):
         assert residue not in low
-    # The format set is a modality category list, engine-level.
-    assert ".pdf" in _RENDERABLE_EXTS and ".html" in _RENDERABLE_EXTS
+    # What COULD be wrong: the contract must demand one image per page and an
+    # honest failure — _perceivable_artifacts and _rendered_page_count both
+    # depend on it.
+    assert "page_count" in low and "fails honestly" in low
 
 
 # --- P3: self-evaluation before handoff ----------------------------------------------- #

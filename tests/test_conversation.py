@@ -424,3 +424,54 @@ def test_independent_trial_mode_kills_both_carry_over_paths(tmp_path, monkeypatc
         assert got["history"] == ""
     finally:
         session.close()
+
+
+# --------------------------------------------------------------------------- #
+# Parts of the API nothing reached
+# --------------------------------------------------------------------------- #
+def test_recent_ids_orders_by_last_activity(tmp_path):
+    """Untested entirely, and it is what `resolve('last')` and the REPL's
+    conversation listing both stand on."""
+    db, runs = tmp_path / "t.db", tmp_path / "runs"
+    for cid, obj in (("conv-old", "first"), ("conv-new", "second")):
+        t = Tracer(db, runs, conversation_id=cid)
+        t.start_run(obj).finish("succeeded", outcome="x")
+        t.close()
+    assert conv.recent_ids(db) == ["conv-new", "conv-old"]
+    assert conv.recent_ids(db, limit=1) == ["conv-new"]
+    # A store with no conversations answers honestly rather than raising.
+    assert conv.recent_ids(tmp_path / "absent.db") == []
+
+
+def test_a_crashed_process_leaves_a_lock_that_recovers(tmp_path):
+    """The failure mode a file lock INTRODUCES and a database row did not: a
+    process dies without releasing, and its conversation must not be marked
+    live forever. Nothing covered stale-lock recovery."""
+    locks = tmp_path / "locks"
+    locks.mkdir(parents=True)
+    # Exactly what a killed process leaves behind: the file, no holder.
+    (locks / "conv-crashed.lock").write_text("4242\n")
+
+    assert conv.live_ids(locks) == set()            # not live: nobody holds it
+    assert not (locks / "conv-crashed.lock").exists()   # and it is cleaned up
+    # The conversation can then be taken over.
+    taken = conv.Liveness(locks, "conv-crashed")
+    assert taken.held
+    taken.release()
+
+
+def test_resolving_a_conversation_says_nothing_about_who_holds_it(tmp_path):
+    """`resolve` answers "does this id exist in the record", `live_ids`
+    answers "is anyone using it". Conflating them would make a busy
+    conversation unresolvable and an idle one unjoinable."""
+    db, runs, locks = tmp_path / "t.db", tmp_path / "runs", tmp_path / "locks"
+    t = Tracer(db, runs, conversation_id="conv-busy")
+    t.start_run("something").finish("succeeded", outcome="x")
+    t.close()
+
+    holder = conv.Liveness(locks, "conv-busy")
+    try:
+        assert conv.resolve(db, "conv-busy") == "conv-busy"      # still resolvable
+        assert "conv-busy" in conv.live_ids(locks)               # and held
+    finally:
+        holder.release()

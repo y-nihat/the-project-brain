@@ -60,6 +60,21 @@ def test_result_budget_is_a_frame_share():
     assert per * config.TRANSPORT_FRAME_SHARE < 1024 * 1024
 
 
+def test_a_tool_result_is_actually_fitted_to_the_frame_share():
+    """The CALL SITE, which nothing reached: the budget existing is not the
+    guarantee — a result being cut to it is. The failure this constant exists
+    to prevent (parallel results jointly overflowing one SDK frame and killing
+    the session) had no regression test at all."""
+    from brain.capabilities.runtime import fit_result_text
+
+    budget = config.transport_result_budget()
+    fitted = fit_result_text("x" * (budget * 3), budget - 16384)
+    assert len(fitted.encode()) <= budget - 16384
+    # A result already inside the budget is returned unharmed.
+    small = "a short tool result"
+    assert fit_result_text(small, budget) == small
+
+
 # --- resilience: an infra-crashed review round is retried without cost ------------ #
 def test_crashed_round_is_refunded_on_a_one_round_review(tmp_path, monkeypatch):
     """The campaign shape: rounds=1, the only round dies of a transport fault.

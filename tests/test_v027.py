@@ -68,12 +68,19 @@ def test_judge_outcome_coerces_and_fails_open():
     goal = {"id": 1, "metric": "score", "direction": "maximize", "target": "",
             "measured_by": "external evaluator"}
 
+    seen = {}
+
     async def good(digest):
-        assert "ATTEMPTS SO FAR" in digest and "FINAL ANSWER" in digest
+        # Captured, NOT asserted here: judge_outcome invokes this inside a bare
+        # `except Exception`, and AssertionError is an Exception — so a broken
+        # digest contract was swallowed and reported as the unrelated fail-open
+        # path instead of failing with its own message.
+        seen["digest"] = digest
         return {"value": "0.772", "verdict": "advanced", "diagnosis": "d",
                 "next_step": "n"}
     out = asyncio.run(goals_mod.judge_outcome(goal, [], "answer", decide_fn=good))
     assert out["verdict"] == "advanced" and out["value"] == "0.772"
+    assert "ATTEMPTS SO FAR" in seen["digest"] and "FINAL ANSWER" in seen["digest"]
 
     async def garbage(digest):
         return {"verdict": "sideways"}

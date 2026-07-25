@@ -165,25 +165,27 @@ def test_promotion_runs_the_battery_revalidation_will_run():
     assert not ok and "IRRELEVANT-INPUT" in reason
 
 
-def test_every_trust_boundary_routes_through_the_shared_battery():
-    """Structural: the probes are reachable ONLY via `_fabrication_probes`, so
-    a future trust boundary cannot quietly run half the battery again.
+def test_the_probes_are_reachable_only_through_the_shared_battery():
+    """Structural: each probe is invoked from ONE place — the battery — so a
+    future trust boundary cannot quietly run half of it again.
 
-    Counts BOTH reference forms — `f(...)` and the bare `f,` handed to
-    `asyncio.to_thread` — because every call site in this module uses the
-    second, and a check that missed it would not detect the regression it
-    exists to prevent."""
+    The reference COUNT for the battery itself is deliberately not pinned. It
+    was `== 4` and exactly saturated, so wiring a legitimate fourth trust
+    boundary failed with a message indistinguishable from the regression it
+    guards. What the battery rejects at every boundary is asserted
+    behaviourally by test_promotion_runs_the_battery_revalidation_will_run.
+    """
     text = open(acquisition.__file__, encoding="utf-8").read()
 
     def refs(name: str) -> int:
+        # Both forms: `f(...)` and the bare `f,` handed to asyncio.to_thread.
         return text.count(f"{name}(") + text.count(f"{name},")
 
-    # Each probe: its own `def` line, plus exactly one use inside the battery.
-    assert refs("_no_input_probe") == 2, "a probe is invoked outside the battery"
-    assert refs("_irrelevant_input_probe") == 2, "a probe is invoked outside the battery"
-    # And the battery itself is wired at all three boundaries:
-    # authored promotion, recipe promotion, revalidation (+ its own def).
-    assert refs("_fabrication_probes") == 4
+    for probe in ("_no_input_probe", "_irrelevant_input_probe"):
+        assert refs(probe) == 2, (
+            f"{probe} is invoked outside _fabrication_probes — every trust "
+            "boundary must run the WHOLE battery")
+    assert refs("_fabrication_probes") >= 4, "the battery lost a trust boundary"
 
 
 # --- description generalization must not corrupt the catalog ---------------------- #
@@ -273,7 +275,7 @@ def test_undecodable_files_are_still_skipped(tmp_path):
 
 
 # --- the answer must carry the diagnosis the engine already computed -------------- #
-def test_the_answer_envelope_states_why_the_run_did_not_certify(tmp_path, monkeypatch):
+def test_the_trust_report_names_the_specific_unmet_items(tmp_path, monkeypatch):
     """Every unverified run in the corpus opened with the same sentence —
     "its grounding review did not approve the content" — and a pointer to a
     file. The per-criterion table and typed claim support were computed and
@@ -797,7 +799,16 @@ def test_scoring_recorded_runs_costs_nothing_and_rolls_up_by_version(tmp_path):
     assert len(cards) == 2
     assert "0.27.0" in table and "0.28.0" in table
     assert "$0" in table
-    assert "tripwire" in table          # states what it is, and is not
+    # The ROLL-UP itself: the 0.28.0 version has a 0.8 tool-error ratio and
+    # must trip the health check, while 0.27.0 stays clean. The old assertions
+    # could not see this — `'tripwire' in table` matches a static footer the
+    # renderer always emits, so every check passing or every check failing
+    # rendered identically.
+    by_version = {c.scenario_id if hasattr(c, "scenario_id") else "": c for c in cards}
+    tripped = {r["check"] for c in cards for r in c.results if not r["passed"]}
+    assert "tool_error_ratio_below" in tripped, [c.results for c in cards]
+    assert sum(1 for c in cards if c.ok) == 1, "0.27.0 must be the clean one"
+    assert "tool_error_ratio_below" in table
 
 
 def test_the_run_folder_masks_model_text_wherever_it_is_written(tmp_path, monkeypatch):
@@ -854,3 +865,41 @@ def test_the_run_folder_masks_model_text_wherever_it_is_written(tmp_path, monkey
         assert _CANARY not in answered and MASK in answered
     finally:
         session.close()
+
+
+def test_the_trust_report_reaches_the_answer_and_the_file(tmp_path, monkeypatch):
+    """The WIRING, which nothing asserted: `if trust := self._trust_report():
+    banner += ...` sits inside the non-succeeded branch, and that banner
+    reaching outputs/ANSWER.md was covered nowhere. Deleting the branch —
+    silently dropping the run's statement of what it could not prove, on a
+    project whose distinguishing property is exactly that claim — left the
+    suite green."""
+    monkeypatch.setattr(config, "RUNS_DIR", tmp_path / "runs")
+    inp = tmp_path / "runs" / "wired" / "workspace" / "input"
+    inp.mkdir(parents=True)
+    (inp / "source.pdf").write_bytes(b"%PDF user evidence")
+
+    async def runner(_t, name, _prompt, _options):
+        if name.startswith("review.r"):
+            return ("VERDICT: revise\n```criteria\n"
+                    '[{"criterion": "every claim traces to the file",'
+                    ' "status": "unknown", "evidence": "nothing was retained"}]\n```')
+        if name.endswith(".fix"):
+            return "still wrong"
+        return f"out({name})"
+
+    planner = StubPlanner([StageSpec(id="read", pattern="single", role="R",
+                                     goal="read the file")])
+    orch, bb = _orch(tmp_path, runner, planner, "wired")
+    try:
+        answer = asyncio.run(orch.run("summarize @input/source.pdf"))
+    finally:
+        bb.close()
+
+    assert orch.classification != "succeeded"
+    report = orch._trust_report()
+    assert report, "precondition: this run has something it could not prove"
+    head = report.splitlines()[0]
+    assert head in answer, "the trust report never reached the delivered answer"
+    on_disk = (tmp_path / "runs" / "wired" / "outputs" / "ANSWER.md").read_text()
+    assert head in on_disk, "the trust report never reached ANSWER.md"

@@ -458,23 +458,40 @@ def test_image_blocks_bounded_and_typed(tmp_path):
     (ws / "cap" / "huge.png").write_bytes(b"x" * 4096)
     blocks = image_blocks(["cap/frame1.png", "cap/notes.txt", "cap/frame2.jpg",
                            "cap/huge.png"], ws, max_images=2, max_bytes=1024)
+    # Non-images are skipped and the count cap holds.
     assert [b["mimeType"] for b in blocks] == ["image/png", "image/jpeg"]
     assert all(b["type"] == "image" and b["data"] for b in blocks)
-    # Count cap respected; oversize and non-images skipped.
-    assert len(blocks) == 2
+
+    # The CURRENT oversize contract, which had inverted since this was written:
+    # image_blocks now FITS an over-budget image and drops it only when it
+    # cannot be fitted ("FIT, then drop — never the reverse"). The old comment
+    # claimed the oversize path was covered while the count cap stopped the
+    # loop before huge.png was ever examined.
+    fitted = image_blocks(["cap/huge.png"], ws, max_images=4, max_bytes=1024)
+    assert len(fitted) <= 1
+    for b in fitted:
+        assert len(b["data"]) <= 1024 * 2      # base64 of a fitted payload
 
 
 # --- the strategy space must include the target's own signals ---------------------- #
-def test_planner_demands_signal_model_tiers_and_belief_hygiene():
+def test_the_planner_prompt_keeps_its_epistemic_sections_and_no_trial_residue():
+    """A PROMPT-CONTENT PROXY for behaviour that needs a live LLM, plus the
+    architectural-law guard. Named for what it is: eight verbatim phrases
+    (including the spacing of 'direct observation > ') broke on any reword
+    while proving nothing about planning.
+
+    The negative loop below is the load-bearing half and is kept verbatim —
+    it is the only mechanical guard that no diagnostic trial's subject leaks
+    into what every future plan is designed against.
+    """
     from brain import planner as planner_mod
     s = planner_mod._SYSTEM
-    assert "TARGET SIGNAL MODEL" in s
-    assert "DIRECT OBSERVATION of the designated target" in s
-    assert "PROPERTY-PRESERVING DERIVED REPRESENTATION" in s
-    assert "ABSENCE OF AN EXISTING TOOL IS NEVER A BLOCKER" in s
-    assert "direct observation > " in s                # the tier ladder
-    assert "BELIEF HYGIENE" in s and "never RULE OUT an observation channel" in s
-    assert "circular" in s                             # review-approves criteria banned
+    low = s.lower()
+    for section in ("TARGET SIGNAL MODEL", "BELIEF HYGIENE"):
+        assert section in s, f"section {section!r} deleted"
+    for concept in ("direct observation", "derived representation",
+                    "never a blocker", "circular"):
+        assert concept in low, f"the prompt lost the {concept!r} rule"
     # No TASK-specific residue from the diagnostic trials. (Generic multimodal
     # vocabulary — vlm/ocr/caption/frame — is allowed: it teaches a general
     # rule that applies to charts, scans, screenshots, any image task.)

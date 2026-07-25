@@ -320,3 +320,54 @@ def test_an_answered_turn_masks_secret_shapes_before_writing_to_disk(tmp_path, m
         assert "The value you pasted was" in on_disk      # only the secret is masked
     finally:
         session.close()
+
+
+def test_an_answered_turn_builds_no_orchestration_at_all(tmp_path, monkeypatch):
+    """The property the whole change exists for, and the one nothing asserted.
+
+    Every other test calls ``_deliver_answer`` directly, so none of them drives
+    ``run_objective`` to the point where a satisfied verdict short-circuits —
+    and the containers/leaks numbers they looked at are literals hardcoded in
+    the RunSummary. A regression that ran the full pipeline and then discarded
+    it would have been invisible.
+    """
+    from brain import session as session_mod
+    from tests.test_conversation import _isolated_session
+
+    built = {"orchestrators": 0, "sandboxes": 0, "plans": 0}
+
+    class _Orch:
+        classification = "succeeded"
+        aspiration: dict = {}
+
+        def __init__(self, **_kw):
+            built["orchestrators"] += 1
+
+        async def run(self, *_a, **_kw):  # pragma: no cover — must not be reached
+            raise AssertionError("the full loop ran for an answered turn")
+
+    def _mgr(*_a, **_kw):
+        built["sandboxes"] += 1
+        raise AssertionError("a sandbox manager was built for an answered turn")
+
+    class _Planner:
+        def __init__(self, *_a, **_kw):
+            built["plans"] += 1
+
+    monkeypatch.setattr(session_mod, "Orchestrator", _Orch)
+    monkeypatch.setattr(session_mod, "SandboxManager", _mgr)
+    monkeypatch.setattr(session_mod, "Planner", _Planner)
+
+    async def judge(_prompt):
+        return {"resolution": "satisfied", "answer": "One holder at a time.",
+                "reason": "definitional"}
+
+    session = _isolated_session(tmp_path, monkeypatch)
+    try:
+        session._analyst = lambda: Analyst(judge_fn=judge)
+        summary = _run(session.run_objective("what is a mutex"))
+    finally:
+        session.close()
+
+    assert summary.status == "answered"
+    assert built == {"orchestrators": 0, "sandboxes": 0, "plans": 0}, built

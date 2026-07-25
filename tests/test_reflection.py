@@ -90,9 +90,11 @@ def test_repair_capability_reauthors_from_seed(tmp_path):
     empty = ("import json\nprint(json.dumps({'query': 'x', 'results': []}))\n")
     dockerfile = "FROM python:3.12-slim\nWORKDIR /app\nCOPY tool.py /app/tool.py\n"
     calls = {"n": 0}
+    seen: list[tuple] = []
 
     async def stub_developer(need_key, description, previous=None, error=None):
         calls["n"] += 1
+        seen.append((previous, error))
         # First (author) submits the empty tool; the repair call gets a working one.
         prog = empty if previous is None else (
             "import json\nprint(json.dumps({'query': 'x', 'results': [{'title': 'a'}]}))\n")
@@ -110,8 +112,14 @@ def test_repair_capability_reauthors_from_seed(tmp_path):
             cap, "returned empty 3 times in a row", manager=mgr, registry=reg, broker=broker,
             developer=stub_developer, tracer=tracer))
         assert repaired.verified
-        # The repair was seeded with the previous code (developer saw `previous`).
+        # The repair was SEEDED — the headline claim, previously unasserted:
+        # only the call count was checked, and the stub itself is what branches
+        # on `previous`, so repair could have stopped passing the seed entirely
+        # with every assertion still green.
         assert calls["n"] >= 2
+        prev, err = seen[-1]
+        assert prev and "results': []" in prev["program"], prev
+        assert "returned empty 3 times in a row" in (err or "")
         # Version bumped for provenance.
         assert reg.get("flaky_search").version == "1.0.1"
         assert ledger.find_leaks("repair-test") == []

@@ -85,6 +85,33 @@ tree mixes concerns, stage them in groups (`git add -p` / per path) and commit
 each separately. The log should read like a story: a future reader can follow
 *what changed and why*, one idea at a time.
 
+## Where a test lives
+
+**A test lives in the file named after what it CONSTRAINS — never after when it
+was written.** If it constrains a module, it goes in that module's file
+(`brain/workflow.py` → `tests/test_workflow.py`). If it constrains a
+cross-cutting property, it goes in that property's file (`test_epistemics.py`,
+`test_leakproof.py`, `test_secrets.py`, `test_conversation.py`).
+
+Do **not** open a new `test_v<version>.py`. Release-named files accumulated one
+per version and turned the suite into a journal, which cost exactly what a
+journal costs: a test is read when something breaks, and a version name answers
+none of "what covers this?"; nothing tells the author a behaviour is already
+covered, so each release re-tests it — every duplicate pair found in the 2026-07
+audit had the version file holding the *weaker* copy; and because such a file is
+only ever appended to, dead contracts pile up in it. The release is recorded in
+the commit and the CHANGELOG, which is where history belongs.
+
+The existing `test_v014.py` … `test_v028.py` are migrated by attrition: when you
+touch a test in one for any reason, move it to its subject's file then. Do not
+mass-move them — dropping a test in a bulk shuffle costs more than the tidiness
+is worth. Take the docstring with it: this suite's docstrings cite the observed
+failure each test exists for, and that is the part worth preserving.
+
+One genuine exception: a test whose subject really *is* a version boundary —
+schema migration, backward compatibility, reading an old format with a new
+engine. Name it for that (migration, compatibility), not for the release.
+
 ## Branching
 
 - **Now (local only):** trunk-based — commit small, coherent changes directly to

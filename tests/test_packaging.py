@@ -12,6 +12,8 @@ Both properties below are load-bearing and both were observed broken:
 from __future__ import annotations
 
 import tomllib
+
+import pytest
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -28,7 +30,7 @@ def test_collection_is_confined_to_the_engine_suite(pytestconfig):
     assert "data" in pytestconfig.getini("norecursedirs")
 
 
-def test_the_collection_guard_is_load_bearing():
+def test_the_collection_guard_is_load_bearing(pytestconfig):
     """Prove the guard matters: the run-output tree really does contain files
     that look like tests to pytest. If this ever stops being true the guard is
     still correct, but this test documents WHY it exists."""
@@ -36,9 +38,18 @@ def test_the_collection_guard_is_load_bearing():
     if not data.is_dir():
         return  # fresh clone: nothing produced yet, guard is pre-emptive
     stray = [p for p in data.rglob("test_*.py")]
+    if not stray:
+        return
+    # The old loop could not fail: every path under data/ has ('data',) as its
+    # first component by construction, so `'tests' not in parts[:1]` was true
+    # for every possible input. What must hold is that the ini actually PRUNES
+    # the directory the stray file lives in.
+    pruned = set(pytestconfig.getini("norecursedirs"))
+    paths = set(pytestconfig.getini("testpaths"))
     for p in stray:
-        assert "tests" not in Path(p).relative_to(PROJECT_ROOT).parts[:1], (
-            f"{p} would be collected: it resolves inside a testpath")
+        top = Path(p).relative_to(PROJECT_ROOT).parts[0]
+        assert top in pruned, f"{p} lives in {top!r}, which norecursedirs does not prune"
+        assert top not in paths, f"{p} lives in {top!r}, which is a testpath"
 def test_packages_are_discovered_not_enumerated():
     """A hand-written package list omitted `brain.observability` and
     `brain.evals`. `brain/session.py` imports observability at module load, so
@@ -55,13 +66,25 @@ def test_packages_are_discovered_not_enumerated():
         "packages are enumerated by hand; use [tool.setuptools.packages.find]")
     assert packages.get("find", {}).get("include") == ["brain*"]
 
-    # Every subpackage that exists on disk is matched by that pattern.
-    on_disk = {f"brain.{p.parent.name}"
-               for p in (PROJECT_ROOT / "brain").rglob("__init__.py")
-               if p.parent.name != "brain"}
-    assert on_disk, "expected subpackages under brain/"
-    for pkg in on_disk:
-        assert pkg.startswith("brain")
+    # Apply the declared include pattern to what is actually on disk. The old
+    # loop asserted that names the test itself built with an f-string started
+    # with 'brain' — true by construction, and blind to the very defect the
+    # docstring describes. (setuptools is a BUILD dependency and is absent from
+    # a lean runtime env, so the pattern is matched directly rather than by
+    # importing find_packages — the semantics are the same and the check
+    # always runs.)
+    from fnmatch import fnmatch
+
+    on_disk = {".".join(p.parent.relative_to(PROJECT_ROOT).parts)
+               for p in (PROJECT_ROOT / "brain").rglob("__init__.py")}
+    assert len(on_disk) > 1, "expected subpackages under brain/"
+    patterns = packages["find"]["include"]
+    unshipped = {pkg for pkg in on_disk
+                 if not any(fnmatch(pkg, pat) for pat in patterns)}
+    assert not unshipped, f"declared discovery would not ship: {sorted(unshipped)}"
+    # ...and the pattern must not sweep run output into the distribution.
+    assert not any(fnmatch("data", pat) or fnmatch("data.runs", pat)
+                   for pat in patterns)
 
 
 def test_one_version_source():

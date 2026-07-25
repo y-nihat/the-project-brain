@@ -277,11 +277,11 @@ def test_observation_state_contradictions_are_rejected():
     ok, d = check({"coverage": "none", "unresolved_needs": ["p"],
                    "observation_state": "not_detected"})
     assert ok, d                                          # honest low-sensitivity none
-    # The contract teaches the failure!=absence separation.
-    c = acquisition._DEVELOPER_SYSTEM
-    assert "OBSERVATION STATE" in c
-    assert "ABSENCE AND FAILURE ARE DIFFERENT FACTS" in c
-    assert "UNIQUE filenames" in c
+    # The four checks above pin the ENFORCED separation of absence from
+    # failure. The prompt wording that teaches it is pinned in exactly one
+    # place — tests/test_recovery.py::test_developer_contract_sections_have_
+    # not_been_deleted — so a reword fails one test in one file, not three in
+    # three, and the failure names the right thing.
 
 
 def test_ledger_records_observation_state(tmp_path):

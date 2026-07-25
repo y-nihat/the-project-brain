@@ -75,9 +75,32 @@ def test_report_blocker_records_and_guides(tmp_path):
         bb.close()
 
 
-def test_team_tools_include_progress_update():
-    from brain.team import TEAM_TOOLS
-    assert "mcp__team__progress_update" in TEAM_TOOLS
+def test_the_allowlist_and_the_registered_tools_agree():
+    """TEAM_TOOLS is consumed verbatim as the agent's allow-list, and
+    build_team_server registers its tools independently. The two are separate
+    literals: a tool registered but not allow-listed is dead at runtime and
+    green in CI, and one allow-listed but never registered is a name the agent
+    can call and nothing answers.
+
+    This replaces two tests in two files that each asserted a string literal
+    was a member of a list of string literals in the same module — neither
+    could see the drift that actually matters.
+    """
+    import asyncio
+
+    import mcp.types as mcp_types
+
+    from brain.team import TEAM_TOOLS, TeamChannel, build_team_server
+
+    ch = TeamChannel(agent_id="w", completed_stages=[], ask_fn=None,
+                     research_fn=lambda *a: None)
+    server = build_team_server(ch)
+    assert server.get("name") == "team"
+
+    handler = server["instance"].request_handlers[mcp_types.ListToolsRequest]
+    listed = asyncio.run(handler(mcp_types.ListToolsRequest(method="tools/list")))
+    registered = {f"mcp__team__{tool.name}" for tool in listed.root.tools}
+    assert registered == set(TEAM_TOOLS)
 
 
 def test_system_prompt_mentions_team_channel():

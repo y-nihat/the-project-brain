@@ -272,19 +272,32 @@ def test_repaired_tool_quarantined_at_run_end(tmp_path):
     re-author because the patch reseeds the broken approach. A tool that
     needed mid-run repair is quarantined so the next run re-authors it.
     The run-end sweep quarantines every capability in _repaired_caps."""
+    from brain.planner import StubPlanner
+
     quarantined = []
 
     class Reg:
         def get(self, n): return type("C", (), {"description": "parse a file"})()
+        def all(self): return []
         def quarantine(self, name, reason): quarantined.append((name, reason))
 
-    orch = object.__new__(Orchestrator)
-    orch.tracer = NullTracer()
-    orch.registry = Reg()
-    orch._repaired_caps = {"parse_aslog_export", "ocr_cert"}
-    # exercise the run-end sweep body directly
-    for name in sorted(orch._repaired_caps):
-        orch._quarantine_insufficient(name, "required mid-run repair")
+    # Drive a REAL run. The previous version reimplemented the sweep in its own
+    # body, so deleting the sweep from Orchestrator.run left the suite green —
+    # and the set assertion could then only be the literal the test itself put
+    # in _repaired_caps.
+    async def runner(_t, name, _prompt, _options):
+        orch._repaired_caps.update({"parse_aslog_export", "ocr_cert"})
+        return "done"
+
+    bb = Blackboard(tmp_path / "q.db", "quar")
+    planner = StubPlanner([StageSpec(id="work", pattern="single", role="W", goal="g")])
+    orch = Orchestrator(session="quar", manager=None, ledger=None, registry=Reg(),
+                        blackboard=bb, broker=None, planner=planner, resolver=None,
+                        session_runner=runner, tracer=NullTracer())
+    try:
+        asyncio.run(orch.run("do the thing"))
+    finally:
+        bb.close()
     names = {n for n, _ in quarantined}
     assert names == {"parse_aslog_export", "ocr_cert"}, quarantined
     assert all("insufficient" in r for _, r in quarantined)

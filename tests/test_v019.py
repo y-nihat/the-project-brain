@@ -296,41 +296,6 @@ def test_referenced_siblings_are_never_superseded(tmp_path, monkeypatch):
     chosen, superseded = orch._artifact_of_record(payload, ws)
     assert chosen == "write_md/part-3.md"
     assert superseded == ["write_md/part-2.md"]   # referenced part.md is NOT debris
-
-
-def test_fix_round_prompt_propagates_changed_facts(tmp_path, monkeypatch):
-    """The reviser preserved a stale derived statement verbatim under the
-    minimal-edit rule while its premise changed — propagation is part of the
-    fix, not of the carry-over, and the prompt must say so."""
-    monkeypatch.setattr(config, "RUNS_DIR", tmp_path / "runs")
-    prompts: dict[str, str] = {}
-    seen = {"n": 0}
-
-    async def runner(_t, name, prompt, options):
-        prompts[name] = prompt
-        if name.startswith("check.r"):
-            seen["n"] += 1
-            return ("VERDICT: revise\n1. update the derived figure"
-                    if seen["n"] == 1 else "VERDICT: approved\nok")
-        return "```deliverable\nthe work\n```"
-
-    planner = StubPlanner(
-        [StageSpec(id="draft", pattern="single", role="D", goal="write",
-                   deliverable=True),
-         StageSpec(id="check", pattern="review", role="C", goal="verify",
-                   depends_on=["draft"], rounds=2)])
-    bb = Blackboard(tmp_path / "ff.db", "factprop1")
-    orch = Orchestrator(session="factprop1", manager=None, ledger=None,
-                        registry=None, blackboard=bb, broker=None,
-                        planner=planner, resolver=None, session_runner=runner,
-                        tracer=NullTracer())
-    try:
-        asyncio.run(orch.run("write the thing"))
-    finally:
-        bb.close()
-    assert "A changed FACT propagates" in prompts.get("draft.fix", "")
-
-
 def test_agent_prompt_names_the_defect_channel():
     from brain import factory
     from brain.models import AgentSpec
@@ -342,5 +307,16 @@ def test_agent_prompt_names_the_defect_channel():
 
 
 def test_planner_revision_scope_propagates_changed_facts():
+    """Pin the RULE, not the label. The heading survived every rewrite; the
+    body underneath it — the part that actually says what propagation means —
+    could be deleted entirely and the old one-line assertion still passed.
+
+    (The heading itself is pinned once, in
+    tests/test_recovery.py::test_planner_contract_sections_have_not_been_deleted.)
+    """
     from brain import planner as planner_mod
-    assert "SCOPE OF A CHANGED FACT" in planner_mod._SYSTEM
+
+    s = planner_mod._SYSTEM
+    for clause in ("figures derived from it", "restatements of it",
+                   "encode that propagation in the criteria"):
+        assert clause in s, f"the propagation rule lost {clause!r}"

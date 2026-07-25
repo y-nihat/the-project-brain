@@ -630,11 +630,20 @@ def test_initial_strategy_rationale_is_persisted(tmp_path, monkeypatch):
         bb.close()
 
 
-def test_planner_prompts_demand_adjudication_contracts_and_calibrated_stop():
+def test_planner_contract_sections_have_not_been_deleted():
+    """A PROMPT-CONTENT PROXY, not a behavioural test. It proves the named
+    sections still exist, nothing more — planner BEHAVIOUR needs a live LLM.
+    The old name promised the planner 'demands' these things, which eight
+    substring assertions cannot show.
+
+    The behaviours themselves are covered offline elsewhere: instance-neutral
+    contracts by test_capability_contract_reaches_developer_not_stage_goal and
+    test_fallback_authoring_description_is_scrubbed_of_task_policy, the
+    calibrated stop by test_calibrated_stop_finalizes_dimensions_not_traceback.
+    """
     from brain import planner as planner_mod
-    s = planner_mod._SYSTEM
-    assert "STRATEGY ADJUDICATION" in s and "EPISTEMIC FIT FIRST" in s
-    assert "ATOMIC CAPABILITIES" in s and "fetch-and-summarize monolith" in s
-    assert "CAPABILITY NEEDS" in s and "INSTANCE-NEUTRAL" in s
-    e = planner_mod._EXTEND_ADDENDUM
-    assert "FAILED METHODS ARE EVIDENCE" in e and "calibrated stop" in e
+
+    for section in ("STRATEGY ADJUDICATION", "ATOMIC CAPABILITIES",
+                    "CAPABILITY NEEDS", "SCOPE OF A CHANGED FACT"):
+        assert section in planner_mod._SYSTEM, f"section {section!r} deleted"
+    assert "FAILED METHODS ARE EVIDENCE" in planner_mod._EXTEND_ADDENDUM

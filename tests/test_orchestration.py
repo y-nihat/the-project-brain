@@ -13,6 +13,7 @@ import json
 from brain import config
 from brain.memory.blackboard import Blackboard
 from brain.models import StageSpec
+from brain.observability import NullTracer
 from brain.orchestrator import Orchestrator
 from brain.planner import StubPlanner
 
@@ -127,13 +128,23 @@ def test_session_cap_stops_new_sessions(tmp_path, monkeypatch):
             return "```manifest\n" + json.dumps(ITEMS) + "\n```"
         return f"out({name})"
 
-    orch, bb = _orchestrator(tmp_path, runner)
+    names: list[str] = []
+
+    async def counting(tracer, name, prompt, options):
+        names.append(name)
+        return await runner(tracer, name, prompt, options)
+
+    orch, bb = _orchestrator(tmp_path, counting)
     try:
         answer = asyncio.run(orch.run("study"))
     finally:
         bb.close()
-    # gather + first worker used the budget; everything after is honestly not-run.
-    assert "cap" in answer or "not run" in answer
+    # The HARD fact, not a disjunction: exactly two agent sessions ran and
+    # nothing after. ("not run" also appears in the unverified banner's
+    # 'a required grounding review did not run', so the old assertion was one
+    # plan change away from passing for the wrong reason.)
+    assert names == ["gather", "survey.w01"], names
+    assert "reached its cap of 2 agent sessions" in answer
 
 
 def test_user_evidence_run_unapproved_review_classifies_unverified(tmp_path, monkeypatch):
@@ -145,7 +156,15 @@ def test_user_evidence_run_unapproved_review_classifies_unverified(tmp_path, mon
     inp.mkdir(parents=True)
     (inp / "source.pdf").write_bytes(b"%PDF user evidence")
 
+    ran: list[str] = []
+    events: list[tuple] = []
+
+    class Recording(NullTracer):
+        def event(self, kind, subject, status="info", **data):
+            events.append((kind, data))
+
     async def runner(tracer, name, prompt, options):
+        ran.append(name)
         if name.startswith("review.r"):
             return "VERDICT: revise\n1. the deliverable renames the source document."
         if name.endswith(".fix"):
@@ -157,13 +176,21 @@ def test_user_evidence_run_unapproved_review_classifies_unverified(tmp_path, mon
     bb = Blackboard(tmp_path / "b.db", "wf-cls")
     orch = Orchestrator(session="wf-cls", manager=None, ledger=None, registry=None,
                         blackboard=bb, broker=None, planner=StubPlanner(stages),
-                        resolver=None, session_runner=runner, supervisor=None)
+                        resolver=None, session_runner=runner, supervisor=None,
+                        tracer=Recording())
     try:
         answer = asyncio.run(orch.run("summarize @input/source.pdf as a deck"))
     finally:
         bb.close()
     assert orch.classification == "unverified"
     assert "UNVERIFIED" in answer
+    # A review must actually have RUN. Both classification routes return
+    # 'unverified' — "its grounding review did not approve" and "a required
+    # grounding review did not run" — so without this, an engine that stopped
+    # forcing the review on a user-evidence run was invisible to the suite.
+    assert any(n.startswith("review.r") for n in ran), ran
+    reason = next(d for k, d in events if k == "run.classification")["reason"]
+    assert "did not approve" in reason
 
 
 def test_review_failure_delivers_draft_unverified(tmp_path, monkeypatch):

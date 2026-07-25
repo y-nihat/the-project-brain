@@ -39,18 +39,6 @@ def test_team_channel_research_delegates_and_guards(tmp_path):
     ch2 = TeamChannel(agent_id="w", completed_stages=[], ask_fn=None)
     ok3, msg = asyncio.run(ch2.research("a real topic"))
     assert not ok3 and "not available" in msg
-
-
-def test_request_research_is_a_team_tool():
-    assert "mcp__team__request_research" in TEAM_TOOLS
-    # The server builds cleanly with the new tool included (SDK server is an
-    # opaque dict; the tool body just forwards to channel.research, covered above).
-    ch = TeamChannel(agent_id="w", completed_stages=[], ask_fn=None,
-                     research_fn=lambda *a: None)
-    server = build_team_server(ch)
-    assert server.get("name") == "team"
-
-
 # --- the orchestrator delegate: budget, cache, honesty label -------------------- #
 def _orch(tmp_path, runner):
     bb = Blackboard(tmp_path / "b.db", "res")
