@@ -12,7 +12,7 @@ trace to files a tool actually retained, and a run that cannot prove its work sa
 > **Status:** engine **v0.30.0**, pre-1.0, actively developed by one author. The safety substrate,
 > staged workflows, capability authoring/verification/promotion, the evidence-and-review plane,
 > adaptive recovery, standing goals, the eval harness, and observability are built and covered by
-> 489 tests. `CHANGELOG.md` is the authoritative release record.
+> 513 tests. `CHANGELOG.md` is the authoritative release record.
 > See **[docs/OVERVIEW.md](docs/OVERVIEW.md)** for the stack, how to run it, and where logs live.
 
 ## Try it in about a minute
@@ -82,8 +82,16 @@ Installability is not yet the full M2 milestone: per-project `.brain/` state and
 
 ```sh
 ./scripts/setup-git.sh   # commit template + hooks (secret guard, message format, test gate)
-pytest tests/            # 489 tests; the 11 Docker-gated ones skip without a daemon
+
+# Run the suite INSIDE the container — that is the environment it targets.
+DC="docker compose -f docker/docker-compose.yml --env-file .env"
+$DC exec brain python -m pytest tests/            # 513 tests
 ```
+
+On the host the suite still runs, but the Docker-gated tests skip when no daemon
+is reachable — and, more confusingly, *fail* when one is: they build sandbox
+images against a toolchain the host does not have. Inside the container they
+pass. Run them there.
 
 `CONTRIBUTING.md` has the git workflow and — read first — the architectural invariant every change
 must preserve. `docs/RATIONALE.md` maps each subsystem to the release entries that explain why it
