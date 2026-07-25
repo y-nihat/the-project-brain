@@ -79,6 +79,14 @@ broken or disabled analyze step can only ever make the system do more work, neve
 owed. A turn it answers is recorded, costed and turn-numbered like any other, ships as
 `answered` rather than `succeeded`, and says in its own text that it traces to nothing.
 
+**Effort follows the plan.** The machinery that only exists to serve an artifact of record — the
+fenced-payload contract, the renderer attached to the producing stage, format measurement,
+`DELIVERABLE.md` — now runs only when the plan actually produces one. That verdict is read off the
+plan (a marked stage, a review stage, a capability that emits an artifact, a countable format
+criterion, declared knowledge needs), never off the shape of the request. It used to be
+unanswerable: the routing question "which stage owns the deliverable" always returns something, so
+"there is no deliverable" could not be said, and every plan paid for one.
+
 **Continuity:** runs are not amnesiac. Before planning, the brain assembles relevant prior-run
 context (objectives, outcomes, produced files, capabilities created) and hands it to the planner
 and agents; a prior run's workspace files are seeded under `workspace/prior/` so follow-up turns

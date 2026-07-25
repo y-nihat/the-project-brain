@@ -128,6 +128,48 @@ def deliverable_stage_ids(stages: list["StageSpec"]) -> set[str]:
     return ids
 
 
+def produces_artifact_of_record(stages: list["StageSpec"], *,
+                                criteria: Optional[list[str]] = None,
+                                emits_by_cap: Optional[dict] = None,
+                                knowledge_declared: bool = False) -> bool:
+    """Whether this PLAN produces an artifact of record at all.
+
+    :func:`deliverable_stage_ids` can never return empty — its fallback always
+    names the terminal stage — so "this plan produces no artifact of record"
+    was inexpressible, and the machinery keyed to that question ran regardless
+    of what was planned: the ~1.4 KB fenced-payload contract with its counting
+    and self-render rules, a renderer bolted onto the producing stage, format
+    measurement, a DELIVERABLE.md. A turn that has no artifact paid all of it.
+
+    That is the same defect as the analyze step having one legal output: a
+    question whose answer is structurally fixed is not being asked. This is
+    the missing verdict, read off the PLAN — never off the shape of the input.
+
+    True on any of five structural signals, because the planner's own marking
+    is a single unchecked emission and a plan that quietly loses its
+    deliverable is worse than one that pays unnecessary ceremony:
+      * a stage is MARKED as producing the deliverable;
+      * a review stage exists — a review verifies a draft, so there is one;
+      * a bound capability declares it ``emits`` an artifact;
+      * a compiled criterion states a countable format bound (sections, words,
+        pages...), which only a produced artifact can satisfy;
+      * the plan declared KNOWLEDGE NEEDS, which are declared exactly when a
+        deliverable's FORM will be judged by an audience.
+    """
+    from . import criteria as criteria_mod
+
+    if any(getattr(s, "deliverable", False) for s in stages):
+        return True
+    if any(s.pattern == REVIEW for s in stages):
+        return True
+    if knowledge_declared:
+        return True
+    emits = emits_by_cap or {}
+    if any(emits.get(c) == "artifact" for s in stages for c in (s.capabilities or [])):
+        return True
+    return bool(criteria_mod.check_counts(criteria or [], ""))
+
+
 def manifest_instruction() -> str:
     """Standard instruction appended to any stage whose output feeds a map."""
     return (

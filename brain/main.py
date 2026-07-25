@@ -35,10 +35,12 @@ async def _amain(objective: str, quiet: bool = False) -> int:
             session.add_listener(_on_event)
         summary = await session.run_objective(objective)
         print("\n==== ANSWER ====\n" + summary.answer)
+        # The library's SIZE is the fact; naming all of it on every run buried
+        # the run's own accounting under a list that has nothing to do with it.
         print(
             f"\n[accounting] run={summary.run_id} status={summary.status} "
             f"containers={summary.containers} leaks={summary.leaks} "
-            f"capabilities={summary.capabilities}"
+            f"library={len(summary.capabilities)} capabilit(ies)"
         )
         # What the run COST, stated plainly. The per-run README has carried
         # this since it was written; the answer never has.
@@ -54,27 +56,15 @@ async def _amain(objective: str, quiet: bool = False) -> int:
 
 
 def _cost_line(run_id: str) -> str:
-    """Best-effort spend/duration readout for the finished run."""
-    try:
-        import sqlite3
+    """Best-effort spend/duration readout for the finished run.
 
-        from . import config
+    One implementation, shared: the interactive path needs the same numbers,
+    and for as long as this lived here it was the only path that printed any.
+    """
+    from . import config
+    from .observability.cost import run_cost_line
 
-        conn = sqlite3.connect(f"file:{config.DB_PATH}?mode=ro", uri=True)
-        try:
-            row = conn.execute(
-                "SELECT cost_usd, duration_ms, tokens_in, tokens_out FROM runs "
-                "WHERE run_id = ?", (run_id,)).fetchone()
-        finally:
-            conn.close()
-        if not row or row[0] is None:
-            return ""
-        cost, dur_ms, tin, tout = row
-        mins = (dur_ms or 0) / 60000.0
-        return (f"[cost]       ${cost:.2f} · {mins:.1f} min · "
-                f"{(tin or 0):,} in / {(tout or 0):,} out tokens")
-    except Exception:  # noqa: BLE001 — accounting must never break delivery
-        return ""
+    return run_cost_line(config.DB_PATH, run_id)
 
 
 def _history_note(session: BrainSession, objective: str) -> str:

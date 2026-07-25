@@ -225,6 +225,15 @@ async def _repl(resume: Optional[str] = None) -> int:
             print(f"\n=== {summary.status.upper()} "
                   f"(run {summary.run_id}, {summary.containers} containers, {summary.leaks} leaks) ===")
             print(summary.answer)
+            # What this turn cost, and the conversation so far. A system whose
+            # turns span cents to double-digit dollars must not ask a person to
+            # converse with it blind — and until now only the one-shot path
+            # printed anything at all.
+            from .observability.cost import turn_cost_line
+
+            if line := turn_cost_line(config.DB_PATH, summary.run_id,
+                                      session.conversation_id):
+                print(line)
             print()
     finally:
         session.close()

@@ -711,6 +711,10 @@ class Orchestrator:
         self._knowledge_briefs = ""
         self._session_context: Optional[str] = None
         self._referent_resolved = False
+        # Set from the plan in run(); True until then so any path reached
+        # before planning behaves exactly as it did before this became a
+        # question that could be answered 'no'.
+        self._plan_makes_artifact = True
         self._fix_notes: dict[str, str] = {}
         self._tool_repairs = 0
         self._insufficient: dict[str, tuple] = {}
@@ -918,6 +922,17 @@ class Orchestrator:
                     "plan.criteria.unmeasurable", "plan", status="info",
                     count=len(unmeasurable), of=len(self._criteria),
                     criteria=[c[:200] for c in unmeasurable[:8]])
+        # Does this plan produce an artifact of record? Read off the PLAN, once,
+        # and everything downstream that only exists to serve an artifact is
+        # conditioned on it — the fenced-payload contract, the renderer bolted
+        # onto the producing stage, format measurement, DELIVERABLE.md. That
+        # machinery used to run for every plan, because the question could not
+        # be answered 'no'.
+        self._plan_makes_artifact = workflow.produces_artifact_of_record(
+            stages, criteria=self._criteria, emits_by_cap=self._registry_emits(stages),
+            knowledge_declared=bool(self._knowledge_briefs))
+        self.tracer.event("plan.artifact_of_record", "plan", status="info",
+                          produces=self._plan_makes_artifact)
         # Standing-goal aspiration: captured as run state for the session's
         # outcome loop (judged at run end, persisted across runs).
         self.aspiration = dict(getattr(plan, "aspiration", {}) or {})
@@ -1114,21 +1129,29 @@ class Orchestrator:
             payload = (workflow.extract_deliverable(outputs.get(src, ""))
                        or workflow.extract_deliverable(answer)
                        or outputs.get(src, "") or answer)
-            deliverable_dir = Path(config.RUNS_DIR) / self.session / "outputs"
-            deliverable_dir.mkdir(parents=True, exist_ok=True)
-            (deliverable_dir / "DELIVERABLE.md").write_text(scrub_text(payload or ""))
-            # Countable format criteria are MEASURED against the deliverable of
-            # record (artifact when one exists, else the payload) — a measured
-            # violation is authoritative over any verdict prose. (Slide/page
-            # counts defer to the rendered artifact when one exists.)
-            checks, meas_target = self._measured_checks(payload, workspace)
-            self._format_violations = criteria_mod.violations(checks)
-            if checks:
-                self.tracer.event(
-                    "criteria.measured", "run", status="info", target=meas_target,
-                    checks=[f"{c.op} {c.bound} {c.unit}: measured {c.measured} "
-                            f"({'ok' if c.ok else 'VIOLATED' if c.gating else 'advisory'})"
-                            for c in checks])
+            # A DELIVERABLE.md is a claim that this run produced an artifact of
+            # record. When the plan produces none, writing one anyway made every
+            # turn look like it shipped something — and made the fenced-payload
+            # contract, the renderer and format measurement unavoidable to get
+            # there. The answer still ships and is still recorded; it simply
+            # does not claim to be an artifact.
+            if self._plan_makes_artifact:
+                deliverable_dir = Path(config.RUNS_DIR) / self.session / "outputs"
+                deliverable_dir.mkdir(parents=True, exist_ok=True)
+                (deliverable_dir / "DELIVERABLE.md").write_text(scrub_text(payload or ""))
+                # Countable format criteria are MEASURED against the deliverable
+                # of record (artifact when one exists, else the payload) — a
+                # measured violation is authoritative over any verdict prose.
+                # (Slide/page counts defer to the rendered artifact when one
+                # exists.)
+                checks, meas_target = self._measured_checks(payload, workspace)
+                self._format_violations = criteria_mod.violations(checks)
+                if checks:
+                    self.tracer.event(
+                        "criteria.measured", "run", status="info", target=meas_target,
+                        checks=[f"{c.op} {c.bound} {c.unit}: measured {c.measured} "
+                                f"({'ok' if c.ok else 'VIOLATED' if c.gating else 'advisory'})"
+                                for c in checks])
             if failure_note:
                 answer = (answer + "\n\n" + failure_note).strip()
         else:
@@ -1213,6 +1236,27 @@ class Orchestrator:
         answer_dir.mkdir(parents=True, exist_ok=True)
         (answer_dir / "ANSWER.md").write_text(scrub_text(answer or ""))
         return answer or "(no answer produced)"
+
+    def _registry_emits(self, stages: list) -> dict:
+        """What each already-known capability in this plan declares it emits.
+
+        Best-effort: a capability not yet authored has no declaration, which is
+        simply one signal absent — never a lookup that can fail a run.
+        """
+        out: dict = {}
+        if self.registry is None:
+            return out
+        for s in stages:
+            for name in (getattr(s, "capabilities", None) or []):
+                if name in out:
+                    continue
+                try:
+                    cap = self.registry.get(name)
+                except Exception:  # noqa: BLE001
+                    cap = None
+                if cap is not None:
+                    out[name] = (cap.emits or "").strip().lower()
+        return out
 
     async def _correct_proxy_first_plan(self, plan, objective: str,
                                         history: Optional[str]):
@@ -2243,8 +2287,8 @@ class Orchestrator:
     async def _run_single(self, stage: StageSpec, stages: list[StageSpec],
                           outputs: dict[str, str], objective: str,
                           history: Optional[str], workspace: Path) -> str:
-        is_deliverable = stage.id in workflow.deliverable_stage_ids(
-            list(self._stages_by_id.values()))
+        is_deliverable = self._plan_makes_artifact and stage.id in \
+            workflow.deliverable_stage_ids(list(self._stages_by_id.values()))
         # SELF-CHECK has teeth only if the producer can SEE its artifact the
         # way the audience will: give deliverable stages the promoted render
         # tool when one exists (reuse only — never stall production on
@@ -2585,7 +2629,8 @@ class Orchestrator:
         ctx = ("Notes from the workers (merge faithfully; keep source attributions; "
                "flag disagreements between workers rather than papering over them):\n"
                + _notes_block(notes, limit))
-        if stage.id in workflow.deliverable_stage_ids(list(self._stages_by_id.values())):
+        if self._plan_makes_artifact and stage.id in workflow.deliverable_stage_ids(
+                list(self._stages_by_id.values())):
             ctx += workflow.deliverable_instruction()
             if self._knowledge_briefs:
                 ctx += ("\n\nRESEARCHED QUALITY STANDARDS (the bar your deliverable is "
@@ -2628,7 +2673,8 @@ class Orchestrator:
             return fixed
 
         self._redo[stage.id] = redo
-        if stage.id in workflow.deliverable_stage_ids(list(self._stages_by_id.values())):
+        if self._plan_makes_artifact and stage.id in workflow.deliverable_stage_ids(
+                list(self._stages_by_id.values())):
             out = await self._presubmit_format_pass(stage.id, out, redo, workspace)
         return out
 
