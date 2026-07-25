@@ -241,7 +241,8 @@ class BrainSession:
         # raw stored descriptions whose task residue anchors new plans.
         from .acquisition import validation_epoch
         from .registry import qualified_catalog
-        known = qualified_catalog(self.registry, validation_epoch())
+        known = qualified_catalog(self.registry, validation_epoch(),
+                                  reuse_counts=self._reuse_counts())
         planner = Planner(model=config.model_for("planner"), known_capabilities=known,
                           tracer=self.tracer)
         from .supervisor import Supervisor
@@ -365,6 +366,28 @@ class BrainSession:
             self.tracer.event("goal.error", "outcome", status="failed",
                               error=f"{type(e).__name__}: {str(e)[:200]}")
         return summary
+
+    def _reuse_counts(self) -> dict:
+        """How many distinct prior runs actually reused each capability.
+
+        The library growing is not the claim; the library being REUSED is. The
+        recorded decisions already say which tools earn their place, and the
+        planner — the component that decides reuse-vs-build — was the one
+        component never shown them. Best-effort: no history, no annotation."""
+        try:
+            import sqlite3
+
+            conn = sqlite3.connect(f"file:{config.DB_PATH}?mode=ro", uri=True)
+            try:
+                return {row[0]: row[1] for row in conn.execute(
+                    "SELECT json_extract(data_json,'$.capability'), COUNT(DISTINCT run_id) "
+                    "FROM events WHERE kind='decision' "
+                    "  AND json_extract(data_json,'$.choice')='reuse' "
+                    "GROUP BY 1") if row[0]}
+            finally:
+                conn.close()
+        except Exception:  # noqa: BLE001 — an annotation must never block planning
+            return {}
 
     def _pursuit_cost_estimate(self, budget: int) -> str:
         """What `budget` more runs is likely to cost, from recorded history.

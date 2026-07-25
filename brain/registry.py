@@ -206,7 +206,8 @@ class Registry:
             self._conn.close()
 
 
-def qualified_catalog(registry: Registry, epoch: str) -> dict[str, str]:
+def qualified_catalog(registry: Registry, epoch: str,
+                      reuse_counts: Optional[dict[str, int]] = None) -> dict[str, str]:
     """The planner's known-capability view, QUALIFIED by trust and availability
     state — catalog hygiene BEFORE planning, not after (a quarantined tool with
     a task-shaped description was observed anchoring the initial plan, then
@@ -216,7 +217,14 @@ def qualified_catalog(registry: Registry, epoch: str) -> dict[str, str]:
       * stale contract      -> labeled (usable only after revalidation/re-authoring);
       * previously failed   -> the need key is listed with its failure so naming
                                it again is a deliberate act, not amnesia;
-      * descriptions        -> normalized (task residue stripped) defensively.
+      * descriptions        -> normalized (task residue stripped) defensively;
+      * earned reuse        -> stated, when known. The planner chose from
+                               descriptions alone and could not tell a tool
+                               proven across dozens of runs from one that has
+                               never been picked since the day it was built.
+                               Reuse is the library's whole purpose, so what
+                               has actually been reused is evidence the
+                               planner should have.
     """
     from .acquisition import generalize_description  # lazy: avoid import cycle
 
@@ -228,6 +236,10 @@ def qualified_catalog(registry: Registry, epoch: str) -> dict[str, str]:
         if cap.validated_engine != epoch:
             desc += (" [stale contract: revalidated before any reuse; may be "
                      "quarantined and re-authored]")
+        if reuse_counts is not None:
+            n = reuse_counts.get(cap.name, 0)
+            desc += (f" [reused in {n} prior run(s)]" if n
+                     else " [never reused since it was built]")
         known[cap.name] = desc
     for name, failure in registry.last_failures().items():
         if name in known:

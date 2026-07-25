@@ -774,3 +774,18 @@ def test_quarantined_and_unverified_capabilities_are_never_contract_matched():
         _cap("unverified_one", accepts=[".pdf"], args=["path"], verified=False)])
     assert Resolver(reg).resolve("read_pdf", contract={
         "accepts": [".pdf"], "emits": "observation", "arguments": ["path"]}).kind == CREATE
+
+
+def test_the_catalog_states_what_has_actually_been_reused():
+    """The planner chose from descriptions alone and could not tell a tool
+    proven across 51 runs from one never picked since the day it was built."""
+    from brain.registry import qualified_catalog
+
+    reg = _FakeRegistry([_cap("proven", args=["q"]), _cap("dormant", args=["q"])])
+    for c in reg.all():
+        c.validated_engine = "epoch-1"
+    cat = qualified_catalog(reg, "epoch-1", reuse_counts={"proven": 51})
+    assert "reused in 51 prior run(s)" in cat["proven"]
+    assert "never reused since it was built" in cat["dormant"]
+    # Without counts the annotation is absent entirely (no false precision).
+    assert "reused" not in qualified_catalog(reg, "epoch-1")["proven"]
