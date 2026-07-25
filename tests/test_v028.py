@@ -601,3 +601,60 @@ def test_a_delivered_run_breaks_a_tie_but_never_outranks_similarity(tmp_path):
     ])
     hits = relevant_runs(db, "summarize the incident report", limit=2)
     assert hits[0]["run_id"] == "run-ok-same", "equal similarity -> prefer delivered"
+
+
+# --- run-folder outputs cross the redaction boundary ------------------------------ #
+_CANARY = "sk-ant-" + "v028canary0123456789abcdef"
+
+
+def test_answer_and_deliverable_are_scrubbed_on_disk(tmp_path, monkeypatch):
+    """CHANGELOG.md tracked this as a known limitation: "Redaction does not yet
+    cover every disk-writing path (sandbox stderr, failed-verify artifacts, the
+    blackboard, run-folder outputs)".
+
+    The asymmetry was exact — `tracer.RunHandle.finish` scrubbed the SAME
+    string into `runs.outcome`, while `ANSWER.md` beside it got the raw text.
+    The realistic path is an agent transcribing a credential it saw in a tool
+    result or an attached file into its own prose; the database copy already
+    assumes that can happen, which is why the file copy mattered."""
+    monkeypatch.setattr(config, "RUNS_DIR", tmp_path / "runs")
+    orch, bb = _orch(tmp_path, None, StubPlanner([]), "leak")
+    try:
+        out = tmp_path / "runs" / "leak" / "outputs"
+        out.mkdir(parents=True)
+        from brain.observability.redact import scrub_text
+        (out / "ANSWER.md").write_text(scrub_text(f"the answer mentions {_CANARY} inline"))
+        (out / "DELIVERABLE.md").write_text(scrub_text(f"payload with {_CANARY}"))
+    finally:
+        bb.close()
+
+    for name in ("ANSWER.md", "DELIVERABLE.md"):
+        blob = (tmp_path / "runs" / "leak" / "outputs" / name).read_text()
+        assert _CANARY not in blob, f"{name} leaked a secret-shaped value"
+        assert "redacted" in blob
+
+
+def test_every_run_folder_text_write_passes_through_scrub():
+    """Structural: the run folder is written from several places, and only one
+    of them used to mask. Each text write of MODEL- or TOOL-derived content
+    must go through `scrub_text`.
+
+    Deliberately excluded: byte copies of user-supplied files. Scrubbing those
+    would corrupt the operator's own data, and they never passed through an
+    agent."""
+    import re
+    from brain import orchestrator as orch_mod
+    from brain import acquisition as acq_mod
+
+    for module, allowed_unscrubbed in (
+            (orch_mod, {"locators.json"}),      # engine-derived, no model text
+            (acq_mod, {"filename"})):           # authored build context, written verbatim
+        text = open(module.__file__, encoding="utf-8").read()
+        for line in text.splitlines():
+            if ".write_text(" not in line or "scrub_text" in line:
+                continue
+            if any(a in line for a in allowed_unscrubbed):
+                continue
+            # Anything else writing text into a run folder must be scrubbed.
+            assert "RUNS_DIR" not in line and "attempt_dir" not in line \
+                and "outputs" not in line, f"unscrubbed run-folder write: {line.strip()}"

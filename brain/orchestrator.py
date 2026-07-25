@@ -33,6 +33,7 @@ from .acquisition import (AcquisitionError, acquire, generalize_description,
                           make_builder_agent)
 from .acquisition import repair_capability as acquire_repair
 from .capabilities.runtime import build_caps_server
+from .observability.redact import scrub_text
 from .models import (CREATE, MAP, REDUCE, REUSE, REVIEW, AgentSpec, Capability,
                      Decision, MethodOutcome, StageSpec)
 from .team import TEAM_TOOLS, TeamChannel, build_team_server
@@ -208,8 +209,12 @@ def _persist_agent(runs_dir, session: str, spec: AgentSpec, system_prompt: str, 
         f"- **capabilities:** {spec.capabilities}\n"
         f"- **depends_on:** {spec.depends_on}\n\n---\n\n"
     )
-    (outputs / f"{spec.id}.md").write_text(header + (output or ""))
-    (agents / f"{spec.id}.prompt.md").write_text(system_prompt)
+    # Agent-authored text crosses the same redaction boundary the tracer
+    # applies: an agent that saw a credential (in a tool result, an attached
+    # file) can transcribe it into its own prose, and these files are the one
+    # copy that was never masked.
+    (outputs / f"{spec.id}.md").write_text(scrub_text(header + (output or "")))
+    (agents / f"{spec.id}.prompt.md").write_text(scrub_text(system_prompt))
 
 
 def _seed_prior_workspace(runs_dir, session: str, seed_run: str, *, max_bytes: int = 16 * 1024 * 1024) -> list[str]:
@@ -1018,7 +1023,8 @@ class Orchestrator:
             agg = Path(config.RUNS_DIR) / self.session / "outputs" / f"{stage.id}.md"
             if not agg.exists():
                 agg.parent.mkdir(parents=True, exist_ok=True)
-                agg.write_text(f"# {stage.id} [{stage.pattern}] — aggregate output\n\n{out or ''}")
+                agg.write_text(scrub_text(
+                f"# {stage.id} [{stage.pattern}] — aggregate output\n\n{out or ''}"))
 
             # Mechanical artifact repair, IN the loop so a later review stage
             # judges the REPAIRED artifact and nothing rewrites reviewed work.
@@ -1110,7 +1116,7 @@ class Orchestrator:
                        or outputs.get(src, "") or answer)
             deliverable_dir = Path(config.RUNS_DIR) / self.session / "outputs"
             deliverable_dir.mkdir(parents=True, exist_ok=True)
-            (deliverable_dir / "DELIVERABLE.md").write_text(payload or "")
+            (deliverable_dir / "DELIVERABLE.md").write_text(scrub_text(payload or ""))
             # Countable format criteria are MEASURED against the deliverable of
             # record (artifact when one exists, else the payload) — a measured
             # violation is authoritative over any verdict prose. (Slide/page
@@ -1205,7 +1211,7 @@ class Orchestrator:
         self.blackboard.put("answer", answer)
         answer_dir = Path(config.RUNS_DIR) / self.session / "outputs"
         answer_dir.mkdir(parents=True, exist_ok=True)
-        (answer_dir / "ANSWER.md").write_text(answer or "")
+        (answer_dir / "ANSWER.md").write_text(scrub_text(answer or ""))
         return answer or "(no answer produced)"
 
     async def _correct_proxy_first_plan(self, plan, objective: str,
@@ -3191,7 +3197,7 @@ class Orchestrator:
                           for c in claims]
                 lines.append("")
             lines += [r.get("critique") or r.get("error") or "", ""]
-        agg.write_text("\n".join(lines))
+        agg.write_text(scrub_text("\n".join(lines)))
         # Keep the structured verdict reachable for the ANSWER envelope. The
         # per-criterion and claim tables are the only actionable account of why
         # a run did not certify, and they were written here and nowhere else —

@@ -22,6 +22,7 @@ from typing import Awaitable, Callable, Optional
 from . import config, factory
 from .models import Capability
 from .observability import NullTracer, trace_query
+from .observability.redact import scrub_text
 from .sandbox import policy
 from .verifier import VerificationResult, verify_web_search
 
@@ -1155,7 +1156,7 @@ async def _author_capability(
                 # Persist the full log for post-mortems; feed the developer the
                 # TAIL (the end is where the real error lives).
                 full_log = getattr(e, "full_log", "") or str(e)
-                (attempt_dir / "build.log").write_text(full_log)
+                (attempt_dir / "build.log").write_text(scrub_text(full_log))
                 tail = _error_tail(str(e))
                 last_detail = f"build failed: {tail}"
                 last_class = "packaging"
@@ -1183,8 +1184,8 @@ async def _author_capability(
                 if not ok:
                     vsp.status = "failed"
                     if run_res is not None:
-                        (attempt_dir / "verify.stderr").write_text(run_res.stderr or "")
-                        (attempt_dir / "verify.stdout").write_text(run_res.stdout or "")
+                        (attempt_dir / "verify.stderr").write_text(scrub_text(run_res.stderr or ""))
+                        (attempt_dir / "verify.stdout").write_text(scrub_text(run_res.stdout or ""))
 
             if ok:
                 if tagger is not None:
