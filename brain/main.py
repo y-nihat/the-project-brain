@@ -1,22 +1,38 @@
-"""One-shot CLI:  python -m brain.main "<objective>"
+"""One-shot CLI:  brain "<objective>"   (or: python -m brain.main "<objective>")
 
-Runs one objective end-to-end through a BrainSession and prints the answer plus a
-resource-accounting summary. For an interactive, live-streamed session see
-`python -m brain.repl`.
+Runs one objective end-to-end through a BrainSession, streaming the run live,
+and prints the answer plus a resource-accounting summary. For an interactive
+session with history and follow-up turns, see `python -m brain.repl`.
 """
 from __future__ import annotations
 
 import asyncio
 import sys
 
+from .observability.stream import format_event
 from .session import BrainSession
 
+_USAGE = ('usage: brain "<objective>" [--quiet]   (or: python -m brain.main "<objective>")\n'
+          '       python -m brain.repl                interactive session\n'
+          '\n'
+          '  --quiet   suppress the live event stream (the answer is still printed)')
 
-async def _amain(objective: str) -> int:
+
+async def _amain(objective: str, quiet: bool = False) -> int:
     session = BrainSession()
     try:
         if s := _history_note(session, objective):
             print(s)
+        if not quiet:
+            # A run is silent for a median of ~6 minutes and a p90 of ~27. The
+            # renderer is pure and already existed for the REPL; the documented
+            # one-shot path simply never attached it, so a working system was
+            # indistinguishable from a hung one.
+            def _on_event(rec: dict) -> None:
+                if line := format_event(rec):
+                    print(line, flush=True)
+
+            session.add_listener(_on_event)
         summary = await session.run_objective(objective)
         print("\n==== ANSWER ====\n" + summary.answer)
         print(
@@ -24,10 +40,38 @@ async def _amain(objective: str) -> int:
             f"containers={summary.containers} leaks={summary.leaks} "
             f"capabilities={summary.capabilities}"
         )
+        # What the run COST, stated plainly. The per-run README has carried
+        # this since it was written; the answer never has.
+        if cost := _cost_line(summary.run_id):
+            print(cost)
         print(f"[trace]      python -m brain.observability show {summary.run_id}")
         return 0 if summary.status == "succeeded" else 1
     finally:
         session.close()
+
+
+def _cost_line(run_id: str) -> str:
+    """Best-effort spend/duration readout for the finished run."""
+    try:
+        import sqlite3
+
+        from . import config
+
+        conn = sqlite3.connect(f"file:{config.DB_PATH}?mode=ro", uri=True)
+        try:
+            row = conn.execute(
+                "SELECT cost_usd, duration_ms, tokens_in, tokens_out FROM runs "
+                "WHERE run_id = ?", (run_id,)).fetchone()
+        finally:
+            conn.close()
+        if not row or row[0] is None:
+            return ""
+        cost, dur_ms, tin, tout = row
+        mins = (dur_ms or 0) / 60000.0
+        return (f"[cost]       ${cost:.2f} · {mins:.1f} min · "
+                f"{(tin or 0):,} in / {(tout or 0):,} out tokens")
+    except Exception:  # noqa: BLE001 — accounting must never break delivery
+        return ""
 
 
 def _history_note(session: BrainSession, objective: str) -> str:
@@ -48,12 +92,13 @@ def _history_note(session: BrainSession, objective: str) -> str:
 
 
 def main() -> None:
-    if len(sys.argv) < 2:
-        print('usage: brain "<objective>"   (or: python -m brain.main "<objective>")\n'
-              '       python -m brain.repl        interactive session')
+    args = [a for a in sys.argv[1:] if a not in ("--quiet", "-q")]
+    quiet = len(args) != len(sys.argv[1:])
+    if not args:
+        print(_USAGE)
         sys.exit(2)
-    objective = " ".join(sys.argv[1:])
-    sys.exit(asyncio.run(_amain(objective)))
+    objective = " ".join(args)
+    sys.exit(asyncio.run(_amain(objective, quiet=quiet)))
 
 
 if __name__ == "__main__":

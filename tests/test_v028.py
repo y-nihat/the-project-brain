@@ -347,3 +347,67 @@ def test_the_trust_report_never_costs_the_reader_their_answer(tmp_path, monkeypa
         orch._trust_report()                        # must not raise
     finally:
         bb.close()
+
+
+# --- the documented one-shot path is not silent ----------------------------------- #
+def test_one_shot_cli_streams_the_run_and_reports_cost(tmp_path, monkeypatch, capsys):
+    """`scripts/run-objective.sh` and docs/OVERVIEW.md both drive
+    `python -m brain.main`, which attached no listener — so the documented,
+    non-interactive path printed nothing for a median of ~6 minutes and a p90
+    of ~27. A working system was indistinguishable from a hung one. The
+    renderer is pure and already existed for the REPL."""
+    from brain import main as main_mod
+
+    class _Summary:
+        run_id, status, answer = "run-x", "succeeded", "the answer"
+        containers, leaks, capabilities = 0, 0, []
+
+    seen: list = []
+
+    class _Session:
+        def add_listener(self, fn):
+            seen.append(fn)
+
+        async def run_objective(self, objective, files=None):
+            for fn in seen:                       # the run emits events
+                fn({"kind": "stage", "name": "survey", "phase": "start",
+                    "data": {"pattern": "map"}})
+            return _Summary()
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(main_mod, "BrainSession", lambda: _Session())
+    monkeypatch.setattr(main_mod, "_history_note", lambda *a: "")
+    monkeypatch.setattr(main_mod, "_cost_line", lambda rid: "[cost]       $1.23 · 4.5 min")
+
+    asyncio.run(main_mod._amain("do the thing"))
+    out = capsys.readouterr().out
+    assert "stage survey [map]" in out, "the run must be visible while it runs"
+    assert "[cost]" in out and "$1.23" in out, "the run must state what it cost"
+
+    # --quiet still delivers the answer, without the stream.
+    seen.clear()
+    asyncio.run(main_mod._amain("do the thing", quiet=True))
+    out = capsys.readouterr().out
+    assert "the answer" in out
+    assert "stage survey" not in out
+
+
+def test_the_stream_renderer_is_shared_not_duplicated():
+    """One renderer, one behaviour, both entry points. It renders TRACE
+    records, not terminal state, so it belongs in observability — and the
+    one-shot CLI must not import the interactive REPL to use it."""
+    from brain.observability.stream import format_event as canonical
+    from brain.repl import format_event as via_repl
+    from brain.main import format_event as via_main
+    assert canonical is via_repl is via_main
+
+
+def test_cost_line_is_fail_open(tmp_path, monkeypatch):
+    """Accounting must never break delivery."""
+    from brain import config
+    from brain import main as main_mod
+
+    monkeypatch.setattr(config, "DB_PATH", tmp_path / "nonexistent.db")
+    assert main_mod._cost_line("run-x") == ""
