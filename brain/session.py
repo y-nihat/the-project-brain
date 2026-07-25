@@ -278,12 +278,16 @@ class BrainSession:
         this answer traces to nothing and says so in its own text.
         """
         from .analyze import answer_envelope
+        from .observability.redact import scrub_text
 
         answer = answer_envelope(analysis)
         out_dir = Path(config.RUNS_DIR) / run.run_id / "outputs"
         try:
             out_dir.mkdir(parents=True, exist_ok=True)
-            (out_dir / "ANSWER.md").write_text(answer)
+            # Model-authored prose reaching disk is masked HERE, like every
+            # other answer the engine writes. This path is newer than the
+            # guarantee and was written without it.
+            (out_dir / "ANSWER.md").write_text(scrub_text(answer))
         except OSError:
             pass
         run.finish("answered", outcome=answer)

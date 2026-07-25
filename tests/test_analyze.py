@@ -249,13 +249,37 @@ def test_the_live_stream_says_which_way_the_turn_went():
 
 
 def test_the_classification_reason_is_not_truncated_before_its_caveat():
-    """The honesty clause sits at the END of the reason string; a short cut
-    delivered the verdict and dropped the caveat it exists to carry."""
+    """The honesty clause sits at the END of the reason string, so ANY head
+    truncation delivers the verdict and drops the caveat. Recorded reasons
+    reach 1049 characters — this fixture is deliberately longer than any cut
+    the renderer has ever applied."""
     from brain.observability.stream import format_event
 
-    reason = ("the deliverable answers the objective (grounding not required — no "
-              "designated source), and the compiled success criteria were NOT "
-              "independently verified")
+    reason = ("the deliverable answers the objective " + "(with a long diagnosis) " * 40
+              + "and the compiled success criteria were NOT independently verified")
+    assert len(reason) > 1000
     line = format_event({"kind": "run.classification", "name": "run", "status": "info",
                          "data": {"classification": "succeeded", "reason": reason}})
-    assert "NOT" in line and "independently verified" in line
+    assert line.endswith("NOT independently verified")
+
+
+def test_an_answered_turn_masks_secret_shapes_before_writing_to_disk(tmp_path, monkeypatch):
+    """Every answer the engine writes is masked; this path is newer than the
+    guarantee and was written without it."""
+    from brain import config
+    from tests.test_conversation import _isolated_session
+
+    # Assembled at run time: a literal of this shape in a tracked file is
+    # exactly what the repo's own secret guard exists to refuse.
+    canary = "sk-ant-" + "answeredturncanary0123456789"
+    session = _isolated_session(tmp_path, monkeypatch)
+    try:
+        run = session.tracer.start_run("what is my token")
+        session._deliver_answer(run, "what is my token", coerce(
+            {"resolution": "satisfied",
+             "answer": f"The value you pasted was {canary}.", "reason": "r"}))
+        on_disk = (config.RUNS_DIR / run.run_id / "outputs" / "ANSWER.md").read_text()
+        assert canary not in on_disk
+        assert "The value you pasted was" in on_disk      # only the secret is masked
+    finally:
+        session.close()

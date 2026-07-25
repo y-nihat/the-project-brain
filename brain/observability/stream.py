@@ -104,9 +104,12 @@ def format_event(record: dict) -> Optional[str]:
     if kind == "run.classification":
         cls = data.get("classification")
         icon = "✅" if cls == "succeeded" else "⚠"
-        # The honesty clause lives at the END of the reason string, so a short
-        # truncation cut off exactly the caveat it exists to deliver.
-        return f"  {icon} result: {str(cls).upper()} — {str(data.get('reason', ''))[:300]}"
+        # NOT truncated. The honesty clause — what the run could not prove —
+        # is the TAIL of every reason the classifier builds, so head-truncation
+        # delivers the verdict and drops the caveat it exists to carry.
+        # Recorded reasons reach 1049 characters; a 300-char cut lost the
+        # caveat on 5 of 67 runs, and this is one line at the end of a run.
+        return f"  {icon} result: {str(cls).upper()} — {data.get('reason', '')}"
     if kind == "plan.criteria":
         crit = data.get("criteria") or []
         return f"  ✓ success criteria ({len(crit)}): " + " · ".join(str(c)[:50] for c in crit[:4])
