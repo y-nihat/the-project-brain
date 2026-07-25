@@ -219,6 +219,8 @@ def test_the_envelope_does_not_recite_the_whole_library(capsys, monkeypatch):
         capabilities = ["web_search", "render_artifact_pages", "code_execution"]
 
     class _Session:
+        conversation_id = "conv-test"
+
         def add_listener(self, _fn):
             pass
 

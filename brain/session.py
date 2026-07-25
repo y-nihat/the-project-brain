@@ -91,9 +91,14 @@ class BrainSession:
         if resume and not self._live.held:
             # Another live process is already appending to it. Two processes in
             # one conversation would interleave into a record neither of them
-            # said, so this one starts its own instead of joining.
+            # said, so this one starts its own instead of joining. An UNUSABLE
+            # lock directory takes the same branch and must not be reported as
+            # contention — that was confident and wrong.
             output_fn(f"[conversation] {resume} is held by another live session — "
-                      "starting a new conversation instead")
+                      "starting a new conversation instead" if self._live.contended
+                      else f"[conversation] cannot take a lock in {config.LOCKS_DIR} — "
+                           "starting a new conversation instead of resuming "
+                           f"{resume} without isolation")
             resume = None
             self.conversation_id = conversation_mod.new_id()
             self._live = conversation_mod.Liveness(config.LOCKS_DIR, self.conversation_id)
@@ -223,8 +228,11 @@ class BrainSession:
         live = conversation_mod.Liveness(config.LOCKS_DIR, conversation_id)
         if not live.held:
             live.release()
-            self.output_fn(f"[conversation] {conversation_id} is held by another live "
-                           "session — not switching")
+            self.output_fn(
+                f"[conversation] {conversation_id} is held by another live session "
+                "— not switching" if live.contended
+                else f"[conversation] cannot take a lock in {config.LOCKS_DIR} — "
+                     "not switching")
             return False
         self._live.release()
         self._live = live
@@ -270,8 +278,15 @@ class BrainSession:
         actually refer to (a resolved referent — the only thing that licenses
         treating an earlier deliverable as material for this turn).
         """
+        # The SAME window the analyze step resolves referents over
+        # (analyze.conversation_block). When this looked back 4 turns and that
+        # looked back 6, a referent resolved 5 turns back rendered as 'turn ?'
+        # with a blank objective — the planner told a referent existed and
+        # shown nothing about it.
+        from .analyze import CONVERSATION_WINDOW
+
         rows = [t for t in self._conversation_turns()
-                if (t.get("origin") or "user") == "user"][-4:]
+                if (t.get("origin") or "user") == "user"][-CONVERSATION_WINDOW:]
         blocks: list[str] = []
         if rows:
             lines = [f"- turn {t['turn']} (run {t['run_id']}, {t['status']}): "
@@ -459,7 +474,9 @@ class BrainSession:
         # unconditionally, so a turn that changed the subject still inherited a
         # stranger's deliverable as evidence about its own question. The
         # referent named by the analyze step outranks the relevance-picked seed;
-        # a turn that refers to nothing inherits nothing.
+        # position alone seeds nothing. (The lexical-history path can still
+        # pick a prior run on its own; what ended is the previous turn having
+        # standing it did not earn.)
         referent = None if independent else analysis.referent_run_id
         if referent:
             seed_run = referent
@@ -586,7 +603,12 @@ class BrainSession:
             try:
                 ans = Path(config.RUNS_DIR) / summary.run_id / "outputs" / "ANSWER.md"
                 if ans.is_file():
-                    ans.write_text(ans.read_text() + "\n" + banner)
+                    # The banner carries the judge model's diagnosis and next
+                    # step verbatim. Model text reaching disk is masked here
+                    # like every other answer the engine writes.
+                    from .observability.redact import scrub_text
+
+                    ans.write_text(ans.read_text() + "\n" + scrub_text(banner))
             except OSError:
                 pass
             self._goal_state = {"goal_id": goal["id"], "verdict": outcome["verdict"],

@@ -106,7 +106,12 @@ def test_repair_capability_reauthors_from_seed(tmp_path):
         # on `previous`, so repair could have stopped passing the seed entirely
         # with every assertion still green.
         assert calls["n"] >= 2
-        prev, err = seen[-1]
+        # seen[1] is the REPAIR call. repair_capability delegates with
+        # max_attempts=2, so a single verification retry — a supported path —
+        # makes seen[-1] the retry, whose `previous` is the already-repaired
+        # program: it would fail with a message indistinguishable from the
+        # regression this guards.
+        prev, err = seen[1]
         assert prev and "results': []" in prev["program"], prev
         assert "returned empty 3 times in a row" in (err or "")
         # Version bumped for provenance.

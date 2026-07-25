@@ -29,5 +29,8 @@ echo
 # the REPL, which cancels the CURRENT OBJECTIVE only (teardown still happens on
 # exit via the EXIT trap). No -T: attach a TTY so input()/prompts work.
 trap '' INT
-$DC exec brain python -m brain.repl || true
+# "$@" is forwarded so the documented `--resume <id|prefix|last>` works through
+# the launcher the README recommends; without it the flag was accepted by the
+# script, dropped here, and a fresh conversation started without comment.
+$DC exec brain python -m brain.repl "$@" || true
 trap - INT

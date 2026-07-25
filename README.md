@@ -9,7 +9,7 @@ Its distinguishing property is not autonomy but **honesty**: a deliverable's loa
 trace to files a tool actually retained, and a run that cannot prove its work says so
 (`unverified` / `blocked` / `failed`) instead of narrating success.
 
-> **Status:** engine **v0.31.0**, pre-1.0, actively developed by one author. The safety substrate,
+> **Status:** engine **v0.31.1**, pre-1.0, actively developed by one author. The safety substrate,
 > staged workflows, capability authoring/verification/promotion, the evidence-and-review plane,
 > adaptive recovery, standing goals, the eval harness, and observability are built and covered by
 > 523 tests. `CHANGELOG.md` is the authoritative release record.
@@ -51,7 +51,7 @@ For an interactive session with follow-up turns and live progress, use `./script
 4. If your host user is not uid/gid 1000, set `BRAIN_UID`/`BRAIN_GID` in `.env` so files the brain
    writes under `data/` belong to you.
 
-Runs cost real money. Over 108 recorded runs: **$0.01 to $10.74**, median **$1.16**, p90 $4.83. A
+Runs cost real money. Over 108 recorded runs: **$0.01 to $10.74**, median **$1.13**, p90 $4.83. A
 turn that needs nothing observed is answered directly and costs cents. Both entry points print what
 a turn spent — and, while it is still running, what it has spent so far — and
 `python -m brain.observability stats` summarizes spend by outcome.

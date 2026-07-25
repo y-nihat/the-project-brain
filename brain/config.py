@@ -31,7 +31,7 @@ LOCKS_DIR = DATA_DIR / "locks"        # liveness locks: which conversations a pr
 # change invalidates promoted capabilities even without a release bump).
 # KEEP IN LOCKSTEP WITH THE RELEASE TAG — a stale label here let a biased reader
 # skip revalidation for a whole release cycle.
-ENGINE_VERSION = "0.31.0"
+ENGINE_VERSION = "0.31.1"
 
 
 def _git_commit() -> str:

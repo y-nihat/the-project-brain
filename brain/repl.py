@@ -1,14 +1,14 @@
 """Interactive terminal for the brain:  python -m brain.repl
 
-Type an objective and watch the brain work live — plan, agents, tool authoring,
-verification, answer — all streamed as it happens and recorded under data/.
-Commands: /help /runs /show /caps /last /quit
+Say something and watch the brain work live — analysis, plan, agents, tool
+authoring, verification, answer — streamed as it happens and recorded under
+data/. Each process is one conversation, resumable from the record.
+Commands: /help /runs /show /convs /conv /resume /caps /last /quit
 """
 from __future__ import annotations
 
 import asyncio
 import signal
-import time
 from typing import Callable, Optional
 
 try:

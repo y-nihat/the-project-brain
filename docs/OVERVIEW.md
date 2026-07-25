@@ -129,8 +129,9 @@ refused rather than joined. Runs recorded before conversations existed are
 conversations that never happened.
 
 Under the hood both this REPL and the one-shot `python -m brain.main "<objective>"` run through the
-same `BrainSession`, so behavior is identical — the REPL just adds the live stream and reuses
-connections across turns (so follow-up objectives build on earlier ones via continuity).
+same `BrainSession`, so behavior is identical. Both attach the same live stream and the same
+15-second ticker; the REPL adds multi-turn state — it reuses connections across turns and keeps
+one conversation open, so a follow-up can refer to what an earlier turn produced.
 
 ## Interactive trace viewing (Arize Phoenix)
 
@@ -184,7 +185,10 @@ without losing exported traces. It runs resource-capped (1 GB / 1 CPU) like ever
 
 ## Status & roadmap
 
-- **Done (through engine 0.28.0):** sandbox + safety substrate; staged
+- **Done (through engine 0.31.0):** the conversation as a unit of record
+  (turn-numbered, resumable, isolated) and the analyze step's full output
+  range (a turn that needs no observation is answered directly, and the
+  referent a follow-up depends on is resolved rather than assumed); sandbox + safety substrate; staged
   workflows (single/map/reduce/review) with runtime fan-out; capability
   authoring→verify→promote with revalidation/quarantine and atomic promotion;
   evidence-grounded review; the lineage ledger + deterministic approval gates;

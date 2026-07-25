@@ -21,6 +21,7 @@ sandboxes and mark its running rows aborted.
 from __future__ import annotations
 
 import datetime as _dt
+import errno
 import os
 import sqlite3
 import uuid
@@ -55,18 +56,34 @@ class Liveness:
     def __init__(self, lock_dir: str | Path, conversation_id: str):
         self.path = Path(lock_dir) / f"{conversation_id}{LOCK_SUFFIX}"
         self._fh = None
+        self.contended = False      # False + not held => the lock dir is unusable
         try:
             self.path.parent.mkdir(parents=True, exist_ok=True)
-            fh = open(self.path, "w")
+            # 'a+', not 'w': a failed acquisition must not truncate the pid the
+            # actual holder recorded.
+            fh = open(self.path, "a+")
+        except OSError:
+            self._fh = None
+            return
+        try:
             if fcntl is not None:
                 fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError as e:
+            # Held by someone else — the only case that means "contended".
+            # An unwritable directory took the branch above, and reporting it
+            # as "another live session holds this" was confident and wrong.
+            self.contended = e.errno in (errno.EACCES, errno.EAGAIN, errno.EWOULDBLOCK)
+            fh.close()
+            self._fh = None
+            return
+        try:
+            fh.seek(0)
+            fh.truncate()
             fh.write(f"{os.getpid()}\n")
             fh.flush()
-            self._fh = fh
         except OSError:
-            # Someone else holds it, or the directory is unwritable. Neither is
-            # fatal: we lose the isolation guarantee, not the conversation.
-            self._fh = None
+            pass
+        self._fh = fh
 
     @property
     def held(self) -> bool:

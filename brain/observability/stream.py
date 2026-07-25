@@ -26,7 +26,10 @@ ENGINE_EMISSIONS = frozenset({"emit_plan", "emit_decision", "emit_analysis"})
 # Why a sandbox container ran. A judging run's nonzero exit is often the
 # PASSING outcome, so its raw exit code must not be reported as if an agent's
 # tool call had failed; the verify/revalidate lines carry the verdict instead.
-_JUDGING_PURPOSES = frozenset({"probe", "verify", "revalidate"})
+# "revalidate" is deliberately absent: revalidation runs its containers through
+# _fabrication_probes, which tags them "probe". A value nothing emits reads as
+# coverage that does not exist.
+_JUDGING_PURPOSES = frozenset({"probe", "verify"})
 
 
 def _plan_commitment(stages: list, known: list) -> str:

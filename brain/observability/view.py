@@ -363,18 +363,23 @@ def render_stats(db_path: str | Path) -> str:
 
         # Is it improving? Only comparable at constant task difficulty, so the
         # table reports the mix per version and says nothing stronger.
+        # `answered` gets its own column. Folded into `other` beside
+        # failed/aborted/refused, under a heading that asks whether the engine
+        # is improving, the release that ADDED the cheap path would read as the
+        # release that regressed.
         out += ["## By engine version", "",
-                "| engine | runs | succeeded | unverified | other | spend |",
-                "| --- | ---: | ---: | ---: | ---: | ---: |"]
+                "| engine | runs | succeeded | answered | unverified | other | spend |",
+                "| --- | ---: | ---: | ---: | ---: | ---: | ---: |"]
         for r in conn.execute(
                 "SELECT substr(engine_version,1,instr(engine_version||'@','@')-1) ev, "
                 "       COUNT(*) n, "
-                "       SUM(status='succeeded') ok, SUM(status='unverified') unv, "
+                "       SUM(status='succeeded') ok, SUM(status='answered') ans, "
+                "       SUM(status='unverified') unv, "
                 "       COALESCE(SUM(cost_usd),0) spend "
                 "FROM runs WHERE engine_version IS NOT NULL GROUP BY ev ORDER BY ev"):
-            other = r["n"] - (r["ok"] or 0) - (r["unv"] or 0)
-            out.append(f"| {r['ev']} | {r['n']} | {r['ok'] or 0} | {r['unv'] or 0} "
-                       f"| {other} | ${r['spend']:,.2f} |")
+            other = r["n"] - (r["ok"] or 0) - (r["ans"] or 0) - (r["unv"] or 0)
+            out.append(f"| {r['ev']} | {r['n']} | {r['ok'] or 0} | {r['ans'] or 0} "
+                       f"| {r['unv'] or 0} | {other} | ${r['spend']:,.2f} |")
         out += ["", "_Task difficulty is not constant across versions; read this as a mix, "
                     "not a trend._", ""]
 

@@ -5,6 +5,66 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
 [Semantic Versioning](https://semver.org/) — `0.x` while the core algorithm
 and behavior are still expected to change between releases.
 
+## [0.31.1] — 2026-07-25
+
+The sixteen follow-ups a ship review left on the table. None was a blocker;
+several were the same class of defect as the blockers, one step further out.
+
+### Fixed
+- **The goal banner reaches ANSWER.md masked.** It carries the judge model's
+  diagnosis and next step verbatim and was written one function away from the
+  scrub the previous release added — which made that release's own claim
+  ("every other answer the engine writes goes through scrub_text") overclaim in
+  the permanent record.
+- **A disabled analyze step is distinguishable from one that always escalates.**
+  `ANALYST_ENABLED=0` returned a fail-open verdict and recorded nothing, so the
+  trace could not tell "never fired" from "fired and escalated" — the entire
+  purpose of the flag it was setting.
+- **`answered` has its own column in the corpus statistics.** Folded into
+  `other` beside failed/aborted/refused, under a heading that asks whether the
+  engine is improving, the release that ADDED the cheap path read as the
+  release that regressed.
+- **An unwritable lock directory is no longer reported as contention.** It took
+  the same branch as a held lock and produced the confident and wrong
+  "<id> is held by another live session". The lock file also opens `a+` rather
+  than `w`, so a failed acquisition stops truncating the real holder's pid.
+- **The container ledger write retries.** It runs AFTER the container exists, so
+  a lost write leaves a real container running that `find_leaks` cannot see —
+  the run then reports clean while consuming CPU and memory.
+- **Schema migration survives a race.** Check-then-ALTER is not atomic: on the
+  first run after an upgrade two processes both see the column missing and the
+  loser used to crash out of `Tracer.__init__`.
+- **`--resume` works through `scripts/brain-chat.sh`.** The launcher the README
+  recommends accepted the documented flag and dropped it, starting a fresh
+  conversation without comment.
+- **The one-shot CLI prints the conversation id.** The record is only "enough to
+  continue later" if the user is handed the handle; only the REPL printed one.
+- **The two conversation windows agree.** The analyze step resolved referents
+  over six turns while the planner block rendered four, so a referent five or
+  six turns back arrived as "turn ?" with a blank objective. One constant now.
+- **`revalidate` is gone from the judging-purpose set** — no call site ever
+  emitted it, and a value nothing emits reads as coverage that does not exist.
+- Docstrings that overstated what the referent fixed now match the code (the
+  lexical-history path can still pick a prior run on its own; what ended is the
+  previous turn having standing it did not earn), the README's median is the
+  midpoint ($1.13, not $1.16), and `docs/OVERVIEW.md`, `docs/GENERALITY_AUDIT.md`
+  and the REPL's own header are current.
+
+### Tests
+- Four that could not fail, or failed for the wrong reason: the repair-seed
+  assertion read the retry rather than the repair; a collapsed hedge whose right
+  operand implied its left; an unfalsifiable check for a string in a code
+  comment, replaced by the boundary behaviour it was describing; and the
+  engine-emission pin, which matched only `emit_*` names and resolved the
+  package path against the cwd — it now identifies an emission by what its body
+  does and forces every captured tool to be classified.
+
+### Verified live
+- The referent chain, end to end, for the first time: a follow-up naming an
+  artifact the previous turn produced resolved to that run, its workspace was
+  seeded under `prior/`, and the turn built on it — 1 container, 0 leaks, $0.21.
+  Every earlier trial showed only that continuity is never WRONGLY seeded.
+
 ## [0.31.0] — 2026-07-25
 
 What a waiting person is told, and three holes a five-role ship review found in

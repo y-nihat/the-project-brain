@@ -44,8 +44,17 @@ _MIGRATIONS = {"peak_mem_mb": "REAL", "oom": "INTEGER", "conversation": "TEXT"}
 def _migrate(conn: sqlite3.Connection, table: str, columns: dict[str, str]) -> None:
     have = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
     for name, decl in columns.items():
-        if name not in have:
+        if name in have:
+            continue
+        try:
             conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {decl}")
+        except sqlite3.OperationalError as e:
+            # Check-then-ALTER is not atomic: on the FIRST run after an upgrade
+            # two processes can both see the column missing, and the loser used
+            # to crash out of __init__ with 'duplicate column name'. Losing the
+            # race means the column exists, which is the desired state.
+            if "duplicate column" not in str(e).lower():
+                raise
 
 
 def _utcnow() -> str:
@@ -75,27 +84,35 @@ class Ledger:
         conversation: Optional[str] = None,
     ) -> None:
         cmd = command if isinstance(command, str) else json.dumps(command)
-        with self._lock, self._conn:
-            self._conn.execute(
-                "INSERT OR REPLACE INTO containers "
-                "(id, session, conversation, capability, image, command, mem, cpus, pids, "
-                " network, ttl, status, started_at) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?,?, 'running', ?)",
-                (
-                    id,
-                    session,
-                    conversation,
-                    capability,
-                    image,
-                    cmd,
-                    policy.mem,
-                    policy.cpus,
-                    policy.pids,
-                    policy.network,
-                    policy.ttl_seconds,
-                    _utcnow(),
-                ),
-            )
+        # This row is written AFTER the container exists. A write that fails
+        # here leaves a real container running that the ledger never recorded —
+        # invisible to find_leaks, so the run reports clean while consuming
+        # CPU and memory. Retry rather than accept that.
+        self._with_retry(
+            "INSERT OR REPLACE INTO containers "
+            "(id, session, conversation, capability, image, command, mem, cpus, pids, "
+            " network, ttl, status, started_at) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?, 'running', ?)",
+            (
+                id, session, conversation, capability, image, cmd,
+                policy.mem, policy.cpus, policy.pids, policy.network,
+                policy.ttl_seconds, _utcnow(),
+            ),
+        )
+
+    def _with_retry(self, sql: str, params: tuple, attempts: int = 4) -> None:
+        """Execute a write that must not be lost, riding out a transient lock."""
+        import time as _time
+
+        for attempt in range(attempts):
+            try:
+                with self._lock, self._conn:
+                    self._conn.execute(sql, params)
+                return
+            except sqlite3.OperationalError:
+                if attempt == attempts - 1:
+                    raise
+                _time.sleep(0.25 * (attempt + 1))
 
     def record_finish(
         self,

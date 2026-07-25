@@ -68,6 +68,10 @@ async def _amain(objective: str, quiet: bool = False) -> int:
         if cost := _cost_line(summary.run_id):
             print(cost)
         print(f"[trace]      python -m brain.observability show {summary.run_id}")
+        # The record is only "enough to continue later" if the user is given
+        # the handle. The REPL prints it at startup; this path printed nothing.
+        print(f"[conversation] {session.conversation_id}  "
+              f"(continue it: python -m brain.repl --resume {session.conversation_id})")
         # 'answered' is a completed turn that required nothing to be observed —
         # a success, and deliberately not the same word as one that was checked
         # against something a tool retained.

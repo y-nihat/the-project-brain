@@ -35,13 +35,38 @@ def test_engine_emissions_are_not_rendered_as_tool_calls():
 def test_the_emission_list_matches_what_the_engine_actually_defines():
     """A new structured emission must not silently start printing raw. This
     pins the list against the @tool declarations in the engine itself."""
-    # Declared either as a decorator or by applying tool(...) to a built body.
-    defined = set()
-    for path in Path("brain").rglob("*.py"):
-        defined |= set(re.findall(r'\btool\(\s*"(emit_[a-z_]+)"', path.read_text()))
-    assert defined, "no structured-emission tools found — the scan is broken"
-    assert defined == set(ENGINE_EMISSIONS), (
-        f"engine defines {sorted(defined)}, stream suppresses {sorted(ENGINE_EMISSIONS)}")
+    # Rooted at the PACKAGE, not at the cwd — the old scan silently found
+    # nothing when pytest ran from anywhere else. And it identifies an engine
+    # emission by what its BODY does — capture the call instead of performing
+    # work — rather than by a name starting with emit_, so an emission called
+    # something else cannot escape the pin and start printing raw JSON before
+    # its own verdict line.
+    import brain
+
+    root = Path(brain.__file__).parent
+    captured_tools = set()
+    for path in root.rglob("*.py"):
+        text = path.read_text()
+        for m in re.finditer(r'\btool\(\s*"([a-z_]+)"', text):
+            body = text[m.end():m.end() + 900]
+            # Either the body captures directly, or a factory is handed the
+            # capture dict at the registration site (emit_plan's shape).
+            if re.search(r"\bcaptured\b", body):
+                captured_tools.add(m.group(1))
+    assert captured_tools, "no captured engine emissions found — the scan is broken"
+    # A captured tool is either SUPPRESSED (the stream already says what it
+    # decided, on a dedicated line) or deliberately RENDERED. `submit_tool` and
+    # `submit_build` are the developer agent submitting its work: a waiting
+    # person wants to see those, and no other line reports them. Anything new
+    # fails here until someone decides which it is — which is the guard.
+    rendered_on_purpose = {"submit_tool", "submit_build"}
+    unclassified = captured_tools - set(ENGINE_EMISSIONS) - rendered_on_purpose
+    assert not unclassified, (
+        f"{sorted(unclassified)} capture their call like an engine emission but "
+        "are neither suppressed nor listed as deliberately rendered")
+    assert set(ENGINE_EMISSIONS) <= captured_tools, (
+        f"{sorted(set(ENGINE_EMISSIONS) - captured_tools)} are suppressed but no "
+        "longer exist in the engine")
 
 
 # --------------------------------------------------------------------------- #
@@ -51,7 +76,7 @@ def test_a_container_the_engine_ran_to_judge_a_tool_is_not_reported_as_a_failure
     """Observed live: `ran web_search exit=2` followed by `reuse tool:
     web_search` — which reads as a broken tool being used anyway. Exit 2 was
     the fabrication probe REFUSING, i.e. the passing outcome."""
-    for purpose in ("probe", "verify", "revalidate"):
+    for purpose in ("probe", "verify"):
         assert format_event({"kind": "sandbox.run", "name": "web_search", "phase": "end",
                              "status": "ok",
                              "data": {"exit_code": 2, "purpose": purpose}}) is None

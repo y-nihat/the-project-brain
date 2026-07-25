@@ -129,15 +129,29 @@ def test_an_unmarked_multi_segment_token_is_stated_not_swallowed(tmp_path, monke
     assert marked == ["archive.tar.gz"] and guessed == []
 
 
-def test_the_residual_limit_is_stated_not_hidden():
+def test_the_residual_limit_is_demonstrated_not_asserted(tmp_path, monkeypatch):
     """A bare TWO-segment host with no scheme is still indistinguishable from a
-    filename by shape alone. Separating those needs a public-suffix list — a
-    moving external dataset this engine should not carry — so the limit is
-    recorded here rather than quietly assumed away."""
-    from brain import files as files_mod
+    filename by shape alone — separating those needs a public-suffix list, a
+    moving external dataset this engine should not carry.
 
-    assert "public-suffix" in files_mod.resolve_local_sources.__doc__ or \
-        "public-suffix" in open(files_mod.__file__, encoding="utf-8").read()
+    Demonstrated, not claimed: this asserts the CURRENT behaviour at the
+    boundary, so the day someone closes the gap the test says so instead of
+    passing on a code comment. (It replaces a check for the string
+    'public-suffix' in the module text, which was unfalsifiable — and was added
+    in a series whose two preceding commits deleted source-inspection tests for
+    exactly that reason.)
+    """
+    from brain import config, files as files_mod
+
+    monkeypatch.setattr(config, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(config, "INBOX_DIR", tmp_path / "inbox")
+
+    # Two segments: still read as a filename, and still asked about.
+    _t, _r, unresolved, guessed = files_mod.resolve_local_sources("deploy to kelvane.com")
+    assert unresolved == ["kelvane.com"] and guessed == []
+    # Three: reported as a guess, and nobody is interrogated.
+    _t, _r, unresolved, guessed = files_mod.resolve_local_sources("deploy to shop.kelvane.com")
+    assert unresolved == [] and guessed == ["shop.kelvane.com"]
 
 
 def test_a_bare_filename_that_exists_is_still_picked_up(tmp_path, monkeypatch):

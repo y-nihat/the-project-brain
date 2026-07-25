@@ -21,7 +21,10 @@ by POSITION: does a stated requirement of this turn depend on an artifact only a
 previous turn produced? Continuity used to mean "the previous run of this
 process", unconditionally — so a turn that changed the subject still inherited
 the last deliverable as evidence about its own topic. Now the referent is
-resolved, not assumed, and a turn that refers to nothing inherits nothing.
+resolved, not assumed: POSITION no longer seeds anything, and the previous turn
+has no standing it did not earn. (A relevance-picked prior run can still be
+seeded by the separate lexical-history path; what changed is that being
+previous is no longer a reason.)
 
 Neither judgment ever inspects the SHAPE of the input. There is no greeting
 test, no length test, no keyword list. "Hello" and "prove this file is
@@ -138,7 +141,13 @@ def coerce(raw: dict, known_runs: Optional[set] = None) -> Analysis:
     return a
 
 
-def conversation_block(turns: list[dict], max_turns: int = 6) -> str:
+# How many earlier turns are in view. ONE definition: the analyze step resolves
+# referents over this window and the planner block renders the same one, so a
+# referent can never be resolved from a turn the planner is not shown.
+CONVERSATION_WINDOW = 6
+
+
+def conversation_block(turns: list[dict], max_turns: int = CONVERSATION_WINDOW) -> str:
     """Earlier turns, as the material for referent resolution.
 
     Deliberately thin: what was asked, how it ended, what it left behind. The
@@ -170,7 +179,15 @@ class Analyst:
     async def analyze(self, objective: str, *, turns: Optional[list[dict]] = None,
                       attached: Optional[list[str]] = None) -> Analysis:
         if not config.ANALYST_ENABLED:
-            return Analysis(reason="analysis step disabled", fell_open=True)
+            a = Analysis(reason="analysis step disabled", fell_open=True)
+            # Recorded, so a step that never fires is distinguishable in the
+            # trace from one that fires and always escalates. That distinction
+            # is the whole point of fell_open, which was otherwise written and
+            # never read outside tests.
+            self.tracer.event("analysis.verdict", "analyze", status="info",
+                              resolution=a.resolution, reason=a.reason,
+                              decided_by="engine")
+            return a
         # Files the user attached ARE things that must be observed, and they are
         # a FACT the engine already holds — no judgment needed, and none that
         # could be talked out of it.

@@ -130,7 +130,7 @@ def test_insufficient_stage_enters_recovery(tmp_path, monkeypatch):
         answer = asyncio.run(orch.run("compute the thing"))
     finally:
         bb.close()
-    assert "analyze2" in answer or "result(analyze2)" in answer
+    assert "result(analyze2)" in answer
     assert "crunch" in orch._suppressed_caps
     assert "stage.failed" in tracer.kinds()
     failed = [d for k, s, _st, d in tracer.events if k == "stage.failed"]

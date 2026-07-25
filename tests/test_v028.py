@@ -367,6 +367,8 @@ def test_one_shot_cli_streams_the_run_and_reports_cost(tmp_path, monkeypatch, ca
     seen: list = []
 
     class _Session:
+        conversation_id = "conv-test"
+
         def add_listener(self, fn):
             seen.append(fn)
 

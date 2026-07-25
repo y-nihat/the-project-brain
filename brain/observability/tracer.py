@@ -80,8 +80,17 @@ CREATE INDEX IF NOT EXISTS idx_runs_conversation ON runs(conversation_id, starte
 def _migrate(conn: sqlite3.Connection, table: str, columns: dict[str, str]) -> None:
     have = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
     for name, decl in columns.items():
-        if name not in have:
+        if name in have:
+            continue
+        try:
             conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {decl}")
+        except sqlite3.OperationalError as e:
+            # Check-then-ALTER is not atomic: on the FIRST run after an upgrade
+            # two processes can both see the column missing, and the loser used
+            # to crash out of __init__ with 'duplicate column name'. Losing the
+            # race means the column exists, which is the desired state.
+            if "duplicate column" not in str(e).lower():
+                raise
 
 
 def _utcnow() -> str:
