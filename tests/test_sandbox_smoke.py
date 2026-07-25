@@ -11,24 +11,13 @@ import docker
 import pytest
 
 from brain import config
+from tests._sandbox import SANDBOX_READY, SANDBOX_SKIP_REASON
 from brain.ledger import Ledger
 from brain.sandbox import policy
 from brain.sandbox.manager import SandboxManager
 
 SESSION = "phase0-smoke"
-
-
-def _docker_available() -> bool:
-    try:
-        client = docker.DockerClient(base_url=config.DOCKER_HOST) if config.DOCKER_HOST else docker.from_env()
-        client.ping()
-        client.close()
-        return True
-    except Exception:
-        return False
-
-
-pytestmark = pytest.mark.skipif(not _docker_available(), reason="Docker daemon not reachable")
+pytestmark = pytest.mark.skipif(not SANDBOX_READY, reason=SANDBOX_SKIP_REASON)
 
 
 def test_locked_down_sandbox_roundtrip(tmp_path):

@@ -12,24 +12,13 @@ from brain.capabilities import health
 from brain.capabilities.health import HealthMonitor
 from brain.ledger import Ledger
 from brain.registry import Registry
+from tests._sandbox import SANDBOX_READY, SANDBOX_SKIP_REASON
 
 try:
     import docker
 except Exception:  # noqa: BLE001
     docker = None
-
-
-def _docker_available() -> bool:
-    if docker is None:
-        return False
-    try:
-        c = docker.DockerClient(base_url=config.DOCKER_HOST) if config.DOCKER_HOST else docker.from_env()
-        c.ping(); c.close(); return True
-    except Exception:  # noqa: BLE001
-        return False
-
-
-DOCKER = _docker_available()
+DOCKER = SANDBOX_READY
 
 
 # --- classification -------------------------------------------------------- #
@@ -74,7 +63,7 @@ def test_monitor_budget():
 
 
 # --- repair (Docker, stub developer) --------------------------------------- #
-@pytest.mark.skipif(not DOCKER, reason="Docker daemon not reachable")
+@pytest.mark.skipif(not DOCKER, reason=SANDBOX_SKIP_REASON)
 def test_repair_capability_reauthors_from_seed(tmp_path):
     from brain.observability import Tracer
     from brain.sandbox.manager import SandboxManager

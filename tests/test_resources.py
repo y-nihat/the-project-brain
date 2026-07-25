@@ -11,6 +11,7 @@ import sqlite3
 import pytest
 
 from brain import config
+from tests._sandbox import SANDBOX_READY, SANDBOX_SKIP_REASON
 from brain.ledger import Ledger
 from brain.models import Capability
 from brain.registry import Registry
@@ -20,21 +21,7 @@ try:
     import docker
 except Exception:  # noqa: BLE001
     docker = None
-
-
-def _docker_available() -> bool:
-    if docker is None:
-        return False
-    try:
-        client = docker.DockerClient(base_url=config.DOCKER_HOST) if config.DOCKER_HOST else docker.from_env()
-        client.ping()
-        client.close()
-        return True
-    except Exception:  # noqa: BLE001
-        return False
-
-
-DOCKER = _docker_available()
+DOCKER = SANDBOX_READY
 
 
 # --- pure: policy ----------------------------------------------------------- #
@@ -121,7 +108,7 @@ def test_ledger_migrates_and_records_oom_peak(tmp_path):
 
 
 # --- docker: OOM detection + declared resources ----------------------------- #
-@pytest.mark.skipif(not DOCKER, reason="Docker daemon not reachable")
+@pytest.mark.skipif(not DOCKER, reason=SANDBOX_SKIP_REASON)
 def test_oom_is_detected_and_declared_memory_fixes_it(tmp_path):
     from brain.sandbox.manager import SandboxManager
 
@@ -159,7 +146,7 @@ def test_oom_is_detected_and_declared_memory_fixes_it(tmp_path):
         ledger.close()
 
 
-@pytest.mark.skipif(not DOCKER, reason="Docker daemon not reachable")
+@pytest.mark.skipif(not DOCKER, reason=SANDBOX_SKIP_REASON)
 def test_peak_memory_is_recorded(tmp_path):
     from brain.sandbox.manager import SandboxManager
 

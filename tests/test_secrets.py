@@ -14,24 +14,13 @@ from brain import acquisition, config
 from brain.approval import ApprovalBroker
 from brain.models import REUSE, Capability, Decision, StageSpec
 from brain.registry import Registry
+from tests._sandbox import SANDBOX_READY, SANDBOX_SKIP_REASON
 
 try:
     import docker
 except Exception:  # noqa: BLE001
     docker = None
-
-
-def _docker_available() -> bool:
-    if docker is None:
-        return False
-    try:
-        c = docker.DockerClient(base_url=config.DOCKER_HOST) if config.DOCKER_HOST else docker.from_env()
-        c.ping(); c.close(); return True
-    except Exception:  # noqa: BLE001
-        return False
-
-
-DOCKER = _docker_available()
+DOCKER = SANDBOX_READY
 
 
 # --- broker ------------------------------------------------------------------ #
@@ -243,7 +232,7 @@ def test_verify_rejects_error_payload_even_with_extra_keys():
 
 
 # --- Docker: author a credentialed tool end-to-end ---------------------------- #
-@pytest.mark.skipif(not DOCKER, reason="Docker daemon not reachable")
+@pytest.mark.skipif(not DOCKER, reason=SANDBOX_SKIP_REASON)
 def test_author_credentialed_tool_collects_and_verifies_with_secret(tmp_path):
     from brain.ledger import Ledger
     from brain.observability import Tracer

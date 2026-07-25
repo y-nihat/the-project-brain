@@ -18,26 +18,13 @@ from brain.ledger import Ledger
 from brain.models import CREATE, NOOP, REUSE, StageSpec
 from brain.registry import Registry
 from brain.resolver import Resolver
+from tests._sandbox import SANDBOX_READY, SANDBOX_SKIP_REASON
 
 try:
     import docker
 except Exception:  # noqa: BLE001
     docker = None
-
-
-def _docker_available() -> bool:
-    if docker is None:
-        return False
-    try:
-        client = docker.DockerClient(base_url=config.DOCKER_HOST) if config.DOCKER_HOST else docker.from_env()
-        client.ping()
-        client.close()
-        return True
-    except Exception:  # noqa: BLE001
-        return False
-
-
-DOCKER = _docker_available()
+DOCKER = SANDBOX_READY
 TOKEN = bool(os.environ.get("CLAUDE_CODE_OAUTH_TOKEN")) and not os.environ.get("ANTHROPIC_API_KEY")
 
 
@@ -93,7 +80,7 @@ def test_approval_gate_fires_when_tool_needs_credential(tmp_path):
         reg.close()
 
 
-@pytest.mark.skipif(not DOCKER, reason="Docker daemon not reachable")
+@pytest.mark.skipif(not DOCKER, reason=SANDBOX_SKIP_REASON)
 def test_author_novel_tool_at_runtime(tmp_path):
     """The brain authors a NOVEL tool at runtime (developer writes Python) -> build
     -> generic verify -> promote, with the script captured under the run."""
@@ -139,7 +126,7 @@ def test_author_novel_tool_at_runtime(tmp_path):
         tracer.close()
 
 
-@pytest.mark.skipif(not DOCKER, reason="Docker daemon not reachable")
+@pytest.mark.skipif(not DOCKER, reason=SANDBOX_SKIP_REASON)
 def test_author_file_consuming_tool(tmp_path):
     """The brain authors a tool that reads files from /work/in and is verified with
     sample_files (the file-handling authoring path)."""
@@ -194,7 +181,7 @@ def test_author_file_consuming_tool(tmp_path):
 
 
 # --- needs Docker: build + verify + promote (free path, no model) ---------- #
-@pytest.mark.skipif(not DOCKER, reason="Docker daemon not reachable")
+@pytest.mark.skipif(not DOCKER, reason=SANDBOX_SKIP_REASON)
 def test_acquire_verify_promote_web_search(tmp_path):
     import json
     import sqlite3
@@ -242,7 +229,7 @@ def test_acquire_verify_promote_web_search(tmp_path):
 
 
 # --- needs Docker + OAuth token: full slice via orchestrator --------------- #
-@pytest.mark.skipif(not (DOCKER and TOKEN), reason="needs Docker + CLAUDE_CODE_OAUTH_TOKEN")
+@pytest.mark.skipif(not (DOCKER and TOKEN), reason=SANDBOX_SKIP_REASON or "needs CLAUDE_CODE_OAUTH_TOKEN")
 def test_m1_end_to_end(tmp_path):
     from brain.memory.blackboard import Blackboard
     from brain.orchestrator import Orchestrator

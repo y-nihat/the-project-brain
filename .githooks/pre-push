@@ -11,8 +11,12 @@
 # cleanly by design, and finish in well under ten seconds. That is affordable
 # on every push; a CI bill and a YAML file are not yet earned.
 #
-# Docker-dependent tests SKIP rather than fail when no daemon is reachable, so
-# this gate is honest about what it did and did not cover.
+# Docker-dependent tests SKIP rather than fail when this machine cannot BUILD a
+# sandbox image, so this gate is honest about what it did and did not cover.
+# They gate on that capability, not on whether a daemon answers a ping: the two
+# come apart (a reachable daemon whose image store cannot exec), and the ping
+# version of the question blocked a healthy push with seven environment
+# failures. See tests/_sandbox.py.
 #
 # Escape hatch for a genuine emergency:  git push --no-verify
 

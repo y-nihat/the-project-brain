@@ -88,10 +88,10 @@ DC="docker compose -f docker/docker-compose.yml --env-file .env"
 $DC exec brain python -m pytest tests/            # 513 tests
 ```
 
-On the host the suite still runs, but the Docker-gated tests skip when no daemon
-is reachable — and, more confusingly, *fail* when one is: they build sandbox
-images against a toolchain the host does not have. Inside the container they
-pass. Run them there.
+On the host the suite still runs; the 11 sandbox tests skip and say why. They gate
+on whether this machine can actually **build** a sandbox image, not on whether a
+daemon answers — the two come apart, and asking the wrong question turned a
+healthy push into seven red tests.
 
 `CONTRIBUTING.md` has the git workflow and — read first — the architectural invariant every change
 must preserve. `docs/RATIONALE.md` maps each subsystem to the release entries that explain why it

@@ -15,26 +15,13 @@ from brain.approval import ApprovalBroker
 from brain.acquisition import _error_tail
 from brain.ledger import Ledger
 from brain.registry import Registry
+from tests._sandbox import SANDBOX_READY, SANDBOX_SKIP_REASON
 
 try:
     import docker
 except Exception:  # noqa: BLE001
     docker = None
-
-
-def _docker_available() -> bool:
-    if docker is None:
-        return False
-    try:
-        client = docker.DockerClient(base_url=config.DOCKER_HOST) if config.DOCKER_HOST else docker.from_env()
-        client.ping()
-        client.close()
-        return True
-    except Exception:  # noqa: BLE001
-        return False
-
-
-DOCKER = _docker_available()
+DOCKER = SANDBOX_READY
 
 
 def test_error_tail_keeps_the_end():
@@ -46,7 +33,7 @@ def test_error_tail_keeps_the_end():
     assert _error_tail("short", 100) == "short"
 
 
-@pytest.mark.skipif(not DOCKER, reason="Docker daemon not reachable")
+@pytest.mark.skipif(not DOCKER, reason=SANDBOX_SKIP_REASON)
 def test_repair_receives_pip_error_tail_and_previous_dockerfile(tmp_path):
     """Attempt 1 has a Dockerfile with a nonexistent pip package -> build fails.
     The 2nd developer call must receive (a) the actual pip ERROR line and (b) the
