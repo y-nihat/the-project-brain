@@ -411,3 +411,87 @@ def test_cost_line_is_fail_open(tmp_path, monkeypatch):
 
     monkeypatch.setattr(config, "DB_PATH", tmp_path / "nonexistent.db")
     assert main_mod._cost_line("run-x") == ""
+
+
+# --- interrupted runs must still be accounted for --------------------------------- #
+def _seed_run(tracer, run_id_holder, cost=1.5, tokens=(100, 20)):
+    run = tracer.start_run("do a thing")
+    run_id_holder.append(run.run_id)
+    tracer.event("agent.finished", "stage", status="ok",
+                 cost_usd=cost, tokens_in=tokens[0], tokens_out=tokens[1])
+    tracer.event("sandbox.run", "cap", status="ok")
+    return run
+
+
+def test_a_killed_run_keeps_its_accounting(tmp_path):
+    """7 of 8 aborted runs in the corpus carry NULL cost, tokens, duration and
+    event counts — while 59 to 722 of their events sit on disk. `finish()`
+    rolled up; `abort_stale_runs()` (the janitor path a killed process takes)
+    only stamped a status. Interrupted runs are the EXPENSIVE tail — the
+    operator kills what drags on — so every cost view understated the truth
+    exactly where it mattered. Recovering the real corpus finds $68.17, +32%
+    on the reported total, and the true worst run is $17.30, not $10.74."""
+    from brain.observability.tracer import Tracer
+
+    tracer = Tracer(db_path=tmp_path / "t.db", runs_dir=tmp_path / "runs")
+    ids: list = []
+    try:
+        _seed_run(tracer, ids, cost=2.25, tokens=(500, 40))       # left 'running'
+        assert tracer.abort_stale_runs() == 1
+        row = tracer._conn.execute(
+            "SELECT status, cost_usd, tokens_in, n_events, n_containers, duration_ms, "
+            "       finished_at FROM runs WHERE run_id=?", (ids[0],)).fetchone()
+    finally:
+        tracer.close()
+
+    assert row["status"] == "aborted"
+    assert row["cost_usd"] == 2.25, "spend recovered from the events on disk"
+    assert row["tokens_in"] == 500
+    assert row["n_events"] >= 2 and row["n_containers"] == 1
+    assert row["duration_ms"] is not None
+    assert row["finished_at"], "finish time comes from the last event, not a later clock"
+
+
+def test_backfill_repairs_history_and_is_idempotent(tmp_path):
+    """The events were always on disk; only the summary was missing."""
+    from brain.observability.tracer import Tracer
+
+    tracer = Tracer(db_path=tmp_path / "t.db", runs_dir=tmp_path / "runs")
+    ids: list = []
+    try:
+        _seed_run(tracer, ids, cost=3.5)
+        # Simulate the historical shape: finished, but never rolled up.
+        tracer._conn.execute(
+            "UPDATE runs SET status='aborted', cost_usd=NULL, tokens_in=NULL, "
+            "n_events=NULL, duration_ms=NULL WHERE run_id=?", (ids[0],))
+        tracer._conn.commit()
+
+        assert tracer.backfill_rollups() == 1
+        cost = tracer._conn.execute(
+            "SELECT cost_usd FROM runs WHERE run_id=?", (ids[0],)).fetchone()[0]
+        assert cost == 3.5
+        assert tracer.backfill_rollups() == 0, "idempotent: nothing left to repair"
+    finally:
+        tracer.close()
+
+
+def test_stats_reports_the_outcome_mix_and_reuse(tmp_path):
+    """Every number here was computable from day one and none was ever asked."""
+    from brain.observability.tracer import Tracer
+    from brain.observability.view import render_stats
+
+    tracer = Tracer(db_path=tmp_path / "t.db", runs_dir=tmp_path / "runs")
+    ids: list = []
+    try:
+        run = _seed_run(tracer, ids, cost=1.0)
+        tracer.event("decision", "resolver", status="info",
+                     choice="reuse", capability="write_markdown_file")
+        tracer.event("decision", "resolver", status="info", choice="author")
+        run.finish("unverified", outcome="not certified")
+        text = render_stats(tmp_path / "t.db")
+    finally:
+        tracer.close()
+
+    assert "unverified" in text and "$1.00" in text
+    assert "1 reuse vs 1 author decisions (50% reuse)" in text
+    assert "write_markdown_file" in text

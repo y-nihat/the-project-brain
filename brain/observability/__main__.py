@@ -1,4 +1,5 @@
-"""CLI: python -m brain.observability list | show <run_id|--last> | follow <run_id>"""
+"""CLI: python -m brain.observability list | show <run_id|--last> | follow <run_id>
+        | stats | backfill"""
 from __future__ import annotations
 
 import argparse
@@ -41,6 +42,12 @@ def main(argv: list[str] | None = None) -> int:
     p_show.add_argument("run_id", nargs="?")
     p_show.add_argument("--last", action="store_true", help="show the most recent run")
 
+    sub.add_parser("stats", help="corpus statistics: outcome mix, spend, capability reuse")
+
+    sub.add_parser(
+        "backfill",
+        help="recompute accounting for finished runs whose totals were never written")
+
     p_follow = sub.add_parser("follow", help="tail a run's live event stream")
     p_follow.add_argument("run_id")
 
@@ -69,6 +76,22 @@ def main(argv: list[str] | None = None) -> int:
                 print("(no runs recorded yet)")
                 return 1
         print(view.render_run(db, run_id))
+        return 0
+
+    if args.cmd == "stats":
+        print(view.render_stats(db))
+        return 0
+
+    if args.cmd == "backfill":
+        from .tracer import Tracer
+
+        tracer = Tracer(db_path=db, runs_dir=config.RUNS_DIR)
+        try:
+            n = tracer.backfill_rollups()
+        finally:
+            tracer.close()
+        print(f"recomputed accounting for {n} run(s) from their recorded events."
+              if n else "every finished run already has accounting.")
         return 0
 
     if args.cmd == "follow":

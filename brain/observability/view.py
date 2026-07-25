@@ -219,3 +219,93 @@ def render_run(db_path: str | Path, run_id: str) -> str:
     out.append("")
     out.append(f"*(full per-agent outputs: `runs/{run['run_id']}/outputs/`)*")
     return "\n".join(out)
+
+
+def render_stats(db_path: str | Path) -> str:
+    """Corpus-level answers to the questions the run rows already hold.
+
+    Every number below was computable from day one and none was ever asked:
+    the outcome mix, what each outcome COSTS, whether the engine is improving
+    across versions, and which capabilities the library actually reuses. A
+    growing reuse count is the product's central claim; a flat one is the
+    signal to stop adding tools and fix reuse.
+    """
+    conn = _connect(db_path)
+    try:
+        out: list[str] = ["# Run statistics", ""]
+
+        rows = list(conn.execute(
+            "SELECT status, COUNT(*) n, COALESCE(SUM(cost_usd),0) spend, "
+            "       AVG(cost_usd) avg_cost, AVG(duration_ms)/60000.0 avg_min "
+            "FROM runs GROUP BY status ORDER BY spend DESC"))
+        total_runs = sum(r["n"] for r in rows)
+        total_spend = sum(r["spend"] for r in rows)
+        unaccounted = conn.execute(
+            "SELECT COUNT(*) FROM runs WHERE status != 'running' AND cost_usd IS NULL"
+        ).fetchone()[0]
+
+        out += [f"**{total_runs} runs · ${total_spend:,.2f} recorded spend**", ""]
+        if unaccounted:
+            out += [f"> {unaccounted} run(s) have NO accounting — their spend is missing from "
+                    f"every number here. Recover it with `python -m brain.observability "
+                    f"backfill`.", ""]
+        out += ["| outcome | runs | share | spend | share | avg cost | avg min |",
+                "| --- | ---: | ---: | ---: | ---: | ---: | ---: |"]
+        for r in rows:
+            out.append(
+                f"| {r['status']} | {r['n']} | {100 * r['n'] / max(1, total_runs):.0f}% "
+                f"| ${r['spend']:,.2f} | {100 * r['spend'] / max(1e-9, total_spend):.0f}% "
+                f"| ${(r['avg_cost'] or 0):.2f} | {(r['avg_min'] or 0):.1f} |")
+        out.append("")
+
+        # Is it improving? Only comparable at constant task difficulty, so the
+        # table reports the mix per version and says nothing stronger.
+        out += ["## By engine version", "",
+                "| engine | runs | succeeded | unverified | other | spend |",
+                "| --- | ---: | ---: | ---: | ---: | ---: |"]
+        for r in conn.execute(
+                "SELECT substr(engine_version,1,instr(engine_version||'@','@')-1) ev, "
+                "       COUNT(*) n, "
+                "       SUM(status='succeeded') ok, SUM(status='unverified') unv, "
+                "       COALESCE(SUM(cost_usd),0) spend "
+                "FROM runs WHERE engine_version IS NOT NULL GROUP BY ev ORDER BY ev"):
+            other = r["n"] - (r["ok"] or 0) - (r["unv"] or 0)
+            out.append(f"| {r['ev']} | {r['n']} | {r['ok'] or 0} | {r['unv'] or 0} "
+                       f"| {other} | ${r['spend']:,.2f} |")
+        out += ["", "_Task difficulty is not constant across versions; read this as a mix, "
+                    "not a trend._", ""]
+
+        # The central claim, measured.
+        out += ["## Capability reuse", ""]
+        reuse = list(conn.execute(
+            "SELECT json_extract(data_json,'$.capability') cap, COUNT(*) n, "
+            "       COUNT(DISTINCT run_id) runs "
+            "FROM events WHERE kind='decision' "
+            "  AND json_extract(data_json,'$.choice')='reuse' "
+            "GROUP BY cap ORDER BY n DESC"))
+        authored = conn.execute(
+            "SELECT COUNT(*) FROM events WHERE kind='decision' "
+            "  AND json_extract(data_json,'$.choice')='author'").fetchone()[0]
+        reused_total = sum(r["n"] for r in reuse)
+        if reused_total or authored:
+            share = 100 * reused_total / max(1, reused_total + authored)
+            out += [f"**{reused_total} reuse vs {authored} author decisions "
+                    f"({share:.0f}% reuse)**", "",
+                    "| capability | reuses | distinct runs |", "| --- | ---: | ---: |"]
+            out += [f"| {r['cap']} | {r['n']} | {r['runs']} |" for r in reuse[:15]]
+            try:
+                # The registry shares this database in production but is a
+                # separate component; a trace-only database has no such table.
+                never = conn.execute(
+                    "SELECT COUNT(*) FROM capabilities WHERE name NOT IN ("
+                    "  SELECT json_extract(data_json,'$.capability') FROM events "
+                    "  WHERE kind='decision' AND json_extract(data_json,'$.choice')='reuse')"
+                ).fetchone()[0]
+                out += ["", f"_{never} promoted capabilit(ies) have never been reused._", ""]
+            except sqlite3.Error:
+                out.append("")
+        else:
+            out += ["_(no resolve decisions recorded yet)_", ""]
+        return "\n".join(out)
+    finally:
+        conn.close()
