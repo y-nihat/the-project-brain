@@ -325,6 +325,27 @@ def inherit_records(run_dir: Path, seed_dir: Path, seed_id: str) -> int:
     return count
 
 
+UNCERTIFIED_MARK = "[uncertified]"
+
+
+def declares_uncertified(payload: bytes | str) -> bool:
+    """True when a payload states, in its own text, that it traces to nothing.
+
+    The engine writes that mark on any answer produced without observing
+    anything. Such a payload must never be recorded as a DESIGNATED source: it
+    would enter the ledger at target tier — the strongest claim the evidence
+    plane makes — on the strength of prose. Reading the artifact's own
+    declaration keeps the rule general: it holds for any future output that
+    ships uncertified, not for one status word.
+    """
+    if isinstance(payload, bytes):
+        try:
+            payload = payload.decode("utf-8", "ignore")
+        except Exception:  # noqa: BLE001
+            return False
+    return UNCERTIFIED_MARK in (payload or "")
+
+
 def record_designated(run_dir: Path, capability: str, files: list[str],
                       workspace: Optional[Path] = None,
                       state: str = "observed_present") -> None:

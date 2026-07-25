@@ -298,26 +298,26 @@ def test_designated_paths_resolve_or_flag_for_ask(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "INBOX_DIR", inbox)
 
     # Backticked inbox path resolves and is rewritten to the workspace path.
-    text, resolved, unresolved = files_mod.resolve_local_sources(
+    text, resolved, unresolved, _g = files_mod.resolve_local_sources(
         "Analyze the video (`data/inbox/clip.mp4`) frame by frame.")
     assert resolved == [str((inbox / "clip.mp4").resolve())]
     assert "input/clip.mp4" in text and "data/inbox/clip.mp4" not in text
     assert unresolved == []
     # Bare basename resolves against the inbox; project-relative path resolves too.
-    _t, r2, _u = files_mod.resolve_local_sources("process clip.mp4 and data/report.pdf")
+    _t, r2, _u, _g = files_mod.resolve_local_sources("process clip.mp4 and data/report.pdf")
     assert str((inbox / "clip.mp4").resolve()) in r2
     assert str((tmp_path / "data" / "report.pdf").resolve()) in r2
     # A designated file that does NOT resolve is flagged for the ask, not
     # silently dropped and not materialized.
-    _t3, r3, u3 = files_mod.resolve_local_sources("summarize `data/missing/gone.pdf`")
+    _t3, r3, u3, _g = files_mod.resolve_local_sources("summarize `data/missing/gone.pdf`")
     assert r3 == [] and u3 == ["data/missing/gone.pdf"]
     # Non-file tokens (counts, abbreviations, URLs) are never treated as files.
     for benign in ("write exactly 3.12 lines", "e.g. do the thing",
                    "see https://x.test/a.pdf now"):
-        _tt, rr, uu = files_mod.resolve_local_sources(benign)
+        _tt, rr, uu, _g = files_mod.resolve_local_sources(benign)
         assert rr == [] and uu == []
     # Already-rewritten workspace tokens are left alone.
-    _t4, r4, u4 = files_mod.resolve_local_sources("see input/clip.mp4")
+    _t4, r4, u4, _g = files_mod.resolve_local_sources("see input/clip.mp4")
     assert r4 == [] and u4 == []
 
 

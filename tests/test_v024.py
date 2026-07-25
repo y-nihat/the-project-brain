@@ -60,16 +60,16 @@ def test_deliverable_filenames_not_treated_as_missing_inputs():
     from brain.files import resolve_local_sources
     obj = ("Produce a submission.\n## Deliverables\n1. `submission.csv` - format.\n"
            "2. `method_report.md` - writeup.\n3. pipeline regenerating `submission.csv`.")
-    _, resolved, unresolved = resolve_local_sources(obj)
+    _, resolved, unresolved, _g = resolve_local_sources(obj)
     assert unresolved == [], unresolved   # all are deliverables, not inputs
 
 
 def test_real_missing_input_still_flagged():
     from brain.files import resolve_local_sources
-    _, _, u = resolve_local_sources("Analyze the attached data.csv and summarize.")
+    _, _, u, _g = resolve_local_sources("Analyze the attached data.csv and summarize.")
     assert "data.csv" in u
     # a verb far from the token (not its immediate object) => still an input
-    _, _, u2 = resolve_local_sources("Produce a chart from the source.pdf provided.")
+    _, _, u2, _g = resolve_local_sources("Produce a chart from the source.pdf provided.")
     assert "source.pdf" in u2
 
 
@@ -98,7 +98,7 @@ def test_deliverable_skip_is_filename_global():
            + "\nThe pipeline must regenerate `submission.csv` end-to-end.")
     tail = obj[:obj.rfind("`submission.csv`")]
     assert "deliverabl" not in tail[-200:].lower(), "fixture no longer isolates the pre-scan"
-    _, _, unresolved = resolve_local_sources(obj)
+    _, _, unresolved, _g = resolve_local_sources(obj)
     assert unresolved == [], unresolved
 
 

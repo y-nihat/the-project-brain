@@ -75,7 +75,7 @@ def test_a_host_shaped_token_is_not_read_as_a_designated_file(tmp_path, monkeypa
     for token in ("shop.kelvane.com", "api.github.io", "example.co.uk",
                   "registry.npmjs.org", "cdn.jsdelivr.net"):
         text = f"deploy the site and point it at {token} when it is live"
-        rewritten, resolved, unresolved = files_mod.resolve_local_sources(text)
+        rewritten, resolved, unresolved, _g = files_mod.resolve_local_sources(text)
         assert resolved == [] and unresolved == [], token
         assert rewritten == text, "the objective must reach the planner unchanged"
 
@@ -88,23 +88,45 @@ def test_an_explicitly_designated_file_still_earns_the_ask(tmp_path, monkeypatch
     monkeypatch.setattr(config, "PROJECT_ROOT", tmp_path)
     monkeypatch.setattr(config, "INBOX_DIR", tmp_path / "inbox")
 
-    _t, _r, backticked = files_mod.resolve_local_sources(
+    _t, _r, backticked, _g = files_mod.resolve_local_sources(
         "summarize `data/missing/gone.pdf`")
     assert backticked == ["data/missing/gone.pdf"]
 
-    _t, _r, with_path = files_mod.resolve_local_sources(
+    _t, _r, with_path, _g = files_mod.resolve_local_sources(
         "summarize data/missing/gone.pdf")
     assert with_path == ["data/missing/gone.pdf"]
 
     # A backticked BARE name is a designation too — the marks are the point.
-    _t, _r, bare_marked = files_mod.resolve_local_sources("summarize `gone.pdf`")
+    _t, _r, bare_marked, _g = files_mod.resolve_local_sources("summarize `gone.pdf`")
     assert bare_marked == ["gone.pdf"]
 
-    # And an ordinary unmarked missing input still asks: one dotted segment is
-    # a filename, which is exactly what the gate exists for.
-    _t, _r, plain = files_mod.resolve_local_sources(
+    # A single-segment name is a filename by any reading and keeps the gate.
+    _t, _r, plain, _g = files_mod.resolve_local_sources(
         "Analyze the attached data.csv and summarize.")
     assert plain == ["data.csv"]
+
+
+def test_an_unmarked_multi_segment_token_is_stated_not_swallowed(tmp_path, monkeypatch):
+    """Shape cannot separate `archive.tar.gz` from `shop.example.com`, so the
+    engine stops asking shape to decide and makes the CONSEQUENCE proportional:
+    an unmarked multi-segment token it cannot resolve is reported as a GUESS —
+    nobody is interrogated, no fatal blocker is demanded, and nothing is
+    dropped in silence. An earlier version of this fix dropped them quietly,
+    which replaced a loud wrong answer with a quiet one."""
+    from brain import config, files as files_mod
+
+    monkeypatch.setattr(config, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(config, "INBOX_DIR", tmp_path / "inbox")
+
+    for token in ("archive.tar.gz", "shop.kelvane.com", "data.2024.csv"):
+        _t, _r, unresolved, guessed = files_mod.resolve_local_sources(
+            f"handle {token} next")
+        assert unresolved == [], token          # nobody is asked about a guess
+        assert guessed == [token], token        # but it is on the record
+
+    # Marking it turns the guess back into a designation.
+    _t, _r, marked, guessed = files_mod.resolve_local_sources("handle `archive.tar.gz`")
+    assert marked == ["archive.tar.gz"] and guessed == []
 
 
 def test_the_residual_limit_is_stated_not_hidden():
@@ -129,6 +151,6 @@ def test_a_bare_filename_that_exists_is_still_picked_up(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "PROJECT_ROOT", tmp_path)
     monkeypatch.setattr(config, "INBOX_DIR", inbox)
 
-    text, resolved, unresolved = files_mod.resolve_local_sources("summarize report.pdf")
+    text, resolved, unresolved, _g = files_mod.resolve_local_sources("summarize report.pdf")
     assert resolved == [str((inbox / "report.pdf").resolve())]
     assert "input/report.pdf" in text and unresolved == []

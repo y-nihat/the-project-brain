@@ -106,12 +106,23 @@ def test_a_satisfied_judgment_answers():
 # --------------------------------------------------------------------------- #
 # The answer says what it is
 # --------------------------------------------------------------------------- #
-def test_a_direct_answer_ships_visibly_uncertified():
+def test_a_direct_answer_leads_with_its_uncertified_note():
+    """The note LEADS. It used to trail, which put it in the same position as
+    the classification caveat that was being sheared off: every path that reads
+    an answered turn back takes a HEAD slice — the planner's referent block, the
+    conversation view, the turn-referent fallback — so a long answer showed the
+    claim and dropped the disclaimer."""
     a = coerce({"resolution": "satisfied", "answer": "Some claim.", "reason": "r"})
     shipped = analyze.answer_envelope(a)
-    assert shipped.startswith("Some claim.")
-    assert "[uncertified]" in shipped
+    assert shipped.startswith("[uncertified]")
     assert "no tool ran" in shipped and "not a grounded deliverable" in shipped
+    assert shipped.rstrip().endswith("Some claim.")
+
+    # It survives every head-truncation the engine applies downstream.
+    long_answer = coerce({"resolution": "satisfied", "answer": "x" * 8000, "reason": "r"})
+    envelope = analyze.answer_envelope(long_answer)
+    for cut in (600, 2000, 2500):
+        assert "[uncertified]" in envelope[:cut], cut
 
 
 # --------------------------------------------------------------------------- #
@@ -238,36 +249,43 @@ def test_a_self_initiated_iteration_is_never_answered_from_memory(tmp_path, monk
     against it — an answer from memory would log an attempt that observed
     nothing.
 
-    Asserted on what the step RETURNS, not on statement order inside a
-    200-line method: the old version broke on a harmless refactor and proved
-    nothing about the guard's effect.
+    Driven through run_objective, because the previous version asserted a
+    dataclass default it constructed itself and reached the real guarantee only
+    by grepping the method's source for a statement order.
     """
+    from brain import session as session_mod
     from tests.test_conversation import _isolated_session
 
     consulted = {"n": 0}
 
-    async def must_not_be_consulted(_prompt):
+    async def judge(_prompt):
         consulted["n"] += 1
         return {"resolution": "satisfied", "answer": "from memory", "reason": "r"}
 
+    class _Orch:
+        classification = "succeeded"
+        aspiration: dict = {}
+
+        def __init__(self, **_kw):
+            pass
+
+        async def run(self, *_a, **_kw):
+            return "the work was done"
+
+    monkeypatch.setattr(session_mod, "Orchestrator", _Orch)
     session = _isolated_session(tmp_path, monkeypatch)
     try:
-        session._analyst = lambda: Analyst(judge_fn=must_not_be_consulted)
-        # A user turn consults the step and can be answered...
-        user = _run(session._analyze_turn("what is a mutex"))
-        assert user.satisfied and consulted["n"] == 1
-        # ...but a self-initiated iteration never reaches it: run_objective
-        # substitutes an escalate verdict before the step is called.
+        session._analyst = lambda: Analyst(judge_fn=judge)
+        # A user turn consults the step and can be answered directly.
+        user = _run(session.run_objective("what is a mutex"))
+        assert user.status == "answered" and consulted["n"] == 1
+
+        # A self-initiated iteration never reaches it, and never comes back
+        # 'answered' however willing the judge is to answer.
         session._pursuing = True
-        from brain.analyze import Analysis
-
-        pursuit = Analysis(reason="self-initiated iteration: the work is the point")
-        assert not pursuit.satisfied
-        assert consulted["n"] == 1
-        import inspect
-
-        src = inspect.getsource(session.__class__.run_objective)
-        assert "if self._pursuing:" in src and "self._analyze_turn" in src
+        pursuit = _run(session.run_objective("iterate toward the goal"))
+        assert pursuit.status != "answered", pursuit.status
+        assert consulted["n"] == 1, "the analyze step was consulted for a pursuit run"
     finally:
         session.close()
 
@@ -371,3 +389,62 @@ def test_an_answered_turn_builds_no_orchestration_at_all(tmp_path, monkeypatch):
 
     assert summary.status == "answered"
     assert built == {"orchestrators": 0, "sandboxes": 0, "plans": 0}, built
+
+
+def test_an_answered_turn_never_becomes_target_tier_evidence(tmp_path, monkeypatch):
+    """The hollow certificate this closes: an `answered` run's ANSWER.md is
+    model prose that observed nothing BY CONSTRUCTION and says so in its own
+    text. Seeding it for a later turn stamped it tier=target, coverage=full,
+    state=observed_present — the strongest claim the evidence plane makes — and
+    one such entry satisfies target_lineage(), suppressing the 'narration was
+    approved, not evidence' void the ledger exists to raise.
+
+    The file is still placed in the workspace so an agent can READ what was
+    said. It simply is not evidence.
+    """
+    import asyncio
+
+    from brain import config, evidence
+    from brain.memory.blackboard import Blackboard
+    from brain.models import StageSpec
+    from brain.observability import NullTracer
+    from brain.orchestrator import Orchestrator
+    from brain.planner import StubPlanner
+
+    monkeypatch.setattr(config, "RUNS_DIR", tmp_path / "runs")
+    prior = tmp_path / "runs" / "prev-answered"
+    (prior / "outputs").mkdir(parents=True)
+    (prior / "workspace").mkdir()
+    # Exactly what _deliver_answer writes: the note, then the answer.
+    (prior / "outputs" / "ANSWER.md").write_text(
+        analyze.answer_envelope(coerce({"resolution": "satisfied",
+                                        "answer": "The widget is blue.",
+                                        "reason": "definitional"})))
+
+    async def runner(_t, _name, _prompt, _options):
+        return "done"
+
+    bb = Blackboard(tmp_path / "b.db", "later")
+    orch = Orchestrator(session="later", manager=None, ledger=None, registry=None,
+                        blackboard=bb, broker=None,
+                        planner=StubPlanner([StageSpec(id="w", pattern="single",
+                                                       role="W", goal="work")]),
+                        resolver=None, session_runner=runner, tracer=NullTracer())
+    try:
+        asyncio.run(orch.run("now act on it", seed_run="prev-answered",
+                             referent_resolved=True))
+    finally:
+        bb.close()
+
+    run_dir = config.RUNS_DIR / "later"
+    # Readable...
+    seeded = run_dir / "workspace" / "prior" / "prev-answered" / "outputs" / "ANSWER.md"
+    assert seeded.is_file(), "the prior answer must still be readable"
+    # ...but never DESIGNATED. It may appear as an ordinary retained file in
+    # the workspace; what it must never be is target tier, which is the claim
+    # that satisfies target_lineage and certifies a run.
+    ledger = evidence.ledger(run_dir, [], [])
+    seeded_entries = [e for e in ledger if "prev-answered" in str(e.file)]
+    assert seeded_entries, "the seeded file should still be visible to the ledger"
+    assert all(e.tier != "target" for e in seeded_entries), seeded_entries
+    assert not evidence.target_lineage(ledger), evidence.target_lineage(ledger)

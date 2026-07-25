@@ -21,8 +21,6 @@ _USAGE = ('usage: brain "<objective>" [--quiet]   (or: python -m brain.main "<ob
 async def _amain(objective: str, quiet: bool = False) -> int:
     session = BrainSession()
     try:
-        if s := _history_note(session, objective):
-            print(s)
         ticker_task = None
         if not quiet:
             # A run is silent for a median of ~6 minutes and a p90 of ~27. The
@@ -49,6 +47,14 @@ async def _amain(objective: str, quiet: bool = False) -> int:
         finally:
             if ticker_task is not None:
                 ticker_task.cancel()
+        # The memory note comes AFTER the run, not before it: the analyze step
+        # can end a turn before any seeding happens, so printing "applying
+        # context from prior runs; seeding workspace from <run>" up front
+        # narrated work that never occurred — on the very first line of the
+        # very first command the README tells a stranger to run, in a project
+        # whose stated differentiator is that it does not do that.
+        if summary.status != "answered" and (note := _history_note(session, objective)):
+            print(note)
         print("\n==== ANSWER ====\n" + summary.answer)
         # The library's SIZE is the fact; naming all of it on every run buried
         # the run's own accounting under a list that has nothing to do with it.

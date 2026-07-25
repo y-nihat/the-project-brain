@@ -237,3 +237,64 @@ def test_the_envelope_does_not_recite_the_whole_library(capsys, monkeypatch):
     assert "library=3 capabilit" in out
     for name in _Summary.capabilities:
         assert name not in out
+
+
+def test_the_verdict_is_recomputed_when_the_plan_is_extended(tmp_path, monkeypatch):
+    """The verdict is a property of the PLAN, and a plan can change mid-run.
+
+    Computed once from the initial roster, a run that acquired its deliverable
+    through adaptive extension kept the verdict 'no' and silently skipped
+    DELIVERABLE.md and every format measurement — reporting no violation
+    because none was ever taken, under a gate whose own comment calls a
+    measured violation authoritative over any verdict prose.
+    """
+    import asyncio
+
+    from brain import config
+    from brain.memory.blackboard import Blackboard
+    from brain.observability import NullTracer
+    from brain.orchestrator import Orchestrator
+    from brain.planner import StubPlanner
+
+    monkeypatch.setattr(config, "RUNS_DIR", tmp_path / "runs")
+    events: list[tuple] = []
+
+    class Recording(NullTracer):
+        def event(self, kind, subject, status="info", **data):
+            events.append((kind, data))
+
+    class Extending(StubPlanner):
+        """Reports a gap once, then grafts a stage that DOES produce an
+        artifact — the shape the initial roster had no signal for."""
+
+        def __init__(self, stages):
+            super().__init__(stages)
+            self.extend_calls = 0
+
+        async def extend(self, objective, completed, gaps, existing_ids):
+            self.extend_calls += 1
+            from brain.models import StageSpec as S
+            return ([S(id="make", pattern="single", role="M", goal="produce it",
+                       deliverable=True)] if self.extend_calls == 1 else [], [], {})
+
+    bb = Blackboard(tmp_path / "x.db", "extend")
+
+    async def runner(_t, name, _prompt, _options):
+        if name == "look":
+            bb.put("evidence.gaps", [{"agent": name, "need": "an artifact"}])
+        return "```deliverable\nthe work\n```"
+
+    orch = Orchestrator(session="extend", manager=None, ledger=None, registry=None,
+                        blackboard=bb, broker=None,
+                        planner=Extending([StageSpec(id="look", pattern="single",
+                                                     role="L", goal="observe")]),
+                        resolver=None, session_runner=runner, tracer=Recording())
+    try:
+        asyncio.run(orch.run("do the thing"))
+    finally:
+        bb.close()
+
+    verdicts = [d["produces"] for k, d in events if k == "plan.artifact_of_record"]
+    assert verdicts and verdicts[0] is False, verdicts   # the initial plan had none
+    assert verdicts[-1] is True, verdicts                # the extension brought one
+    assert (config.RUNS_DIR / "extend" / "outputs" / "DELIVERABLE.md").is_file()

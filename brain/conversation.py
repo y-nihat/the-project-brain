@@ -113,10 +113,13 @@ def live_ids(lock_dir: str | Path, *, own: Optional[str] = None) -> set[str]:
                 fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
         except OSError:
             continue
-        try:
-            p.unlink()                  # nobody holds it: a leftover
-        except OSError:
-            pass
+        # The file is NOT removed. Liveness.__init__ opens it and then takes
+        # the lock, and those are two steps: a scan landing between them would
+        # acquire, release and delete the file out from under a process that is
+        # about to hold it. That process's flock then succeeds on an orphaned
+        # fd — held, but invisible to every later scan, so the next session
+        # treats a live conversation as dead and force-removes its containers.
+        # A leftover lock file is a few bytes and answers honestly next time.
     return live
 
 

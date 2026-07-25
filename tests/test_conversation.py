@@ -172,7 +172,28 @@ def test_a_held_conversation_is_reported_live_and_a_released_one_is_not(tmp_path
     (locks).mkdir(parents=True, exist_ok=True)
     (locks / "conv-dead.lock").write_text("999999\n")
     assert conv.live_ids(locks) == set()
-    assert not (locks / "conv-dead.lock").exists()
+
+
+def test_scanning_never_deletes_a_lock_file(tmp_path):
+    """Taking a lock is two steps — open, then flock — and a scan landing
+    between them used to acquire, release and DELETE the file out from under a
+    process about to hold it. That process's flock then succeeded on an
+    orphaned fd: held, but invisible to every later scan, so the next session
+    treated a live conversation as dead and force-removed its containers."""
+    locks = tmp_path / "locks"
+    locks.mkdir(parents=True)
+    (locks / "conv-dead.lock").write_text("999999\n")
+
+    assert conv.live_ids(locks) == set()          # honest: nobody holds it
+    assert (locks / "conv-dead.lock").exists(), "a scan must not delete lock files"
+
+    # And the leftover does not stop the conversation being taken over.
+    taken = conv.Liveness(locks, "conv-dead")
+    try:
+        assert taken.held
+        assert conv.live_ids(locks) == {"conv-dead"}
+    finally:
+        taken.release()
 
 
 def test_a_live_conversations_running_rows_are_not_marked_aborted(tmp_path):
@@ -453,7 +474,6 @@ def test_a_crashed_process_leaves_a_lock_that_recovers(tmp_path):
     (locks / "conv-crashed.lock").write_text("4242\n")
 
     assert conv.live_ids(locks) == set()            # not live: nobody holds it
-    assert not (locks / "conv-crashed.lock").exists()   # and it is cleaned up
     # The conversation can then be taken over.
     taken = conv.Liveness(locks, "conv-crashed")
     assert taken.held
@@ -475,3 +495,52 @@ def test_resolving_a_conversation_says_nothing_about_who_holds_it(tmp_path):
         assert "conv-busy" in conv.live_ids(locks)               # and held
     finally:
         holder.release()
+
+
+def test_resuming_heals_the_dead_process_it_is_taking_over(tmp_path, monkeypatch):
+    """Resume-after-crash is the whole point of the feature, and it used to
+    suppress exactly the cleanup it promises.
+
+    `_janitor()` ran after the resumed id was adopted, so the liveness scan
+    reported that conversation live (this process holds its lock) and skipped
+    its containers, its stale ledger rows and its abandoned 'running' run —
+    while the docstring and docs/OVERVIEW.md both state the opposite.
+    """
+    from brain import config
+
+    session = _isolated_session(tmp_path, monkeypatch)
+    cid = session.conversation_id
+    abandoned = session.tracer.start_run("the turn that never finished")
+    # Simulate the crash: the process dies without finishing or releasing.
+    session.tracer.close()
+    session.ledger.close()
+    session.registry.close()
+    session.goals.close()
+    session._live.release()
+
+    later = _isolated_session(tmp_path, monkeypatch, resume=cid)
+    try:
+        rows = {r["run_id"]: r["status"]
+                for r in conv.turns(config.DB_PATH, cid, limit=50)}
+        assert rows.get(abandoned.run_id) == "aborted", rows
+    finally:
+        later.close()
+
+
+def test_a_new_conversation_still_protects_itself_from_its_own_janitor(tmp_path, monkeypatch):
+    """The complement: a FRESH session must not sweep its own conversation —
+    only a resume is taking over someone else's leftovers."""
+    from brain import config
+
+    first = _isolated_session(tmp_path, monkeypatch)
+    try:
+        live = first.tracer.start_run("still working")
+        # A second, unrelated process starts up in the SAME data dir and runs
+        # its janitor. The first still holds its lock, so it is live.
+        second = _isolated_session(tmp_path, monkeypatch)
+        second.close()
+        rows = {r["run_id"]: r["status"]
+                for r in conv.turns(config.DB_PATH, first.conversation_id, limit=50)}
+        assert rows.get(live.run_id) == "running", rows
+    finally:
+        first.close()

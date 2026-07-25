@@ -5,6 +5,76 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
 [Semantic Versioning](https://semver.org/) — `0.x` while the core algorithm
 and behavior are still expected to change between releases.
 
+## [0.31.0] — 2026-07-25
+
+What a waiting person is told, and three holes a five-role ship review found in
+0.29/0.30 before they reached the remote.
+
+### Added
+- **A live ticker on both entry points.** Every 15 seconds: elapsed time, spend
+  so far, containers, and what the engine is occupied with in human words.
+  Measured on a real run, the silent stretches were 22.9s, 44.3s and 40.8s
+  against a corpus whose median turn is 9 minutes; the events said what had
+  just happened and nothing said what was happening now. Spend is counted only
+  from sessions that have ENDED, so "so far" is an honest lower bound and never
+  an estimate.
+- **The plan announces what it commits the turn to** — which tools it reuses and
+  which it must BUILD (the slow part), and whether a review round is coming.
+  Read off the plan, never off the request.
+
+### Fixed
+- **An answered turn can no longer become target-tier evidence.** A turn that
+  observed nothing ships model prose that says so in its own text; seeding it
+  for a later turn stamped it `target` / `coverage: full` /
+  `observed_present` — the strongest claim the evidence plane makes — and a
+  single such entry satisfies `target_lineage`, suppressing the "narration was
+  approved, not evidence" void the ledger exists to raise. A payload that
+  declares itself uncertified is never designated. It is still placed in the
+  workspace so an agent can read what was said.
+- **Resuming a conversation now heals the process it takes over.** `_janitor()`
+  ran after the resumed id was adopted, so the liveness scan reported that
+  conversation live — this process holds its lock — and skipped its containers,
+  its stale ledger rows and its abandoned `running` turn, while the docstring
+  and `docs/OVERVIEW.md` both promised the opposite. Resume-after-crash is the
+  entire point of the feature.
+- **A liveness scan no longer deletes lock files.** Taking a lock is two steps,
+  open then flock, and a scan landing between them acquired, released and
+  unlinked the file out from under a process about to hold it — whose flock
+  then succeeded on an orphaned fd: held, but invisible to every later scan, so
+  the next session treated a live conversation as dead.
+- **The verdict on whether a plan produces an artifact of record is recomputed
+  when the plan is extended.** Computed once from the initial roster, a run that
+  acquired its deliverable through adaptive extension skipped `DELIVERABLE.md`
+  and every format measurement — reporting no violation because none was taken.
+- **The uncertified note leads the answer instead of trailing it.** Every path
+  that reads an answered turn back takes a HEAD slice (referent block 2500,
+  conversation view 600, turn-referent fallback 2000), so a long answer showed
+  the claim and dropped the disclaimer — the same shearing that had just been
+  fixed for the classification line, in a new place.
+- **The classification line is no longer truncated at all.** The honesty clause
+  is the TAIL of every reason the classifier builds; recorded reasons reach
+  1049 characters and 5 of 67 lost it to a 300-character head cut. (The 0.30.0
+  entry claimed this fix; it landed two commits later. Corrected above.)
+- **The answered turn's ANSWER.md is masked before it reaches disk.** Every
+  other answer the engine writes passes through `scrub_text`; that path was
+  newer than the guarantee and was written without it.
+- **A hostname is not a designated file.** `name.ext` is equally the shape of a
+  host, so an objective mentioning `shop.example.com` was interrogated for a
+  path that never existed and then told every agent to fatal-block on it. Shape
+  cannot separate `archive.tar.gz` from `shop.example.com` — that needs a
+  public-suffix list, a moving external dataset this engine should not carry —
+  so shape no longer decides: an unmarked multi-segment token the engine cannot
+  resolve is reported as a GUESS the agents can weigh, and nobody is
+  interrogated about it. Marked designations keep the full gate.
+- **The one-shot CLI stops narrating seeding that did not happen.** The
+  `[memory] applying context…` line printed before the run, and the analyze step
+  can end a turn before any seeding occurs — on the first line of the first
+  command the README gives a stranger.
+- **The sandbox tests gate on building, not on pinging.** A reachable daemon
+  that cannot build an image made seven tests fail for the environment and
+  blocked a healthy push; six copies of the check collapse into one that probes
+  the capability and says why it declined.
+
 ## [0.30.0] — 2026-07-25
 
 Two steps of the loop get their full output range. Both had the same defect:
@@ -62,8 +132,7 @@ a question whose answer was structurally fixed, so it was never really asked.
 - The run envelope reports the library's SIZE instead of reciting all 38
   capability names on every run, which buried the run's own accounting under a
   list that had nothing to do with it. The live stream says which way each turn
-  went, and no longer truncates a classification reason before the honesty
-  clause that sits at its end.
+  went.
 - `BRAIN_DISABLE_HISTORY_SEED` now actually suppresses carry-over. It cleared
   the seed and the next statement unconditionally re-set it from the previous
   run, so every benchmark repeat after the first was seeded from the attempt it

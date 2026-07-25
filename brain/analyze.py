@@ -237,5 +237,13 @@ def answer_envelope(analysis: Analysis) -> str:
     in the answer itself rather than only in a status word — otherwise the
     cheapest output in the system would wear the same clothes as the most
     thoroughly checked one.
+
+    The note leads. It used to trail, which put it in the same position as the
+    classification caveat that was being sheared off by head-truncation: every
+    path that reads an answered turn back takes a head slice — the planner's
+    referent block (2500 chars), the conversation view (600), the turn-referent
+    fallback (2000) — so a long answer showed a reader the claim and dropped
+    the disclaimer. A caveat that survives only on short answers is not a
+    caveat.
     """
-    return f"{analysis.answer.rstrip()}\n\n{UNCERTIFIED_NOTE}"
+    return f"{UNCERTIFIED_NOTE}\n\n{analysis.answer.strip()}"

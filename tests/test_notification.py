@@ -203,11 +203,18 @@ def test_a_broken_listener_never_takes_the_run_with_it():
 
 
 def test_both_entry_points_run_the_ticker():
-    """The one-shot path used to print nothing between events either."""
+    """The one-shot path used to print nothing between events either.
+
+    The precedence bug this replaces — `A and B or C` — made A and B dead: both
+    modules contain C, so the assertion could not fail. Introduced, with some
+    irony, by the commit titled 'replace dead assertions with behaviour'.
+    """
     import inspect
 
     from brain import main as main_mod, repl as repl_mod
 
     for mod in (main_mod, repl_mod):
         src = inspect.getsource(mod)
-        assert "Ticker(" in src and "ticker.observe" in src or "ticker.loop()" in src, mod.__name__
+        assert "Ticker(" in src, mod.__name__          # constructed
+        assert "ticker.observe" in src, mod.__name__   # fed the event stream
+        assert "ticker.loop()" in src, mod.__name__    # and actually ticking

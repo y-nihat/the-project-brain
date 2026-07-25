@@ -896,9 +896,27 @@ class Orchestrator:
                     dst = workspace / rel
                     try:
                         dst.parent.mkdir(parents=True, exist_ok=True)
-                        dst.write_bytes(src.read_bytes())
+                        payload = src.read_bytes()
+                        dst.write_bytes(payload)
                     except OSError:
                         continue
+                    # A payload that DECLARES ITSELF UNCERTIFIED is never a
+                    # designated source. record_designated stamps tier=target,
+                    # coverage=full, state=observed_present — the strongest
+                    # claim the evidence plane can make — and an answered turn's
+                    # ANSWER.md is model prose that observed nothing by
+                    # construction and says so in its own text. Seeding it as
+                    # target-tier is exactly the hollow certificate the ledger
+                    # exists to prevent: one such entry satisfies target_lineage
+                    # and suppresses the 'narration was approved, not evidence'
+                    # void. The file is still placed in the workspace so an
+                    # agent can READ what was said; it simply is not evidence.
+                    if evidence_mod.declares_uncertified(payload):
+                        self.tracer.event(
+                            "revision.seed_not_designated", seed_run, status="info",
+                            file=rel, reason="the prior payload declares itself "
+                                             "uncertified — prose, not evidence")
+                        break
                     evidence_mod.record_designated(
                         Path(config.RUNS_DIR) / self.session,
                         "prior_deliverable", [rel], workspace=workspace)
@@ -1854,6 +1872,20 @@ class Orchestrator:
             stages.insert(insert_at + off, s)
             self._stages_by_id[s.id] = s
         self._retarget_pending_review(stages, insert_at + len(new_stages), new_stages)
+        # The artifact-of-record verdict is a property of the PLAN, and the plan
+        # just changed. Computed once from the initial roster, a run that
+        # acquired its deliverable through extension — a marked stage, a review,
+        # an artifact-emitting tool, a countable criterion — kept the verdict
+        # 'no' and silently skipped DELIVERABLE.md and every format
+        # measurement, so it reported no violation because none was ever taken.
+        was = self._plan_makes_artifact
+        self._plan_makes_artifact = workflow.produces_artifact_of_record(
+            stages, criteria=self._criteria, emits_by_cap=self._registry_emits(stages),
+            knowledge_declared=bool(self._knowledge_briefs))
+        if was != self._plan_makes_artifact:
+            self.tracer.event("plan.artifact_of_record", "plan", status="info",
+                              produces=self._plan_makes_artifact,
+                              note="recomputed after the plan was extended")
         # Re-verify after new observation: when the extension lands AFTER a
         # review that did not approve (e.g. its unmet evidence demand is what
         # drove this replan), append a fresh review over the new terminal —

@@ -123,11 +123,20 @@ class BrainSession:
         from .memory.goals import GoalLedger
         self.goals = GoalLedger(config.DB_PATH)
         self._pursuing = False   # guard: inner pursuit runs must not re-pursue
-        self._janitor()
+        # Heal what a dead process left, INCLUDING the conversation being
+        # resumed. This process already holds that conversation's lock, so
+        # treating it as "live" would make resume suppress exactly the cleanup
+        # it promises: the crashed process's containers would keep running
+        # untracked and its abandoned turn would stay 'running' forever — while
+        # the docstring below and docs/OVERVIEW both state that containers from
+        # that conversation are gone. Resume-after-crash is the whole point of
+        # the feature, so the conversation being adopted is explicitly NOT
+        # protected from the sweep.
+        self._janitor(protect=None if resume else self.conversation_id)
         if resume:
             self._restore_conversation(resume)
 
-    def _janitor(self) -> None:
+    def _janitor(self, protect: Optional[str] = None) -> None:
         """On wake, observe the environment and heal what a killed session left:
         leftover sandbox containers, runs stuck 'running', stale ledger rows.
 
@@ -136,8 +145,16 @@ class BrainSession:
         time: a second CLI force-removed the first's live sandboxes, marked its
         active run aborted, and rewrote its ledger rows — converting a leaking
         run into a clean-looking one.
+
+        ``protect`` is this process's own conversation when it is a NEW one.
+        When resuming, nothing is protected: the leftovers being swept are the
+        resumed conversation's own, and that is the point.
         """
-        live = conversation_mod.live_ids(config.LOCKS_DIR, own=self.conversation_id)
+        live = conversation_mod.live_ids(config.LOCKS_DIR, own=protect)
+        if protect is None:
+            # We hold this conversation's lock, so the scan reports it live.
+            # On a resume that is precisely the conversation to clean up.
+            live.discard(self.conversation_id)
         removed = 0
         try:
             import docker
@@ -345,7 +362,8 @@ class BrainSession:
         # tool, however the agent spells it (the technical reason a plainly-named
         # file was 'unreadable' — last run's inbox video, referenced by path,
         # never entered the workspace).
-        objective, path_resolved, unresolved = files_mod.resolve_local_sources(objective)
+        objective, path_resolved, unresolved, guessed = \
+            files_mod.resolve_local_sources(objective)
         resolved = list(path_resolved)
         for tok in dict.fromkeys(mentioned + list(files or [])):
             hit = files_mod.resolve_file(tok)
@@ -364,6 +382,20 @@ class BrainSession:
                 "on such a file, report a fatal blocker naming it — do NOT retry with guessed "
                 "paths and NEVER fabricate its contents.")
             self.tracer.event("files.unavailable", "attach", status="failed", tokens=missing)
+        if guessed:
+            # Stated, not swallowed, and NOT escalated: these are tokens the
+            # ENGINE guessed might be filenames and could not resolve. They are
+            # equally the shape of a hostname, so nobody is interrogated about
+            # them and no fatal blocker is demanded — the agents are told what
+            # was seen and left to judge it.
+            objective += (
+                "\n\n[engine note] These token(s) look like they could be filenames but "
+                "resolve to no file the engine can reach: " + ", ".join(guessed) + ". They "
+                "may equally be hostnames, identifiers or version strings — the engine is "
+                "not asserting they are files. If one IS a file you need, ask the user for "
+                "it rather than guessing a path, and never fabricate its contents.")
+            self.tracer.event("files.unverified_guess", "attach", status="info",
+                              tokens=guessed)
 
         # A self-initiated pursuit run is a run of the brain, not a turn of the
         # conversation: it is recorded, but it must not consume a turn ordinal.

@@ -9,10 +9,10 @@ Its distinguishing property is not autonomy but **honesty**: a deliverable's loa
 trace to files a tool actually retained, and a run that cannot prove its work says so
 (`unverified` / `blocked` / `failed`) instead of narrating success.
 
-> **Status:** engine **v0.30.0**, pre-1.0, actively developed by one author. The safety substrate,
+> **Status:** engine **v0.31.0**, pre-1.0, actively developed by one author. The safety substrate,
 > staged workflows, capability authoring/verification/promotion, the evidence-and-review plane,
 > adaptive recovery, standing goals, the eval harness, and observability are built and covered by
-> 517 tests. `CHANGELOG.md` is the authoritative release record.
+> 523 tests. `CHANGELOG.md` is the authoritative release record.
 > See **[docs/OVERVIEW.md](docs/OVERVIEW.md)** for the stack, how to run it, and where logs live.
 
 ## Try it in about a minute
@@ -27,9 +27,17 @@ $DC up -d --build
 $DC exec brain python -m brain.main "In one sentence, what is idempotency? No tools needed."
 ```
 
-That objective needs no tools and no containers: it answers in **about 15 seconds for under two
-cents**, and is the cheapest way to confirm the whole stack is wired correctly. Then try something
-real — `"Research X and cite your sources"`, or attach a file with `@`.
+Nothing about that objective has to be *observed*, so the analyze step answers it directly: about
+**10 seconds, a couple of cents, zero containers**, and the answer says in its own text that it
+traces to nothing. That confirms auth and the answer path — not the sandbox. For the rest of the
+stack, run something that must observe:
+
+```sh
+$DC exec brain python -m brain.main "Use web search to find the current stable Python version, and cite the source URL."
+```
+
+That one plans, acquires a tool, runs a container, and cites what it saw — about a minute and
+well under a dollar. Then try attaching a file with `@`.
 
 For an interactive session with follow-up turns and live progress, use `./scripts/brain-chat.sh`.
 
@@ -87,7 +95,7 @@ Installability is not yet the full M2 milestone: per-project `.brain/` state and
 
 # Run the suite INSIDE the container — that is the environment it targets.
 DC="docker compose -f docker/docker-compose.yml --env-file .env"
-$DC exec brain python -m pytest tests/            # 517 tests
+$DC exec brain python -m pytest tests/            # 523 tests
 ```
 
 On the host the suite still runs; the 11 sandbox tests skip and say why. They gate

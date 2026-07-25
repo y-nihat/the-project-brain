@@ -104,27 +104,28 @@ def resolve_file(token: str) -> Optional[Path]:
     return None
 
 
-def resolve_local_sources(text: str) -> tuple[str, list[str], list[str]]:
+def resolve_local_sources(text: str) -> tuple[str, list[str], list[str], list[str]]:
     """Detect files the user DESIGNATED by path in the objective (backticked or
     bare, e.g. ``data/inbox/clip.mp4`` or ``report.pdf``) — a first-class way to
     provide a source, alongside @mentions and remote locators.
 
-    Returns ``(rewritten_text, resolved_abs_paths, unresolved_tokens)``:
+    Returns ``(rewritten_text, resolved, unresolved, guessed)``:
       * a token that resolves to a readable file is rewritten in-text to
         ``input/<name>`` and its absolute path returned for materialization;
       * a token that names a file but does NOT resolve is returned unresolved,
         so the caller can ASK for an accessible path instead of letting the run
         author a doomed, file-starved pipeline.
 
-    An unmarked token carrying more dotted segments than a filename normally
-    does is NOT read as a file: `name.ext` is equally the shape of a hostname,
-    and the engine must not interrogate the user about a file only it believed
-    was named.
+      * an unmarked multi-segment token that resolves to nothing is returned
+        as ``guessed``: `name.ext` is equally the shape of a HOSTNAME, and the
+        engine states its guess as a fact rather than interrogating the user
+        about a file only it believed was named.
 
     Only file-shaped tokens are considered; URLs and ``input/`` tokens are left
     untouched. Run AFTER parse_mentions."""
     resolved: list[str] = []
     unresolved: list[str] = []
+    guessed: list[str] = []
 
     # Pre-scan: a filename in an output/deliverable context ANYWHERE in the
     # objective is a produced deliverable — its OTHER mentions ('the pipeline
@@ -154,18 +155,21 @@ def resolve_local_sources(text: str) -> tuple[str, list[str], list[str]]:
         # bought two interrogations for a path that never existed and then told
         # every agent to report a fatal blocker on it.
         #
-        # Withdraw the guess when the token carries MORE dotted segments than a
-        # filename normally does, and the user marked nothing: no backticks, no
-        # @, no path separator. `data.csv` still asks; `shop.example.com` and
-        # `cdn.example.net` no longer do. A token that RESOLVES was already
-        # returned above, so nothing that exists is lost either way.
+        # SHAPE CANNOT DECIDE THIS. `archive.tar.gz` and `shop.example.com` are
+        # the same shape, and separating them needs a public-suffix list — a
+        # moving external dataset this engine should not carry. So the shape is
+        # not asked to decide; the CONSEQUENCE is made proportional instead.
         #
-        # Known limit, stated rather than papered over: a bare TWO-segment host
-        # (`example.com`) with no scheme and no `www.` is still indistinguishable
-        # from a filename by shape alone. Separating those needs a public-suffix
-        # list, which is a moving external dataset this engine should not carry.
+        # A multi-segment unmarked token goes to `guessed`, not `unresolved`:
+        # the caller states it as a fact the agents can weigh and does NOT
+        # interrogate the user or instruct a fatal blocker on it. Marked
+        # designations — backticks, @, a path separator — keep the full gate,
+        # and a single-segment `data.csv` is a filename by any reading and keeps
+        # it too. What the engine GUESSED is separated from what the user SAID.
         if (not explicit and not any(sep in tok for sep in ("/", "\\"))
                 and tok.count(".") > 1):
+            if tok not in guessed:
+                guessed.append(tok)
             return m.group(0)
         # A filename the objective asks the system to PRODUCE (a deliverable) is
         # NOT a missing INPUT: flagging it as unresolved makes the engine tell
@@ -178,7 +182,7 @@ def resolve_local_sources(text: str) -> tuple[str, list[str], list[str]]:
             unresolved.append(tok)
         return m.group(0)
 
-    return _DESIGNATED.sub(_sub, text), resolved, unresolved
+    return _DESIGNATED.sub(_sub, text), resolved, unresolved, guessed
 
 
 def materialize(paths: list[str], workspace: Path) -> list[dict]:
