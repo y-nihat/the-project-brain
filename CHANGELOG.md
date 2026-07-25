@@ -5,6 +5,90 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
 [Semantic Versioning](https://semver.org/) — `0.x` while the core algorithm
 and behavior are still expected to change between releases.
 
+## [0.28.0] — 2026-07-25
+
+Discovery-audit remediation. An end-to-end product and technical review read
+the engine against its own 107-run corpus rather than against a failing run,
+and this release is what that produced: sixteen changes, each traced to
+evidence in the recorded history. Two corrected the review's own conclusions.
+
+### Fixed
+- **An open standing goal is no longer read as a session continuation.**
+  `session_context` carries both the previous turn AND the open-goals block,
+  and continuity was inferred from that block being non-empty — so one open
+  goal made every later run, in any session, seed a keyword-matched stranger
+  run and record its ANSWER.md (agent NARRATION) as a designated source, i.e.
+  target-tier evidence. That inverts "agent prose -> NEVER in the ledger".
+  Latent, not realized: no recorded run has ever executed on 0.25.x-0.27.x.
+- **One fabrication battery at every trust boundary.** Promotion ran only the
+  no-input probe, the recipe path ran neither, and revalidation ran both — so
+  a tool could be stamped with the current epoch having never faced a probe it
+  must survive on reuse (`run_python_test_suite` carries stamp 0.21.0 and is
+  quarantined by the exact probe promotion skipped). Detection was deferred,
+  not avoided.
+- **Description generalization stopped corrupting the catalog it cleans.**
+  `_PATH_RESIDUE` matched the bare English words input/prior/workspace, so
+  "Input: query (str)" became "a provided file: query (str)" — still in the
+  live registry for `web_search`. Also: a greedy path match ate sentence-final
+  full stops, and filenames were substituted before locators, tearing URLs in
+  half.
+- **Oversized images are fitted, not dropped.** The raw-size guard sat two
+  lines above the downscaler that exists to make such a file fit, so a
+  rendered page over 2 MB never reached the agent — and a review that demands
+  perception then voided its own approval as "unperceived artifact".
+- **An interrupted run keeps its accounting.** `abort_stale_runs` stamped a
+  status without a rollup, so 7 of 8 aborted runs carried NULL cost while 59
+  to 722 of their events sat on disk. Recovering them finds $68.17 — the
+  corpus is $279.64, not $211.47 — and the most expensive run ever is $17.30,
+  not $10.74. `finished_at` now comes from the last event, not a later clock
+  (which had recorded one run as taking 20 hours).
+- **Cross-run recall ranks by similarity, not length.** Raw intersection size
+  rewarded long prior objectives; the winner's workspace is SEEDED, so a bad
+  pick put the wrong files in front of the agents. The candidate window moves
+  from 50 to 500 — at 50 it was smaller than the recorded history.
+- **pytest no longer collects from `data/`.** A bare `pytest` — the documented
+  command — walked the run-output tree and tried to execute test files agents
+  authored and tools extracted, on the HOST.
+- **Run-folder outputs cross the redaction boundary** (a tracked known
+  limitation): ANSWER.md, DELIVERABLE.md, agent outputs and prompts, the
+  review record, and authored-tool verify artifacts. The same string was
+  already masked into `runs.outcome`.
+
+### Added
+- **The answer states why a run did not certify.** The per-criterion table and
+  typed claim support were computed for every round and discarded from the
+  envelope, so all 25 unverified runs — 46% of spend, at 2.5x the cost of a
+  success — shipped the same sentence.
+- **Reuse by contract when the key misses.** `Resolver.resolve` was
+  `registry.get(exact_name)`, still M1-era by its own docstring, under the
+  product's central claim. Ambiguity is not resolved: several matches means
+  author, because naming a winner would be a guess.
+- **The catalog states earned reuse** — the planner could not tell a tool
+  proven across 51 runs from one never picked since the day it was built.
+- **`observability stats` and `backfill`**, and **`evals score-corpus`**: the
+  cross-version baseline that never existed, computed offline from runs that
+  already happened, for nothing.
+- **The one-shot CLI streams the run and reports its cost.** The documented
+  non-interactive path printed nothing for a median of ~6 minutes.
+- **Bounds the engine cannot measure are named** (`plan.criteria.unmeasurable`)
+  rather than silently indistinguishable from no bound at all.
+- **The autonomy gate prices what it asks for** — it requested approval for a
+  COUNT of unattended runs, and runs range from $0.01 to $17.30.
+- **A `pre-push` hook** running the offline suite. Nothing ran the tests
+  automatically.
+- **Packaging works**: discovery instead of a hand-written package list that
+  omitted `brain.observability` (imported at module load, so an installed
+  distribution raised ImportError), one version source, and the `brain`
+  console script.
+- **`docs/RATIONALE.md`** indexes the CHANGELOG by subsystem.
+
+### Corrected in the audit itself
+- "The honesty floor measures only 9% of criteria" was a framing error: 52 of
+  the 95 criteria that state a numeric bound are measured; the other 434 state
+  no bound at all. Coverage was never the defect — invisibility was.
+- "Promotion causes a thrash loop" overstated it. Revalidation only fires on
+  an epoch change, so detection is deferred, not looped.
+
 ## [0.27.0] — 2026-07-22
 
 The outcome loop: goal-level autonomy across runs. Post-mortem of three
