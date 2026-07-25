@@ -495,3 +495,42 @@ def test_stats_reports_the_outcome_mix_and_reuse(tmp_path):
     assert "unverified" in text and "$1.00" in text
     assert "1 reuse vs 1 author decisions (50% reuse)" in text
     assert "write_markdown_file" in text
+
+
+# --- count-criteria measurement: coverage, and honesty about coverage ------------- #
+def test_a_modifier_between_bound_and_unit_no_longer_hides_a_constraint():
+    """The unit had to follow the number immediately, so one adjective dropped
+    a real constraint out of deterministic measurement and back into model
+    judgment — silently, because an unparsed constraint is indistinguishable
+    from an unbounded one. Both of these appear verbatim in the corpus."""
+    from brain.criteria import check_counts
+
+    payload = "# T\n\n## A\n\np.\n\n## B\n\np.\n"
+    for text in ("The HTML contains exactly 3 distinct pages or full-viewport sections",
+                 "Exactly three distinct pages are present in the presentation"):
+        checks = check_counts([text], payload)
+        assert checks, f"no constraint parsed from {text!r}"
+        assert checks[0].bound == 3
+
+    # The window is bounded, so a number and a far-away noun are NOT a bound.
+    assert not [c for c in check_counts(
+        ["Exactly 2 of the 10 questions are new, each with an answer paragraph"],
+        payload) if c.unit == "paragraph" and c.bound == 2]
+
+
+def test_bounds_the_engine_cannot_measure_are_named_not_hidden():
+    """Only ~10% of compiled criteria parse into a deterministic check, and the
+    rest are mostly bounds on units the grammar does not know. Those rest
+    entirely on the reviewer — which is correct — but the run never said so."""
+    from brain.criteria import unmeasurable_counts
+
+    unmeasurable = unmeasurable_counts([
+        "The FAQ contains exactly 8 questions",              # unit not in the grammar
+        "At least one chart image is embedded in the report",
+        "The report contains exactly 5 sections",            # measurable
+        "Every claim is supported by retained evidence",     # states no bound
+    ])
+    assert "The FAQ contains exactly 8 questions" in unmeasurable
+    assert any("chart image" in u for u in unmeasurable)
+    assert not any("exactly 5 sections" in u for u in unmeasurable)
+    assert not any("Every claim" in u for u in unmeasurable)

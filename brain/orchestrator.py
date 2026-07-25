@@ -903,6 +903,16 @@ class Orchestrator:
         self._criteria = list(getattr(plan, "success_criteria", []) or [])
         if self._criteria:
             self.tracer.event("plan.criteria", "plan", status="info", criteria=self._criteria)
+            # Measurement COVERAGE, stated. A criterion that names a bound the
+            # grammar cannot count rests entirely on the reviewer's judgment —
+            # correct, but it looked identical to a criterion with no bound at
+            # all. Naming them tells the reviewer which bounds it alone is
+            # accountable for, and shows where extending the grammar would pay.
+            if unmeasurable := criteria_mod.unmeasurable_counts(self._criteria):
+                self.tracer.event(
+                    "plan.criteria.unmeasurable", "plan", status="info",
+                    count=len(unmeasurable), of=len(self._criteria),
+                    criteria=[c[:200] for c in unmeasurable[:8]])
         # Standing-goal aspiration: captured as run state for the session's
         # outcome loop (judged at run end, persisted across runs).
         self.aspiration = dict(getattr(plan, "aspiration", {}) or {})

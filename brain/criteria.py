@@ -22,16 +22,28 @@ _NUMBER_WORDS = {"one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6,
                  "seven": 7, "eight": 8, "nine": 9, "ten": 10, "eleven": 11,
                  "twelve": 12, "a single": 1, "single": 1, "an": 1, "a": 1}
 
+_UNIT = r"(?P<unit>sentence|paragraph|word|section|heading|bullet|item|line|slide|page)s?\b"
+# A bounded window of MODIFIERS between the bound and the unit. People write
+# "exactly 3 DISTINCT pages" and "exactly three FULL-VIEWPORT sections"; the
+# unit had to follow the number immediately, so a single adjective dropped the
+# criterion out of deterministic measurement and back into model judgment —
+# silently, because an unparsed constraint is indistinguishable from an
+# unbounded one. The window is deliberately short: two words admit the
+# adjectives that occur in practice while keeping a number and a far-away noun
+# from being read as a constraint ("exactly 2 of the 10 questions … paragraph").
+_MODIFIERS = r"(?:[\w-]+\s+){0,2}"
+
 # exactly 3 sections | no more than ten sentences | at most 40 words | under 5 bullets
 _CONSTRAINT = re.compile(
     r"\b(?P<op>exactly|precisely|no more than|at most|maximum(?: of)?|up to|not exceed(?:ing)?|"
     r"under|fewer than|less than|at least|minimum(?: of)?|no fewer than)\s+"
     r"(?P<num>\d+|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)\s+"
-    r"(?P<unit>sentence|paragraph|word|section|heading|bullet|item|line|slide|page)s?\b",
+    + _MODIFIERS + _UNIT,
     re.IGNORECASE)
 # "a single paragraph" / "one paragraph" with no explicit operator = exactly 1.
 _IMPLICIT_ONE = re.compile(
-    r"\b(?P<num>a single|single|one)\s+(?P<unit>sentence|paragraph|section|slide|page)\b",
+    r"\b(?P<num>a single|single|one)\s+" + _MODIFIERS
+    + r"(?P<unit>sentence|paragraph|section|slide|page)s?\b",
     re.IGNORECASE)
 
 # Units the engine can count unambiguously — a measured violation of these is
@@ -218,6 +230,36 @@ def check_counts(criteria: list[str], payload: str) -> list[CountCheck]:
 def violations(checks: list[CountCheck]) -> list[CountCheck]:
     """The measured, authoritative failures (gating units only)."""
     return [c for c in checks if not c.ok and c.gating]
+
+
+# A criterion that STATES a bound: an operator word plus a number. If one of
+# these yields no check, the bound is real but the engine cannot measure it.
+_BOUNDED_SHAPE = re.compile(
+    r"\b(?:exactly|precisely|no more than|at most|maximum|up to|not exceed|under|"
+    r"fewer than|less than|at least|minimum|no fewer than)\s+"
+    r"(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)\b",
+    re.IGNORECASE)
+
+
+def unmeasurable_counts(criteria: list[str]) -> list[str]:
+    """Criteria that state a numeric bound the engine cannot measure.
+
+    Coverage is the honest problem here, not correctness: across the recorded
+    corpus only ~10% of compiled criteria parse into a deterministic check,
+    and the rest are almost all bounds on units the measurement grammar does
+    not know ("exactly 8 questions", "at least one chart image"). Those rest
+    entirely on model judgment — which is fine, and is exactly what the
+    reviewer is for — but it was INVISIBLE: an unparsed constraint looked
+    identical to no constraint at all.
+
+    Naming them lets the reviewer know which bounds it alone is accountable
+    for, and shows an operator where extending the grammar would pay.
+    """
+    out: list[str] = []
+    for c in criteria or []:
+        if _BOUNDED_SHAPE.search(c or "") and not check_counts([c], ""):
+            out.append(c)
+    return out
 
 
 def artifact_page_check(criteria: list[str], page_count: int) -> list[CountCheck]:
