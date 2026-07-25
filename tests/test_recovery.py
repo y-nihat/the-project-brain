@@ -415,14 +415,37 @@ def test_remote_positive_yield_requires_lineage_and_retention():
     assert ok3, d3
 
 
-def test_developer_contract_teaches_negative_yield_lineage_and_build_asserts():
+def test_developer_contract_sections_have_not_been_deleted():
+    """A PROMPT-CONTENT PROXY, not a behavioural test — say so plainly.
+
+    What the developer agent DOES with these rules needs a live LLM, so the
+    offline suite can only guard that the sections still exist. It therefore
+    pins stable uppercase HEADINGS, never sentence fragments: a rewording is
+    not a regression, and a test that fails on one reports a defect that does
+    not exist. The semantics are enforced deterministically elsewhere — see
+    test_negative_observation_yield_is_operational_success,
+    test_remote_positive_yield_requires_lineage_and_retention and
+    test_observation_role_requires_yield_fields.
+
+    This is the SINGLE home for _DEVELOPER_SYSTEM wording pins. Three other
+    files pinned the same constant independently, so one reword failed three
+    tests in three files and none of them was testing the developer agent.
+    """
     c = acquisition._DEVELOPER_SYSTEM
-    assert "NEGATIVE OBSERVATION IS A VALID RESULT" in c
-    assert "CHANNEL LINEAGE" in c and "a schema is not current state" in c
-    assert "DOWNLOADS MUST FAIL THE BUILD" in c
-    assert "heavyweight interpretation/summarization dependency to an observer" in c
+    for heading in ("NEGATIVE OBSERVATION IS A VALID RESULT",
+                    "CHANNEL LINEAGE",
+                    "DOWNLOADS MUST FAIL THE BUILD",
+                    "EVIDENTIARY YIELD",              # folded in from test_adaptive
+                    "REMOTE OBSERVATION",             # folded in from test_adaptive
+                    "CODE THE ZERO-YIELD PATH DEFENSIVELY"):  # folded in from test_v015
+        assert heading in c, f"contract section {heading!r} was deleted"
+    # The declared fields the engine reads back are contractual, not editorial.
+    for field in ("`coverage`", "`unresolved_needs`", "`source_refs`"):
+        assert field in c, f"declared field {field} dropped from the contract"
     # The contract teaches GENERAL rules: no task/domain of any diagnostic
-    # trial may leak into what every future developer agent reads.
+    # trial may leak into what every future developer agent reads. THIS loop is
+    # the load-bearing half — it is the only mechanical guard on the general-
+    # capacity law, and it is kept verbatim.
     for residue in ("youtube", "youtu.be", "video", "transcript", "caption",
                     "nltk", "punkt", "sumy"):
         assert residue not in c.lower(), f"trial residue {residue!r} in developer contract"

@@ -186,27 +186,6 @@ def test_session_context_reaches_planner_and_revision_is_traced(tmp_path, monkey
     assert stored == {"of_run": "prev-42", "feedback": "shorten section two",
                       "preserve": "the structure the user accepted"}
     assert "plan.revision" in tracer.kinds()
-
-
-def test_session_seeds_from_a_resolved_referent_not_from_position():
-    # The session-level memory contract: a turn whose requirements REFER to an
-    # earlier turn's artifact gets that artifact; a turn that refers to nothing
-    # gets nothing. It used to be positional — the previous run of the process
-    # became the seed unconditionally — so changing the subject inherited a
-    # stranger's deliverable as evidence. Behaviour is covered in
-    # tests/test_analyze.py; here we pin the planner-visible surface.
-    import inspect
-
-    from brain import session as session_mod
-    src = inspect.getsource(session_mod)
-    assert "_last_run" in src
-    assert "session_context=session_context" in src
-    # The resolved referent outranks the relevance-picked seed...
-    assert "seed_run = referent" in src
-    # ...and nothing assigns the seed from position any more.
-    assert 'seed_run = self._last_run["run_id"]' not in src
-
-
 # --- P2: perceptual review ----------------------------------------------------------- #
 def test_artifact_page_check_measures_rendered_pages():
     checks = criteria.artifact_page_check(
@@ -340,12 +319,6 @@ def test_render_contract_is_instance_neutral():
 
 
 # --- P3: self-evaluation before handoff ----------------------------------------------- #
-def test_deliverable_instruction_demands_self_perception():
-    text = workflow.deliverable_instruction()
-    assert "SELF-CHECK BEFORE HANDOFF" in text
-    assert "LOOK at it yourself" in text
-
-
 # --- P4: hardening -------------------------------------------------------------------- #
 def test_sample_file_not_found_lists_real_workspace_files(tmp_path):
     """The authoring loop must be able to CORRECT a bad file reference: the

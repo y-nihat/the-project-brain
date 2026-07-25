@@ -73,7 +73,8 @@ def test_normalize_map_with_nothing_upstream_degrades_to_single():
     assert warnings
 
 
-def test_normalize_clamps_review_rounds():
+def test_normalize_clamps_review_rounds(monkeypatch):
+    monkeypatch.setattr(config, "REVIEW_MAX_ROUNDS", 5)
     stages, _ = workflow.normalize_stages([
         {"id": "a", "pattern": "single", "role": "r", "goal": "g"},
         {"id": "check", "pattern": "review", "role": "critic", "goal": "verify",
@@ -82,15 +83,22 @@ def test_normalize_clamps_review_rounds():
     assert stages[1].rounds == config.REVIEW_MAX_ROUNDS
 
 
-def test_normalize_review_rounds_default_allows_a_fix_cycle():
-    # Unspecified rounds on a review default to 2 — a 1-round review could
-    # only complain, never fix.
+def test_normalize_review_rounds_default_allows_a_fix_cycle(monkeypatch):
+    """Unspecified rounds on a review default to 2 — a 1-round review could
+    only complain, never fix.
+
+    The ceiling is raised first, because with REVIEW_MAX_ROUNDS at its default
+    of 2 the floor forces every review to 2 anyway: the default could be
+    deleted entirely and this test still passed, asserting the same number as
+    the clamp test next to it.
+    """
+    monkeypatch.setattr(config, "REVIEW_MAX_ROUNDS", 5)
     stages, _ = workflow.normalize_stages([
         {"id": "a", "pattern": "single", "role": "r", "goal": "g"},
         {"id": "check", "pattern": "review", "role": "critic", "goal": "verify",
          "depends_on": ["a"]},
     ])
-    assert stages[1].rounds == 2
+    assert stages[1].rounds == 2            # the DEFAULT, not the ceiling
 
 
 # --- ordering / topology ------------------------------------------------------ #

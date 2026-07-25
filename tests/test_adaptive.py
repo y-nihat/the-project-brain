@@ -137,7 +137,10 @@ def test_replanning_is_bounded(tmp_path, monkeypatch):
         asyncio.run(orch.run("objective"))
     finally:
         bb.close()
-    assert planner.extend_calls == config.REPLANS_PER_RUN == 1
+    # The BUDGET is the contract; its numeric value is configuration, and it is
+    # env-overridable — pinning the literal turned `REPLANS_PER_RUN=2` in the
+    # environment into a red suite with nothing broken.
+    assert planner.extend_calls == config.REPLANS_PER_RUN
 
 
 def test_extension_lands_before_pending_review_and_feeds_it(tmp_path, monkeypatch):
@@ -207,6 +210,14 @@ def test_success_reason_never_asserts_unassessed_criteria(tmp_path, monkeypatch)
     monkeypatch.setattr(config, "RUNS_DIR", tmp_path / "runs")
     bb = Blackboard(tmp_path / "b.db", "honest")
 
+    from brain.observability import NullTracer
+
+    events: list[tuple] = []
+
+    class Recording(NullTracer):
+        def event(self, kind, subject, status="info", **data):
+            events.append((kind, data))
+
     async def runner(tracer, name, prompt, options):
         return "a fine result"
 
@@ -214,14 +225,21 @@ def test_success_reason_never_asserts_unassessed_criteria(tmp_path, monkeypatch)
                           success_criteria=["exactly one paragraph"])
     orch = Orchestrator(session="honest", manager=None, ledger=None, registry=None,
                         blackboard=bb, broker=None, planner=planner, resolver=None,
-                        session_runner=runner)
+                        session_runner=runner, tracer=Recording())
     try:
         answer = asyncio.run(orch.run("write something nice"))  # no evidence referenced
     finally:
         bb.close()
     assert orch.classification == "succeeded"
-    assert "criteria-consistent" not in answer
-    # The honest reason is only prepended for non-success; check the trace state.
+    # The honesty contract lives in the RECORDED reason and dimensions, not in
+    # the answer: a succeeded run never prepends its banner (orchestrator.py),
+    # so the text this used to audit was structurally absent — and the phrase
+    # it looked for ('criteria-consistent') exists nowhere in the engine.
+    cls = next(d for k, d in events if k == "run.classification")
+    assert "NOT independently verified" in cls["reason"]
+    dims = next(d for k, d in events if k == "run.dimensions")
+    assert dims["criteria"] == "not-assessed"
+    assert dims["grounding"] == "not-required"
 
 
 def test_url_objective_without_approval_is_unverified(tmp_path, monkeypatch):
@@ -303,11 +321,17 @@ def test_revalidation_rejects_pre_contract_remote_observer(tmp_path):
     reg.add(legacy)
     ok, reason = acquisition.revalidate_capability(reg.get("net_observer"), None, reg)
     assert not ok and "older capability contract" in reason
-    # A local pure generator (no files, no network) is not an observer at all.
+    # The gate's NEGATIVE case, which nothing covered: a local tool that
+    # observes nothing (no accepts, no files, no network) is not an observer,
+    # so it must get PAST the staleness check and fail later, on its missing
+    # image — proving the gate discriminates rather than rejecting everything.
     gen = Capability(name="gen", description="d", image_tag="i:1", command=["x"],
                      input_schema={"type": "object", "properties": {}}, env_map={},
                      network="none", verified=True)
-    assert acquisition._declares_inputs(gen, {}) is False
+    reg.add(gen)
+    ok2, reason2 = acquisition.revalidate_capability(reg.get("gen"), None, reg)
+    assert not ok2
+    assert "older capability contract" not in reason2
     reg.close()
 
 
@@ -343,15 +367,6 @@ def test_provenance_reports_remote_observation():
     # No source_refs and no files -> unchanged honest wording.
     line2 = provenance_line("gen", None, {"data": 1})
     assert "from arguments only" in line2
-
-
-def test_developer_contract_demands_yield_and_retained_remote_evidence():
-    c = acquisition._DEVELOPER_SYSTEM
-    assert "EVIDENTIARY YIELD" in c and "`coverage`" in c and "`unresolved_needs`" in c
-    assert "REMOTE OBSERVATION" in c and "`source_refs`" in c
-    assert "verbatim payloads" in c
-
-
 # --- memory hygiene ------------------------------------------------------------- #
 def test_prior_answers_are_labeled_hypothesis_not_evidence(tmp_path):
     from brain.memory import history

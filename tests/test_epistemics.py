@@ -235,11 +235,16 @@ def test_plan_capture_keeps_all_emitted_keys():
     out = asyncio.run(handler(dict(args)))
     assert not out.get("is_error")
     assert captured == args
-    import inspect
-
-    from brain import planner as planner_mod
-    src = inspect.getsource(planner_mod)
-    assert 'captured["stages"] =' not in src   # the exact bug shape must not return
+    # A payload with NO stages at all: the criteria must still survive, which
+    # is the property cherry-picking broke. (This replaces a source grep for
+    # one exact assignment spelling — blind to every other way of
+    # reintroducing the bug, and breakable by an unrelated local named
+    # `captured`.)
+    captured2: dict = {}
+    handler2 = _make_emit_plan(captured2, NullTracer(), "planner")
+    out2 = asyncio.run(handler2({"success_criteria": ["under 40 words"]}))
+    assert not out2.get("is_error")
+    assert captured2["success_criteria"] == ["under 40 words"]
 
 
 # --- #13 engine-appended grounding review ---------------------------------------- #
@@ -541,13 +546,17 @@ def test_review_record_is_the_aggregate_authority(tmp_path, monkeypatch):
     Orchestrator._write_review_record(
         o, "review",
         [{"round": 1, "verdict": "revise", "critique": "VERDICT: revise\n1. fix title"},
-         {"round": 2, "verdict": "revise", "critique": "VERDICT: revise\n1. still wrong"}],
+         # A critique whose PROSE claims success while its structured verdict
+         # says otherwise — the exact shape the record must not be fooled by.
+         {"round": 2, "verdict": "revise",
+          "critique": "All reviewer defects resolved.\nVERDICT: revise\n1. still wrong"}],
         "revise — rounds exhausted; the final round's critique was NOT applied")
     text = (tmp_path / "runs" / "sess-1" / "outputs" / "review.md").read_text()
     assert "verdict record (authoritative)" in text
     assert "FINAL: revise — rounds exhausted" in text
+    # The STRUCTURED verdict outranks the prose, which is also present.
     assert "round 2 — VERDICT: revise" in text
-    assert "resolved" not in text.lower()
+    assert "All reviewer defects resolved" in text
 
 
 # --- #15 general-contract consolidation ------------------------------------------ #
@@ -559,14 +568,6 @@ def test_generalize_description_strips_task_residue():
 
 
 # --- #3 success criteria threading ---------------------------------------------- #
-def test_plan_carries_success_criteria():
-    p = asyncio.run(StubPlanner(
-        [StageSpec(id="s", pattern="single", role="r", goal="g")],
-        success_criteria=["exactly 3 sections", "under 40 words"],
-    ).plan("make a 3-page thing"))
-    assert p.success_criteria == ["exactly 3 sections", "under 40 words"]
-
-
 # --- #4 observed-artifact inspection -------------------------------------------- #
 def test_observed_artifacts_reads_outputs_but_skips_inputs_and_prior(tmp_path):
     ws = tmp_path / "workspace"

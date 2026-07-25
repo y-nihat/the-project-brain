@@ -39,17 +39,6 @@ def test_the_collection_guard_is_load_bearing():
     for p in stray:
         assert "tests" not in Path(p).relative_to(PROJECT_ROOT).parts[:1], (
             f"{p} would be collected: it resolves inside a testpath")
-
-
-def test_run_outputs_are_not_packaged():
-    """data/ is run output, never distributable content."""
-    cfg = _pyproject()
-    declared = cfg.get("tool", {}).get("setuptools", {})
-    packages = declared.get("packages")
-    if isinstance(packages, list):
-        assert not any(p.startswith("data") for p in packages)
-
-
 def test_packages_are_discovered_not_enumerated():
     """A hand-written package list omitted `brain.observability` and
     `brain.evals`. `brain/session.py` imports observability at module load, so

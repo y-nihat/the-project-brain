@@ -321,3 +321,106 @@ def test_resuming_a_conversation_held_by_a_live_process_is_refused(tmp_path):
         pytest.skip("advisory locks unavailable on this platform")
     assert conv.live_ids(locks, own=None) == {"conv-busy"}
     holder.release()
+
+
+# --------------------------------------------------------------------------- #
+# Continuity follows a resolved referent, not a position
+# --------------------------------------------------------------------------- #
+def _drive_turn(session, monkeypatch, objective, *, referent):
+    """Run one turn to the point of orchestration and capture what the
+    orchestrator was handed. Returns the captured kwargs."""
+    import asyncio
+
+    from brain import session as session_mod
+    from brain.analyze import Analyst
+
+    captured: dict = {}
+
+    class _Orch:
+        classification = "succeeded"
+        aspiration: dict = {}
+
+        def __init__(self, **kw):
+            captured["ctor"] = kw
+
+        async def run(self, objective, **kw):
+            captured.update(kw)
+            captured["objective"] = objective
+            return "the work"
+
+    monkeypatch.setattr(session_mod, "Orchestrator", _Orch)
+
+    async def judge(_prompt):
+        return {"resolution": "escalate", "referent_run_id": referent or "",
+                "reason": "r"}
+
+    session._analyst = lambda: Analyst(judge_fn=judge)
+    asyncio.run(session.run_objective(objective))
+    return captured
+
+
+def test_a_turn_that_refers_to_an_earlier_one_is_seeded_from_exactly_that_run(
+        tmp_path, monkeypatch):
+    """The v0.30 session-side continuity contract, driven rather than grepped.
+
+    Its only previous coverage was four substring checks over session.py, one
+    of which (`'_last_run' in src`) was vacuous. Relevance is lexical, so with
+    an unrelated follow-up the ONLY thing that can produce a seed here is the
+    resolved referent.
+    """
+    session = _isolated_session(tmp_path, monkeypatch)
+    try:
+        first = session.tracer.start_run("design a landing page")
+        first.finish("succeeded", outcome="made page.html")
+
+        got = _drive_turn(session, monkeypatch, "now stand it up",
+                          referent=first.run_id)
+        assert got["seed_run"] == first.run_id
+        assert got["referent_resolved"] is True
+        # The planner is told what it refers to, and told the earlier turns are
+        # context — not that this turn continues them.
+        ctx = got["session_context"] or ""
+        assert "REFERENT" in ctx and first.run_id in ctx
+        assert "does NOT necessarily continue" in ctx
+    finally:
+        session.close()
+
+
+def test_a_turn_that_refers_to_nothing_inherits_nothing(tmp_path, monkeypatch):
+    """Changing the subject used to inherit the previous deliverable as
+    target-tier evidence about a question it never observed."""
+    session = _isolated_session(tmp_path, monkeypatch)
+    try:
+        first = session.tracer.start_run("design a landing page")
+        first.finish("succeeded", outcome="made page.html")
+
+        got = _drive_turn(session, monkeypatch,
+                          "what is the capital of Chile", referent=None)
+        assert got["seed_run"] is None          # relevance finds nothing either
+        assert got["referent_resolved"] is False
+        assert "REFERENT" not in (got["session_context"] or "")
+    finally:
+        session.close()
+
+
+def test_independent_trial_mode_kills_both_carry_over_paths(tmp_path, monkeypatch):
+    """An operator re-running the SAME task as separate comparable attempts.
+
+    The flag cleared the relevance seed and the next statement unconditionally
+    re-set it from the previous run, so every repeat after the first was seeded
+    from the attempt it was supposed to be independent of. Both paths — the
+    relevance seed AND a resolved referent — must be suppressed.
+    """
+    monkeypatch.setenv("BRAIN_DISABLE_HISTORY_SEED", "1")
+    session = _isolated_session(tmp_path, monkeypatch)
+    try:
+        first = session.tracer.start_run("design a landing page")
+        first.finish("succeeded", outcome="made page.html")
+
+        got = _drive_turn(session, monkeypatch, "now stand it up",
+                          referent=first.run_id)
+        assert got["seed_run"] is None
+        assert got["referent_resolved"] is False
+        assert got["history"] == ""
+    finally:
+        session.close()

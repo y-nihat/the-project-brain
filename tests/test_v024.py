@@ -77,10 +77,6 @@ def test_run_ctx_initialized_on_construction():
     """The early-failure/help paths guard with `if self._run_ctx`; the attribute
     must exist even if a run fails before run() sets it."""
     from brain.orchestrator import Orchestrator
-    o = object.__new__(Orchestrator)
-    # __init__ path sets it; simulate the reset attribute presence
-    assert not hasattr(o, "_run_ctx") or o._run_ctx is None or o._run_ctx
-    # the real guarantee: a fresh Orchestrator has the attribute
     from brain.planner import StubPlanner
     orch = Orchestrator(session="x", manager=None, ledger=None, registry=None,
                         blackboard=None, broker=None, planner=StubPlanner([]),

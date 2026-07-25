@@ -116,8 +116,11 @@ def test_stop_and_ask_emits_a_structured_help_request(tmp_path, monkeypatch):
     assert "I need your input to continue" in answer
     assert "please provide an accessible copy" in answer
     assert "What I tried:" in answer and "Why I stopped:" in answer
-    assert "stopped to ask for your input" in answer.split("\n")[0] or \
-           "stopped to ask for your input" in answer
+    # The two-layer prepend, in order: the help header leads, and the
+    # classification banner sits under it. The old assertion was `X in line0 or
+    # X in answer`, which collapses to the second and tested no ordering.
+    assert answer.splitlines()[0].startswith("--- I need your input to continue")
+    assert "[result: BLOCKED] stopped to ask for your input" in answer
 
 
 def test_stop_is_a_calibrated_stop(tmp_path, monkeypatch):

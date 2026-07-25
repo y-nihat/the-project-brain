@@ -225,6 +225,16 @@ class BrainSession:
 
         return Analyst(model=config.model_for("analyst"), tracer=self.tracer)
 
+    async def _analyze_turn(self, objective: str, attached: Optional[list[str]] = None):
+        """The analyze step for one turn of THIS conversation.
+
+        A named seam rather than an inline call, so what the step returns can
+        be asserted directly — the alternative was a test that read
+        ``run_objective``'s source and checked statement order.
+        """
+        return await self._analyst().analyze(
+            objective, turns=self._conversation_turns(), attached=attached)
+
     def _conversation_turns(self) -> list[dict]:
         """This conversation's earlier turns, from the record.
 
@@ -390,8 +400,7 @@ class BrainSession:
 
             analysis = Analysis(reason="self-initiated iteration: the work is the point")
         else:
-            analysis = await self._analyst().analyze(
-                objective, turns=self._conversation_turns(), attached=attach_paths)
+            analysis = await self._analyze_turn(objective, attach_paths)
         if analysis.satisfied:
             return self._deliver_answer(run, objective, analysis)
 

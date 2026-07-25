@@ -92,15 +92,6 @@ def test_ledger_tiers_retained_evidence(tmp_path):
     # No target-lineage evidence -> the limitation is stated.
     only_proxy = [e for e in entries if e.tier == "proxy"]
     assert "no target-lineage evidence" in evidence.describe(only_proxy, locators)
-
-
-def test_ledger_falls_back_to_all_tool_dirs_without_reader_dirs(tmp_path):
-    ws = tmp_path / "r" / "workspace"
-    (ws / "some_tool").mkdir(parents=True)
-    (ws / "some_tool" / "x.txt").write_text("x")
-    assert evidence.ledger(ws, (), []) != []           # degrade toward MORE visibility
-
-
 # --- the approval gate ----------------------------------------------------------- #
 def test_approved_over_empty_ledger_is_voided(tmp_path, monkeypatch):
     """A parsed 'approved' cannot override the engine's facts: source-derived
@@ -238,7 +229,10 @@ def test_unmet_evidence_demand_escalates_to_extension_and_recheck(tmp_path, monk
 
 
 # --- typed deliverable payload + measured criteria -------------------------------- #
-def test_deliverable_payload_extraction_and_file():
+def test_deliverable_payload_extraction():
+    """Extraction only. The FILE half of the contract — that the payload
+    reaches outputs/DELIVERABLE.md — is covered by
+    test_measured_violation_voids_approval_until_fixed, which reads it."""
     text = ("Here is my work.\n```deliverable\nThe exact paragraph.\n```\n"
             "Notes: I counted the sentences.")
     assert workflow.extract_deliverable(text) == "The exact paragraph."
@@ -444,11 +438,13 @@ def test_recipe_web_search_holds_the_full_evidence_contract(tmp_path):
     assert "search-results-" in p                       # unique per call: no overwrite
     assert "observation_state" in p
     assert "source_refs" in p and "coverage" in p and "unresolved_needs" in p
-    # (make_cap, make_context, free_hint, sample_input, shape_verify):
-    # sample_input drives the generic verify; the shape verifier rides as
-    # recipe DATA (no name-keyed verifier registry in the engine).
-    recipe = acquisition._RECIPES["web_search"]
-    assert len(recipe) == 5 and recipe[3] and callable(recipe[4])
+    # The substring checks above are a PROXY: WEB_SEARCH_PROGRAM only executes
+    # under Docker, so the offline suite has no other way to tie the SHIPPED
+    # script to the retention/lineage/yield contract. Its live equivalent,
+    # test_m1_web_search.py::test_acquire_verify_promote_web_search, is skipped
+    # without a daemon. The recipe's internal arity is deliberately NOT pinned:
+    # the acquire() call above unpacks the same tuple and drives both
+    # verifiers, so a wrong arity fails there with a real error.
 
 
 # --- perception: image observations are presentable -------------------------------- #

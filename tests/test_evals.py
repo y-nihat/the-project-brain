@@ -4,6 +4,8 @@ via scripts/run-evals.sh, not pytest.
 """
 from __future__ import annotations
 
+import pytest
+
 from brain.evals import checks, load_facts, score_run
 from brain.evals.runner import render_markdown
 from brain.evals.scenarios import SCENARIOS, get, validate
@@ -114,11 +116,25 @@ def test_the_escalation_floor_scenario_fails_a_collapsed_run(tmp_path):
     assert any(r["check"] == "min_stages" and not r["passed"] for r in card.results)
 
 
-def test_scenarios_validate_against_check_registry():
+def test_validate_rejects_scenarios_the_harness_could_not_run():
+    """Two ways a scenario is unrunnable, and only the first was checked: a
+    check that does not exist, and one that does not take the parameter the
+    scenario passes it. The second used to surface as a TypeError partway
+    through a suite that costs real money.
+
+    The previous test could not fail at all: validate() already runs at module
+    import, so the import succeeding proved it passed, and the loop re-ran
+    exactly what validate() does plus an isinstance check on literal dicts.
+    """
+    from brain.evals.scenarios import Scenario
+
+    with pytest.raises(ValueError, match="unknown check"):
+        validate([Scenario(id="bogus", objective="o", intent="i",
+                           checks=[("no_such_check", {})])])
+
+    with pytest.raises(ValueError, match="cannot be called"):
+        validate([Scenario(id="bad-param", objective="o", intent="i",
+                           checks=[("max_stages", {"ceiling": 2})])])
+
+    # Every shipped scenario binds — this is what import-time validation means.
     validate()
-    assert len(SCENARIOS) >= 4
-    # Every referenced check binds cleanly to its params (signature sanity).
-    for s in SCENARIOS:
-        for name, params in s.checks:
-            assert name in checks.CHECKS
-            assert isinstance(params, dict)

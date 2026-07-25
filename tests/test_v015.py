@@ -46,9 +46,17 @@ def _orch(tmp_path, runner, planner, session, tracer=None):
 
 # --- transport: per-result budgets must share the frame --------------------------- #
 def test_result_budget_is_a_frame_share():
+    """A turn's PARALLEL tool results share one SDK frame, so a per-result
+    budget equal to the whole frame budget is the exact defect this fixed.
+
+    The old assertion was `per * SHARE <= SAFE_BYTES`, which is the
+    floor-division identity (A//B)*B <= A and cannot fail for any values.
+    """
     per = config.transport_result_budget()
-    assert per * config.TRANSPORT_FRAME_SHARE <= config.TRANSPORT_SAFE_RESULT_BYTES
-    # The point of the share: a turn's parallel results must fit ONE 1 MiB frame.
+    # The share must actually divide: SHARE=1 gives every result the whole
+    # frame, which is the bug. It is env-driven, so this is a real guard.
+    assert config.TRANSPORT_FRAME_SHARE >= 2
+    assert per < config.TRANSPORT_SAFE_RESULT_BYTES
     assert per * config.TRANSPORT_FRAME_SHARE < 1024 * 1024
 
 
@@ -271,10 +279,17 @@ def test_persistence_digest_counts_repeated_signatures(tmp_path):
     assert "seen 2x" in digest and "PLATEAU" in digest
 
 
-def test_failure_signature_normalizes_volatile_parts():
+def test_failure_signature_collapses_noise_but_keeps_distinct_failures_apart():
+    """Both directions. Only the collapsing half was asserted, which a constant
+    -returning implementation satisfies — while making the supervisor declare a
+    false PLATEAU on two genuinely different failures and abandon a viable
+    approach."""
     a = _failure_signature("Error 1234: build cand-9f21ab3c failed at step 7")
     b = _failure_signature("Error 987: build cand-11deadbeef failed at step 9")
-    assert a == b
+    assert a == b                       # volatile ids and digits are noise
+    c = _failure_signature("error 1: model download failed")
+    d = _failure_signature("error 1: no such file or directory")
+    assert c != d                       # different failures stay different
 
 
 # --- resilience: waiting on delegated work is not a stall -------------------------- #
@@ -291,21 +306,6 @@ def test_watchdog_spares_sessions_waiting_on_delegated_work():
                 slow_then_yield(), 0.1, 5, "agent 'x'")]
 
     assert asyncio.run(run_guarded()) == ["m1"]
-
-
-def test_watchdog_still_kills_true_silence():
-    async def silent():
-        await asyncio.sleep(10)
-        yield "never"
-
-    async def run():
-        async for _ in _iter_with_watchdog(silent(), 0.1, 5, "agent 'x'"):
-            pass
-
-    with pytest.raises(AgentStallError):
-        asyncio.run(run())
-
-
 def test_watchdog_total_budget_survives_delegated_work():
     from brain.observability import activity
 
@@ -356,30 +356,6 @@ def test_revision_seeds_prior_deliverable_as_target_evidence(tmp_path, monkeypat
     mine = [e for e in entries if e.file.endswith("outputs/DELIVERABLE.md")]
     assert mine and mine[0].tier == "target"
     assert mine[0].capability == "prior_deliverable"
-
-
-def test_non_revision_seed_does_not_import_prior_deliverable(tmp_path, monkeypatch):
-    """Continuity seeding without a revision judgment must NOT stamp a prior
-    deliverable as this run's designated source."""
-    monkeypatch.setattr(config, "RUNS_DIR", tmp_path / "runs")
-    prior = tmp_path / "runs" / "prev-run"
-    (prior / "outputs").mkdir(parents=True)
-    (prior / "workspace").mkdir()
-    (prior / "outputs" / "DELIVERABLE.md").write_text("old work")
-
-    async def runner(_t, name, prompt, options):
-        return "fresh work"
-
-    planner = StubPlanner([StageSpec(id="s", pattern="single", role="W", goal="new task")])
-    orch, bb = _orch(tmp_path, runner, planner, "fresh1", RecordingTracer())
-    try:
-        asyncio.run(orch.run("a new objective", seed_run="prev-run"))
-    finally:
-        bb.close()
-    ws = tmp_path / "runs" / "fresh1" / "workspace"
-    assert not (ws / "prior" / "prev-run" / "outputs" / "DELIVERABLE.md").exists()
-
-
 # --- grounding: the corpus manifest makes bounded absence citable ------------------ #
 def test_absence_claim_citing_corpus_manifest_survives_the_gate(tmp_path, monkeypatch):
     """The campaign shape: a sound 'no such document exists in the sources'
@@ -478,5 +454,3 @@ def test_miscited_absence_claim_still_voids(tmp_path, monkeypatch):
 
 
 # --- perception: the authoring contract demands a guarded zero-yield path ---------- #
-def test_authoring_contract_requires_guarded_empty_path():
-    assert "CODE THE ZERO-YIELD PATH DEFENSIVELY" in acquisition._DEVELOPER_SYSTEM

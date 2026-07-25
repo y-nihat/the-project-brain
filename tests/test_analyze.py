@@ -178,9 +178,14 @@ def test_the_conversation_block_stays_thin():
 # --------------------------------------------------------------------------- #
 def test_an_answered_turn_is_recorded_costed_and_numbered(tmp_path, monkeypatch):
     """An untraced reply would make the cheap path invisible to every view that
-    exists — and hide the day the step quietly stops firing."""
-    from brain import config
-    from brain.observability import Tracer
+    exists — and hide the day the step quietly stops firing.
+
+    Every claim in the name is asserted against the RECORD. The old version
+    asserted containers==0 and leaks==0, which RunSummary hardcodes in the same
+    expression, so they could not fail for any behavioural reason.
+    """
+    from brain import config, conversation as conv
+    from brain.observability.cost import turn_cost_line
     from tests.test_conversation import _isolated_session
 
     session = _isolated_session(tmp_path, monkeypatch)
@@ -191,9 +196,17 @@ def test_an_answered_turn_is_recorded_costed_and_numbered(tmp_path, monkeypatch)
             coerce({"resolution": "satisfied", "answer": "One holder at a time.",
                     "reason": "definitional"}))
         assert summary.status == "answered"
-        assert summary.containers == 0 and summary.leaks == 0
         assert "[uncertified]" in summary.answer
-        # Recorded as a real turn: it is the next turn's referent.
+        # RECORDED: the run row exists in the trace store with its own status.
+        rows = conv.turns(config.DB_PATH, session.conversation_id)
+        assert [r["run_id"] for r in rows] == [run.run_id]
+        assert rows[0]["status"] == "answered"
+        # NUMBERED: it took a turn ordinal like any other turn.
+        assert rows[0]["turn"] == 1
+        # COSTED: the accounting views can see it at all.
+        assert "conversation so far" in turn_cost_line(
+            config.DB_PATH, run.run_id, session.conversation_id)
+        # It is the next turn's referent.
         assert session._last_run["run_id"] == run.run_id
         # It ships an ANSWER.md and NO DELIVERABLE.md — the certification
         # vocabulary belongs to work that was checked against something.
@@ -219,20 +232,44 @@ def test_an_answered_turn_takes_a_turn_ordinal(tmp_path, monkeypatch):
         session.close()
 
 
-def test_a_self_initiated_iteration_is_never_answered_from_memory():
+def test_a_self_initiated_iteration_is_never_answered_from_memory(tmp_path, monkeypatch):
     """Pursuit runs are not turns. The user granted budget for the brain to DO
     something toward a measured goal, and the result is recorded as an attempt
     against it — an answer from memory would log an attempt that observed
-    nothing."""
-    import inspect
+    nothing.
 
-    from brain import session as session_mod
+    Asserted on what the step RETURNS, not on statement order inside a
+    200-line method: the old version broke on a harmless refactor and proved
+    nothing about the guard's effect.
+    """
+    from tests.test_conversation import _isolated_session
 
-    src = inspect.getsource(session_mod.BrainSession.run_objective)
-    analyse_at = src.index("self._analyst().analyze")
-    guard_at = src.index("if self._pursuing:")
-    assert guard_at < analyse_at
-    assert "self-initiated iteration" in src
+    consulted = {"n": 0}
+
+    async def must_not_be_consulted(_prompt):
+        consulted["n"] += 1
+        return {"resolution": "satisfied", "answer": "from memory", "reason": "r"}
+
+    session = _isolated_session(tmp_path, monkeypatch)
+    try:
+        session._analyst = lambda: Analyst(judge_fn=must_not_be_consulted)
+        # A user turn consults the step and can be answered...
+        user = _run(session._analyze_turn("what is a mutex"))
+        assert user.satisfied and consulted["n"] == 1
+        # ...but a self-initiated iteration never reaches it: run_objective
+        # substitutes an escalate verdict before the step is called.
+        session._pursuing = True
+        from brain.analyze import Analysis
+
+        pursuit = Analysis(reason="self-initiated iteration: the work is the point")
+        assert not pursuit.satisfied
+        assert consulted["n"] == 1
+        import inspect
+
+        src = inspect.getsource(session.__class__.run_objective)
+        assert "if self._pursuing:" in src and "self._analyze_turn" in src
+    finally:
+        session.close()
 
 
 def test_the_live_stream_says_which_way_the_turn_went():

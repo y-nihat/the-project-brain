@@ -8,6 +8,7 @@ referencing checks that do not exist.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import Optional
 
 from .checks import CHECKS
 
@@ -202,12 +203,29 @@ def get(scenario_id: str) -> Scenario:
                    f"(have: {[s.id for s in SCENARIOS + OFFLINE_SCENARIOS]})")
 
 
-def validate() -> None:
-    """Fail loudly on a scenario referencing a check that does not exist."""
-    for s in SCENARIOS + OFFLINE_SCENARIOS:
-        for name, _params in s.checks:
+def validate(scenarios: Optional[list["Scenario"]] = None) -> None:
+    """Fail loudly on a scenario the harness could not actually run.
+
+    Two ways that happens, and only the first was checked: a check that does
+    not exist, and a check that exists but does not take the parameter the
+    scenario passes it. The second surfaced as a TypeError inside score_run —
+    partway through a suite that costs real money — so it is bound here, at
+    import, where it costs nothing.
+    """
+    import inspect
+
+    from .facts import RunFacts
+
+    for s in (SCENARIOS + OFFLINE_SCENARIOS if scenarios is None else scenarios):
+        for name, params in s.checks:
             if name not in CHECKS:
                 raise ValueError(f"scenario '{s.id}' references unknown check '{name}'")
+            try:
+                inspect.signature(CHECKS[name]).bind(RunFacts(run_id="validate"), **params)
+            except TypeError as e:
+                raise ValueError(
+                    f"scenario '{s.id}' check '{name}' cannot be called with "
+                    f"{params!r}: {e}") from None
 
 
 validate()

@@ -78,39 +78,96 @@ def test_the_verdict_never_looks_at_the_objective():
 # --------------------------------------------------------------------------- #
 # The machinery keyed to it is actually conditioned
 # --------------------------------------------------------------------------- #
-def test_every_deliverable_gate_is_conditioned_on_the_verdict():
-    import inspect
+def _run_plan(tmp_path, monkeypatch, session, stages, criteria=None):
+    """Drive a real Orchestrator over a plan and return (prompts, events)."""
+    import asyncio
 
-    from brain import orchestrator as orch_mod
+    from brain import config
+    from brain.memory.blackboard import Blackboard
+    from brain.observability import NullTracer
+    from brain.orchestrator import Orchestrator
+    from brain.planner import StubPlanner
 
-    # Join line continuations so a wrapped condition reads as one statement.
-    src = inspect.getsource(orch_mod).replace("\\\n", " ").replace("(\n", "(")
-    # Every place that asks "is this the deliverable stage?" now asks the plan
-    # first. An unconditioned one would reintroduce the fixed machinery.
-    for line in src.splitlines():
-        if "workflow.deliverable_stage_ids(" not in line:
-            continue
-        if "deliv_ids = " in line:
-            continue        # routing: which stage OWNS it, if there is one
-        assert "_plan_makes_artifact" in line, line
+    monkeypatch.setattr(config, "RUNS_DIR", tmp_path / "runs")
+    prompts: dict[str, str] = {}
+    events: list[tuple] = []
+
+    class Recording(NullTracer):
+        def event(self, kind, subject, status="info", **data):
+            events.append((kind, data))
+
+    async def runner(_t, name, prompt, options):
+        prompts[name] = prompt
+        if name.startswith("check.r"):
+            return "VERDICT: approved\nok"
+        return "```deliverable\nthe work\n```"
+
+    bb = Blackboard(tmp_path / f"{session}.db", session)
+    orch = Orchestrator(session=session, manager=None, ledger=None, registry=None,
+                        blackboard=bb, broker=None,
+                        planner=StubPlanner(stages, success_criteria=criteria or []),
+                        resolver=None, session_runner=runner, tracer=Recording())
+    try:
+        asyncio.run(orch.run("do the thing"))
+    finally:
+        bb.close()
+    return prompts, events
 
 
-def test_the_deliverable_contract_is_not_free():
-    """It is ~1.4 KB of counting, fencing and self-render rules appended to the
-    producing stage's prompt — worth it for an artifact, pure cost without one."""
+def test_a_plan_with_no_artifact_pays_none_of_the_deliverable_machinery(
+        tmp_path, monkeypatch):
+    """The CONSEQUENCE of the verdict, which nothing asserted — the decision
+    had six tests and its effect had none. A source lint stood in for this and
+    was blind to any gate written with a differently-named local."""
+    from brain import config
+
+    prompts, events = _run_plan(
+        tmp_path, monkeypatch, "noart",
+        [StageSpec(id="say", pattern="single", role="S", goal="answer")])
+
+    verdict = next(d for k, d in events if k == "plan.artifact_of_record")
+    assert verdict["produces"] is False
+    # No fenced-payload contract in the producing stage's prompt...
+    assert "DELIVERABLE PAYLOAD" not in prompts["say"]
+    assert "SELF-CHECK BEFORE HANDOFF" not in prompts["say"]
+    # ...no DELIVERABLE.md asserting an artifact that does not exist...
+    assert not (config.RUNS_DIR / "noart" / "outputs" / "DELIVERABLE.md").exists()
+    # ...and no format measurement.
+    assert not any(k == "criteria.measured" for k, _d in events)
+
+
+def test_a_plan_that_does_produce_an_artifact_still_gets_everything(
+        tmp_path, monkeypatch):
+    """The mirror case, so the gate cannot pass by simply never firing."""
+    from brain import config
+
+    prompts, events = _run_plan(
+        tmp_path, monkeypatch, "art",
+        [StageSpec(id="make", pattern="single", role="M", goal="produce",
+                   deliverable=True)],
+        criteria=["exactly 1 section"])
+
+    verdict = next(d for k, d in events if k == "plan.artifact_of_record")
+    assert verdict["produces"] is True
+    assert "DELIVERABLE PAYLOAD" in prompts["make"]
+    assert (config.RUNS_DIR / "art" / "outputs" / "DELIVERABLE.md").is_file()
+    assert any(k == "criteria.measured" for k, _d in events)
+
+
+def test_the_deliverable_contract_carries_its_load_bearing_clauses():
+    """The fenced-payload contract appended to a producing stage's prompt: what
+    the payload is, what gets measured, and that the producer must LOOK at what
+    it made. Each clause is one the engine depends on downstream — the fence is
+    parsed, the measurement target is measured, and the self-check is the only
+    thing standing between a binary artifact and a text-read 'verification'.
+
+    Its LENGTH is not pinned: that was an anecdote about cost, nothing depends
+    on it, and any rewording turned it into noise.
+    """
     text = workflow.deliverable_instruction()
-    assert len(text) > 1000
-    for owed in ("DELIVERABLE PAYLOAD", "MEASUREMENT TARGET", "SELF-CHECK BEFORE HANDOFF"):
+    for owed in ("DELIVERABLE PAYLOAD", "MEASUREMENT TARGET",
+                 "SELF-CHECK BEFORE HANDOFF", "LOOK at it yourself"):
         assert owed in text
-
-
-def test_the_run_records_which_way_it_went():
-    import inspect
-
-    from brain import orchestrator as orch_mod
-
-    src = inspect.getsource(orch_mod.Orchestrator.run)
-    assert "plan.artifact_of_record" in src
 
 
 # --------------------------------------------------------------------------- #
@@ -149,13 +206,34 @@ def test_cost_reporting_is_fail_open(tmp_path):
     assert conversation_cost(missing, "conv-x")["runs"] == 0
 
 
-def test_the_envelope_does_not_recite_the_whole_library():
-    """Naming every promoted capability on every run buried the run's own
-    accounting under a list that has nothing to do with it."""
-    import inspect
+def test_the_envelope_does_not_recite_the_whole_library(capsys, monkeypatch):
+    """The RENDERED line, not the f-string that produces it: any respelling
+    that still dumps the whole list passed the old source check."""
+    import asyncio
 
     from brain import main as main_mod
 
-    src = inspect.getsource(main_mod._amain)
-    assert "capabilities={summary.capabilities}" not in src
-    assert "len(summary.capabilities)" in src
+    class _Summary:
+        run_id, status, answer = "run-x", "succeeded", "the answer"
+        containers, leaks = 0, 0
+        capabilities = ["web_search", "render_artifact_pages", "code_execution"]
+
+    class _Session:
+        def add_listener(self, _fn):
+            pass
+
+        async def run_objective(self, _o):
+            return _Summary()
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(main_mod, "BrainSession", lambda: _Session())
+    monkeypatch.setattr(main_mod, "_history_note", lambda *a: "")
+    monkeypatch.setattr(main_mod, "_cost_line", lambda _rid: "")
+    asyncio.run(main_mod._amain("do the thing", quiet=True))
+
+    out = capsys.readouterr().out
+    assert "library=3 capabilit" in out
+    for name in _Summary.capabilities:
+        assert name not in out

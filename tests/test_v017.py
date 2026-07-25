@@ -86,7 +86,9 @@ def test_prepended_narration_heading_is_a_real_violation():
     doc = ("# Extraction Summary\n\nhow I worked\n\n# The Report\n\n"
            + "\n\n".join(f"## S{i}\n\nt" for i in range(1, 6)))
     check = criteria.check_counts(["exactly 5 sections"], doc)[0]
-    assert not check.ok    # two top-level headings -> 2 sections, not 5
+    # The MEASUREMENT, not just the verdict: `not ok` alone also passes if the
+    # counter regressed to counting every heading (7).
+    assert check.measured == 2 and not check.ok
 
 
 def test_heading_unit_still_counts_every_heading():

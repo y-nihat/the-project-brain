@@ -103,8 +103,11 @@ def test_planner_fallback_uses_declared_observation_need():
 
 # --- recipes carry their own shape verifier; no name-keyed registry -------------- #
 def test_recipe_carries_shape_verifier_and_registry_is_gone():
-    recipe = acquisition._RECIPES["web_search"]
-    assert len(recipe) == 5 and callable(recipe[4])
+    # The PROPERTY, not the arity: every recipe ends in a callable shape
+    # verifier. Pinning `len(recipe) == 5` caught no defect that this misses
+    # and broke on a harmless widening of the tuple.
+    for r in acquisition._RECIPES.values():
+        assert callable(r[-1])
     assert not hasattr(verifier, "VERIFIERS")
     assert not hasattr(verifier, "verify")
     # Single source of truth: the recipe capability's contract IS the

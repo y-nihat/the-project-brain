@@ -173,8 +173,11 @@ def test_agent_user_prompt_carries_the_inventory():
     p = factory.agent_user_prompt("obj", spec, {}, history="earlier run notes",
                                   workspace_inventory="3 file(s): x")
     assert "WORKSPACE FILES (engine-enumerated): 3 file(s): x" in p
-    # The prior-work hint points at the inventory instead of speculating.
-    assert "may already be seeded" not in p
+    # The prior-work hint points at the inventory instead of speculating. This
+    # asserts the wording that EXISTS; the previous negative guarded a phrase
+    # present nowhere in the codebase, so it could never fail.
+    assert "trust the WORKSPACE FILES inventory" in p
+    assert "never a remembered or assumed layout" in p
     assert factory.agent_user_prompt("obj", spec, {}).count("WORKSPACE FILES") == 0
 
 

@@ -378,5 +378,10 @@ def test_broker_collect_value_is_visible_and_unstored(tmp_path):
                           help_text="put it in data/inbox/")
     assert val == "data/inbox/x.mp4"
     assert b.secrets == {}                          # NOT stored as a secret
+    # VISIBLE is the other half of the name, and the distinction from
+    # collect_secret: the purpose and help text are echoed to the user rather
+    # than hidden. The captured output used to be recorded and never asserted.
+    assert "the file could not be accessed" in seen["out"]
+    assert "data/inbox/" in seen["out"]
     # Automated sessions decline free-form asks.
     assert ApprovalBroker(auto="deny").collect_value("p", "why") is None

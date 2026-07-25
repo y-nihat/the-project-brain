@@ -602,64 +602,21 @@ def test_a_delivered_run_breaks_a_tie_but_never_outranks_similarity(tmp_path):
     hits = relevant_runs(db, "summarize the incident report", limit=2)
     assert hits[0]["run_id"] == "run-ok-same", "equal similarity -> prefer delivered"
 
+    # ...but NEVER outranks similarity — the other half of the name, and the
+    # defect the flat +1 actually caused: a failed run that matches better must
+    # still win over a delivered run that matches worse.
+    second = tmp_path / "second"
+    second.mkdir()
+    db2 = _history_db(second, [
+        ("run-failed-closer", "summarize the incident report", "failed", "2026-07-01"),
+        ("run-ok-distant", "summarize the report", "succeeded", "2026-07-02"),
+    ])
+    hits2 = relevant_runs(db2, "summarize the incident report", limit=2)
+    assert hits2[0]["run_id"] == "run-failed-closer", "similarity outranks status"
+
 
 # --- run-folder outputs cross the redaction boundary ------------------------------ #
 _CANARY = "sk-ant-" + "v028canary0123456789abcdef"
-
-
-def test_answer_and_deliverable_are_scrubbed_on_disk(tmp_path, monkeypatch):
-    """CHANGELOG.md tracked this as a known limitation: "Redaction does not yet
-    cover every disk-writing path (sandbox stderr, failed-verify artifacts, the
-    blackboard, run-folder outputs)".
-
-    The asymmetry was exact — `tracer.RunHandle.finish` scrubbed the SAME
-    string into `runs.outcome`, while `ANSWER.md` beside it got the raw text.
-    The realistic path is an agent transcribing a credential it saw in a tool
-    result or an attached file into its own prose; the database copy already
-    assumes that can happen, which is why the file copy mattered."""
-    monkeypatch.setattr(config, "RUNS_DIR", tmp_path / "runs")
-    orch, bb = _orch(tmp_path, None, StubPlanner([]), "leak")
-    try:
-        out = tmp_path / "runs" / "leak" / "outputs"
-        out.mkdir(parents=True)
-        from brain.observability.redact import scrub_text
-        (out / "ANSWER.md").write_text(scrub_text(f"the answer mentions {_CANARY} inline"))
-        (out / "DELIVERABLE.md").write_text(scrub_text(f"payload with {_CANARY}"))
-    finally:
-        bb.close()
-
-    for name in ("ANSWER.md", "DELIVERABLE.md"):
-        blob = (tmp_path / "runs" / "leak" / "outputs" / name).read_text()
-        assert _CANARY not in blob, f"{name} leaked a secret-shaped value"
-        assert "redacted" in blob
-
-
-def test_every_run_folder_text_write_passes_through_scrub():
-    """Structural: the run folder is written from several places, and only one
-    of them used to mask. Each text write of MODEL- or TOOL-derived content
-    must go through `scrub_text`.
-
-    Deliberately excluded: byte copies of user-supplied files. Scrubbing those
-    would corrupt the operator's own data, and they never passed through an
-    agent."""
-    import re
-    from brain import orchestrator as orch_mod
-    from brain import acquisition as acq_mod
-
-    for module, allowed_unscrubbed in (
-            (orch_mod, {"locators.json"}),      # engine-derived, no model text
-            (acq_mod, {"filename"})):           # authored build context, written verbatim
-        text = open(module.__file__, encoding="utf-8").read()
-        for line in text.splitlines():
-            if ".write_text(" not in line or "scrub_text" in line:
-                continue
-            if any(a in line for a in allowed_unscrubbed):
-                continue
-            # Anything else writing text into a run folder must be scrubbed.
-            assert "RUNS_DIR" not in line and "attempt_dir" not in line \
-                and "outputs" not in line, f"unscrubbed run-folder write: {line.strip()}"
-
-
 # --- the autonomy gate prices what it asks for ------------------------------------ #
 def test_the_autonomy_gate_states_a_cost_not_just_a_count(tmp_path, monkeypatch):
     """The gate is the only place a human decides to spend UNATTENDED, and it
@@ -841,3 +798,59 @@ def test_scoring_recorded_runs_costs_nothing_and_rolls_up_by_version(tmp_path):
     assert "0.27.0" in table and "0.28.0" in table
     assert "$0" in table
     assert "tripwire" in table          # states what it is, and is not
+
+
+def test_the_run_folder_masks_model_text_wherever_it_is_written(tmp_path, monkeypatch):
+    """BEHAVIOURAL: push a canary through each writer and read the file back.
+
+    The pair this replaces could not see a real leak. One was a source lint
+    that only fired when a single line contained both `.write_text(` and a
+    run-folder token, and it read two modules — so it was blind to the v0.30
+    answered-turn path in session.py, which wrote model prose to disk unmasked
+    for a whole release. The other called scrub_text ITSELF, wrote the
+    already-masked result, then asserted the canary was gone: it verified that
+    scrub_text scrubs, which tests/test_leakproof.py already covers.
+
+    Deliberately NOT masked, recorded here so the boundary is a decision and
+    not an oversight:
+      * byte copies of user-supplied files — masking those would corrupt the
+        operator's own data, and they never passed through an agent;
+      * the authored build context (acquisition._write_context) — the stored
+        program and Dockerfile must reproduce the image that was actually
+        built, so masking them would desynchronize the artifact from the
+        container. Secrets reach a tool through its environment at call time
+        and are never baked into its source.
+    """
+    from brain.analyze import coerce
+    from brain.observability.redact import MASK
+    from tests.test_conversation import _isolated_session
+
+    monkeypatch.setattr(config, "RUNS_DIR", tmp_path / "runs")
+
+    async def runner(_t, _name, _prompt, _options):
+        return f"```deliverable\nthe payload mentions {_CANARY}\n```"
+
+    planner = StubPlanner([StageSpec(id="make", pattern="single", role="M",
+                                     goal="produce", deliverable=True)])
+    orch, bb = _orch(tmp_path, runner, planner, "leak")
+    try:
+        asyncio.run(orch.run("write something"))
+    finally:
+        bb.close()
+    for name in ("ANSWER.md", "DELIVERABLE.md"):
+        blob = (tmp_path / "runs" / "leak" / "outputs" / name).read_text()
+        assert _CANARY not in blob, f"{name} leaked a secret-shaped value"
+        assert MASK in blob
+
+    # The answered-turn path is a DIFFERENT writer in a different module, and
+    # it was unmasked for the whole of v0.30 with the suite green.
+    session = _isolated_session(tmp_path / "sess", monkeypatch)
+    try:
+        run = session.tracer.start_run("what did I paste")
+        session._deliver_answer(run, "what did I paste", coerce(
+            {"resolution": "satisfied", "answer": f"you pasted {_CANARY}",
+             "reason": "r"}))
+        answered = (config.RUNS_DIR / run.run_id / "outputs" / "ANSWER.md").read_text()
+        assert _CANARY not in answered and MASK in answered
+    finally:
+        session.close()
