@@ -74,6 +74,47 @@ def _new_id(prefix: str) -> str:
     return f"{prefix}-{uuid.uuid4().hex[:12]}"
 
 
+def _rollup(conn, run_id: str) -> dict:
+    """A run's totals, derived from its events.
+
+    ONE definition, because the run row is the only place spend is ever read
+    from and it was written in only one of the three paths that end a run.
+    Also returns the last event timestamp and an events-derived duration, so a
+    run whose process died can still be accounted for without inventing a
+    finish time from a later clock."""
+    row = conn.execute(
+        """SELECT
+             COUNT(*)                                                     AS n_events,
+             SUM(CASE WHEN kind='sandbox.run' THEN 1 ELSE 0 END)          AS n_containers,
+             SUM(CASE WHEN kind='approval.requested' THEN 1 ELSE 0 END)   AS n_approvals,
+             COALESCE(SUM(COALESCE(json_extract(data_json,'$.tokens_in'),0)),0)  AS tin,
+             COALESCE(SUM(COALESCE(json_extract(data_json,'$.tokens_out'),0)),0) AS tout,
+             COALESCE(SUM(COALESCE(json_extract(data_json,'$.cost_usd'),0)),0)   AS cost,
+             MIN(ts) AS first_ts, MAX(ts) AS last_ts
+           FROM events WHERE run_id=?""",
+        (run_id,),
+    ).fetchone()
+    duration_ms = None
+    first, last = (row["first_ts"], row["last_ts"]) if row else (None, None)
+    if first and last:
+        try:
+            duration_ms = int(
+                (_dt.datetime.fromisoformat(last)
+                 - _dt.datetime.fromisoformat(first)).total_seconds() * 1000)
+        except (TypeError, ValueError):
+            duration_ms = None
+    return {
+        "n_events": (row["n_events"] if row else 0) or 0,
+        "n_containers": (row["n_containers"] if row else 0) or 0,
+        "n_approvals": (row["n_approvals"] if row else 0) or 0,
+        "tokens_in": (row["tin"] if row else 0) or 0,
+        "tokens_out": (row["tout"] if row else 0) or 0,
+        "cost_usd": float((row["cost"] if row else 0) or 0.0),
+        "last_ts": last,
+        "duration_ms": duration_ms,
+    }
+
+
 _SLUG_STOP = {
     "a", "an", "the", "that", "this", "it", "is", "are", "on", "in", "at", "of",
     "to", "for", "with", "and", "or", "be", "do", "not", "no", "your", "you",
@@ -221,13 +262,49 @@ class Tracer:
 
     def abort_stale_runs(self) -> int:
         """Mark any 'running' runs as aborted — a previous process died mid-run
-        (only one session runs at a time, so a pre-existing 'running' row is a lie)."""
+        (only one session runs at a time, so a pre-existing 'running' row is a lie).
+
+        The rollup is applied here too. Without it an interrupted run kept NULL
+        cost, tokens, duration and event counts forever, even though its events
+        were all on disk — and interrupted runs are the EXPENSIVE tail (the
+        operator kills what drags on), so every cost view understated the
+        truth precisely where it mattered most. `finished_at` comes from the
+        run's LAST EVENT rather than the clock in this later process, which is
+        what turned one abandoned run into a 20-hour duration.
+        """
         with self._lock, self._conn:
-            cur = self._conn.execute(
-                "UPDATE runs SET status='aborted', finished_at=? WHERE status='running'",
-                (_utcnow(),),
-            )
-            return cur.rowcount
+            stale = [r["run_id"] for r in self._conn.execute(
+                "SELECT run_id FROM runs WHERE status='running'")]
+            for run_id in stale:
+                agg = _rollup(self._conn, run_id)
+                self._conn.execute(
+                    "UPDATE runs SET status='aborted', finished_at=?, n_events=?, "
+                    "n_containers=?, n_approvals=?, tokens_in=?, tokens_out=?, "
+                    "cost_usd=?, duration_ms=COALESCE(duration_ms, ?) WHERE run_id=?",
+                    (agg["last_ts"] or _utcnow(), agg["n_events"], agg["n_containers"],
+                     agg["n_approvals"], agg["tokens_in"], agg["tokens_out"],
+                     agg["cost_usd"], agg["duration_ms"], run_id))
+            return len(stale)
+
+    def backfill_rollups(self) -> int:
+        """Recompute totals for finished runs whose accounting is missing.
+
+        The events are on disk; only the run-row summary was never written.
+        Idempotent, and it never touches a row that already has a cost."""
+        with self._lock, self._conn:
+            missing = [r["run_id"] for r in self._conn.execute(
+                "SELECT run_id FROM runs WHERE status != 'running' AND cost_usd IS NULL")]
+            for run_id in missing:
+                agg = _rollup(self._conn, run_id)
+                self._conn.execute(
+                    "UPDATE runs SET n_events=?, n_containers=?, n_approvals=?, "
+                    "tokens_in=?, tokens_out=?, cost_usd=?, "
+                    "duration_ms=COALESCE(duration_ms, ?), "
+                    "finished_at=COALESCE(finished_at, ?) WHERE run_id=?",
+                    (agg["n_events"], agg["n_containers"], agg["n_approvals"],
+                     agg["tokens_in"], agg["tokens_out"], agg["cost_usd"],
+                     agg["duration_ms"], agg["last_ts"], run_id))
+            return len(missing)
 
     # -- low-level writes ------------------------------------------------- #
     def _insert(self, run_id: str, *, kind: str, name: str, status: str, parent_id: Optional[str], data: dict) -> str:
@@ -341,23 +418,13 @@ class Run:
         outcome = scrub(outcome) if outcome else outcome
         conn = self._t._conn
         with self._t._lock, conn:
-            agg = conn.execute(
-                """SELECT
-                     COUNT(*) AS n_events,
-                     SUM(CASE WHEN kind='sandbox.run' THEN 1 ELSE 0 END) AS n_containers,
-                     SUM(CASE WHEN kind='approval.requested' THEN 1 ELSE 0 END) AS n_approvals,
-                     COALESCE(SUM(COALESCE(json_extract(data_json,'$.tokens_in'),0)),0) AS tin,
-                     COALESCE(SUM(COALESCE(json_extract(data_json,'$.tokens_out'),0)),0) AS tout,
-                     COALESCE(SUM(COALESCE(json_extract(data_json,'$.cost_usd'),0)),0) AS cost
-                   FROM events WHERE run_id=?""",
-                (self.run_id,),
-            ).fetchone()
+            agg = _rollup(conn, self.run_id)
             conn.execute(
                 "UPDATE runs SET status=?, finished_at=?, n_events=?, n_containers=?, n_approvals=?, "
                 "tokens_in=?, tokens_out=?, cost_usd=?, duration_ms=?, outcome=? WHERE run_id=?",
                 (
-                    status, _utcnow(), agg["n_events"], agg["n_containers"] or 0, agg["n_approvals"] or 0,
-                    agg["tin"] or 0, agg["tout"] or 0, float(agg["cost"] or 0.0),
+                    status, _utcnow(), agg["n_events"], agg["n_containers"], agg["n_approvals"],
+                    agg["tokens_in"], agg["tokens_out"], agg["cost_usd"],
                     int((time.monotonic() - self._start) * 1000),
                     (outcome or "")[:20000], self.run_id,
                 ),
