@@ -59,6 +59,25 @@ Examples:
 
 A `commit-msg` hook (`.githooks/commit-msg`) validates this format.
 
+## Hooks — what runs when
+
+| Hook | Guards |
+| --- | --- |
+| `pre-commit` | refuses staged changes containing credential-shaped strings |
+| `commit-msg` | validates Conventional Commits format |
+| `pre-push` | runs the offline test suite; a red suite blocks the push |
+
+All three are enabled per clone by `./scripts/setup-git.sh` (it sets
+`core.hooksPath`). `git push --no-verify` is the escape hatch when you know
+why you need it.
+
+There is deliberately **no hosted CI**. This is a private, single-author repo
+with no deploy target, and 11 of the tests need a Docker daemon plus registry
+and PyPI egress — a hosted runner would need real setup to cover a minority of
+the suite. The other ~430 tests are pure Python, skip their Docker-gated peers
+cleanly, and finish in under ten seconds, which is affordable on every push.
+Revisit when a second committer joins or the repo goes public.
+
 ## Logical grouping — one concern per commit
 
 Group related changes; keep unrelated changes in separate commits. When a working

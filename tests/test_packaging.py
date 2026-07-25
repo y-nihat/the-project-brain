@@ -103,3 +103,18 @@ def test_the_host_side_entry_point_is_declared():
     assert cfg["project"]["scripts"]["brain"] == "brain.main:main"
     from brain.main import main
     assert callable(main)
+
+
+def test_the_hooks_that_guard_this_repo_are_present_and_executable():
+    """No hosted CI exists — deliberately, per CONTRIBUTING.md — so the hooks
+    ARE the gate. A hook that is missing or not executable fails open silently,
+    which is the one way this arrangement breaks without anyone noticing."""
+    import os
+
+    for name, guards in (("pre-commit", "credential-shaped strings"),
+                         ("commit-msg", "Conventional Commits"),
+                         ("pre-push", "the offline test suite")):
+        hook = PROJECT_ROOT / ".githooks" / name
+        assert hook.is_file(), f"missing hook {name} ({guards})"
+        assert os.access(hook, os.X_OK), f"hook {name} is not executable"
+        assert hook.read_text().startswith("#!"), f"hook {name} has no shebang"

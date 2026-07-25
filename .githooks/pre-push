@@ -1,0 +1,43 @@
+#!/bin/sh
+# Run the offline test suite before anything leaves this machine.
+#
+# Enabled per-clone via:  git config core.hooksPath .githooks
+# (run ./scripts/setup-git.sh)
+#
+# Why a hook and not hosted CI: this is a private, single-author repo with no
+# deploy target, and 11 of the tests need a Docker daemon plus registry and
+# PyPI egress — a hosted runner would need real setup to run a minority of the
+# suite. The other ~430 tests are pure Python, skip their Docker-gated peers
+# cleanly by design, and finish in well under ten seconds. That is affordable
+# on every push; a CI bill and a YAML file are not yet earned.
+#
+# Docker-dependent tests SKIP rather than fail when no daemon is reachable, so
+# this gate is honest about what it did and did not cover.
+#
+# Escape hatch for a genuine emergency:  git push --no-verify
+
+set -e
+
+# Prefer the project venv, then any python on PATH.
+if [ -x ".venv/bin/python" ]; then
+    PY=".venv/bin/python"
+elif command -v python3 >/dev/null 2>&1; then
+    PY="python3"
+else
+    echo "[pre-push] no python found; skipping the test gate" >&2
+    exit 0
+fi
+
+if ! "$PY" -c "import pytest" >/dev/null 2>&1; then
+    echo "[pre-push] pytest not installed; skipping the test gate" >&2
+    exit 0
+fi
+
+echo "[pre-push] running the offline suite..."
+if ! "$PY" -m pytest tests/ -q --no-header -p no:cacheprovider; then
+    echo >&2
+    echo "[pre-push] PUSH BLOCKED: the suite is red." >&2
+    echo "[pre-push] Fix it, or push with --no-verify if you know why." >&2
+    exit 1
+fi
+exit 0
