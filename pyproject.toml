@@ -1,6 +1,11 @@
 [project]
 name = "the-project-brain"
-version = "0.0.1"
+# ONE version source. `brain.config.ENGINE_VERSION` is stamped onto every
+# traced run and into every capability's validation epoch, so it is the version
+# that already has consequences; a second, hand-maintained number here drifted
+# to 0.0.1 while the engine shipped 0.27.0. Read statically (a plain literal
+# assignment), so building never imports the package.
+dynamic = ["version"]
 description = "A self-organizing agent brain on the Claude Agent SDK."
 requires-python = ">=3.10"
 dependencies = [
@@ -18,12 +23,25 @@ dev = [
     "pytest-asyncio>=0.23.0",
 ]
 
+[project.scripts]
+# The host-side entry point M2 calls for. `brain.main:main` already parses
+# argv and exits with the run's status.
+brain = "brain.main:main"
+
 [build-system]
 requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
-[tool.setuptools]
-packages = ["brain", "brain.sandbox", "brain.capabilities", "brain.memory"]
+[tool.setuptools.dynamic]
+version = { attr = "brain.config.ENGINE_VERSION" }
+
+# DISCOVERY, not an enumeration. The hand-listed form omitted
+# `brain.observability` and `brain.evals` — and `brain/session.py` imports
+# observability at module load, so an installed distribution raised
+# ImportError on first use. This repo adds subpackages faster than anyone
+# edits this file; a pattern cannot fall behind.
+[tool.setuptools.packages.find]
+include = ["brain*"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

@@ -49,7 +49,8 @@ def _history_note(session: BrainSession, objective: str) -> str:
 
 def main() -> None:
     if len(sys.argv) < 2:
-        print('usage: python -m brain.main "<objective>"   (or: python -m brain.repl)')
+        print('usage: brain "<objective>"   (or: python -m brain.main "<objective>")\n'
+              '       python -m brain.repl        interactive session')
         sys.exit(2)
     objective = " ".join(sys.argv[1:])
     sys.exit(asyncio.run(_amain(objective)))
