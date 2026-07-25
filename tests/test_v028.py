@@ -7,9 +7,9 @@ from __future__ import annotations
 
 import asyncio
 
-from brain import config, evidence
+from brain import acquisition, config, evidence
 from brain.memory.blackboard import Blackboard
-from brain.models import StageSpec
+from brain.models import Capability, StageSpec
 from brain.observability import NullTracer
 from brain.orchestrator import Orchestrator
 from brain.planner import StubPlanner
@@ -107,3 +107,79 @@ def test_a_real_session_turn_still_seeds_the_prior_deliverable(tmp_path, monkeyp
     ws = tmp_path / "runs" / "sessrun" / "workspace"
     assert (ws / "prior" / "prev-run" / "outputs" / "DELIVERABLE.md").is_file()
     assert "revision.deliverable_seeded" in tracer.kinds()
+
+
+# --- the fabrication battery is the same at every trust boundary ------------------ #
+class _FabricatingRes:
+    """Substantive output from nothing / from unparseable input."""
+    ok, oom, exit_code, timed_out = True, False, 0, False
+    stderr = ""
+    stdout = '{"findings": "' + "x" * 500 + '"}'
+    output_files: dict = {}
+
+
+class _HonestWithoutInputRes:
+    """Declines honestly when its preconditions are unmet — passes no-input."""
+    ok, oom, exit_code, timed_out = False, False, 2, False
+    stderr = ""
+    stdout = '{"error": "no input provided"}'
+    output_files: dict = {}
+
+
+class _PassesNoInputFabricatesOnJunkMgr:
+    """The exact shape the audit found in the wild: a tool that survives the
+    probe promotion DID run, and fails the one promotion skipped."""
+
+    def run_ephemeral(self, image, command, *, policy, capability,
+                      environment=None, input_files=None,
+                      capture_output_files=False):
+        return _FabricatingRes() if input_files else _HonestWithoutInputRes()
+
+
+def _file_consumer() -> Capability:
+    return Capability(
+        name="reader", description="reads a provided file", image_tag="x",
+        command=["r"], env_map={},
+        input_schema={"type": "object", "properties": {"files": {"type": "array"}}},
+        emits="observation")
+
+
+def test_promotion_runs_the_battery_revalidation_will_run():
+    """The battery a capability must pass to STAY trusted is the battery it
+    must pass to BECOME trusted. Promotion ran only the no-input probe, so a
+    tool could be stamped with the CURRENT validation epoch having never faced
+    the irrelevant-input probe — then fail it on first reuse and be quarantined
+    mid-run (observed: a promoted tool carrying stamp 0.21.0 quarantined by
+    'IRRELEVANT-INPUT PROBE FAILED'). Detection was deferred, not avoided."""
+    cap = _file_consumer()
+    mgr = _PassesNoInputFabricatesOnJunkMgr()
+    # This tool SURVIVES the probe promotion already ran...
+    ok, _ = acquisition._no_input_probe(cap, {"sample_files": {}}, mgr, None)
+    assert ok, "precondition: the tool must pass the probe promotion already ran"
+    # ...and fails the one it skipped, which revalidation would later run.
+    ok, reason = acquisition._irrelevant_input_probe(cap, mgr, None)
+    assert not ok
+    # The shared battery therefore rejects it at EVERY trust boundary.
+    ok, reason = acquisition._fabrication_probes(cap, {"sample_files": {}}, mgr)
+    assert not ok and "IRRELEVANT-INPUT" in reason
+
+
+def test_every_trust_boundary_routes_through_the_shared_battery():
+    """Structural: the probes are reachable ONLY via `_fabrication_probes`, so
+    a future trust boundary cannot quietly run half the battery again.
+
+    Counts BOTH reference forms — `f(...)` and the bare `f,` handed to
+    `asyncio.to_thread` — because every call site in this module uses the
+    second, and a check that missed it would not detect the regression it
+    exists to prevent."""
+    text = open(acquisition.__file__, encoding="utf-8").read()
+
+    def refs(name: str) -> int:
+        return text.count(f"{name}(") + text.count(f"{name},")
+
+    # Each probe: its own `def` line, plus exactly one use inside the battery.
+    assert refs("_no_input_probe") == 2, "a probe is invoked outside the battery"
+    assert refs("_irrelevant_input_probe") == 2, "a probe is invoked outside the battery"
+    # And the battery itself is wired at all three boundaries:
+    # authored promotion, recipe promotion, revalidation (+ its own def).
+    assert refs("_fabrication_probes") == 4

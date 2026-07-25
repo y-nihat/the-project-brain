@@ -118,11 +118,14 @@ def test_author_loop_threads_workspace_to_verification(tmp_path):
         description="read a provided binary file", tracer=NullTracer(), workspace=ws))
     reg.close()
     assert cap.verified
-    # The VERIFY call mounted the real file; the fabrication probe then
-    # correctly ran with none (its whole point).
+    # The VERIFY call mounted the real file; the fabrication battery then ran
+    # both probes — one with NO input (its whole point) and one with input the
+    # tool cannot have parsed. The no-input probe is no longer last, because
+    # promotion now runs the same battery revalidation runs.
     verify_call = mgr.calls[0]
     assert verify_call and verify_call["data.bin"] == b"\x00\x01real"
-    assert mgr.calls[-1] is None
+    assert None in mgr.calls[1:]                       # no-input probe ran
+    assert any(c and "__probe__.txt" in c for c in mgr.calls[1:])   # irrelevant-input probe ran
 
 
 def test_developer_contract_teaches_real_file_verification():

@@ -288,6 +288,13 @@ async def _acquire_from_recipe(
                 ok, detail, _ = await asyncio.to_thread(
                     _generic_verify, cap, sample_input or {}, {}, manager)
                 if ok:
+                    # ...and the same fabrication battery, for the same reason:
+                    # "recipes get no privileged bypass". The evidence-contract
+                    # exemption was closed at V060; the probe exemption was not,
+                    # leaving the most-trusted path still the weakest-checked.
+                    ok, detail = await asyncio.to_thread(
+                        _fabrication_probes, cap, {"sample_files": {}}, manager)
+                if ok:
                     result: VerificationResult = await asyncio.to_thread(
                         shape_verify, cap, manager)
                 else:
@@ -482,6 +489,29 @@ def _irrelevant_input_probe(cap: Capability, manager, extra_env: Optional[dict])
     return True, "ok (irrelevant input handled honestly)"
 
 
+def _fabrication_probes(cap: Capability, sub: dict, manager,
+                        extra_env: Optional[dict] = None) -> tuple[bool, str]:
+    """THE fabrication battery — the single definition of what a capability
+    must survive to be trusted.
+
+    The battery a tool must pass to STAY trusted is the battery it must pass to
+    BECOME trusted. That symmetry was broken in both directions: promotion ran
+    `_no_input_probe` only, the recipe path ran neither, and revalidation ran
+    both — so a tool could be stamped with the current validation epoch having
+    never faced a probe it must survive on reuse, and only fail it later, in
+    the middle of an unrelated run (observed: a promoted tool carrying a
+    current stamp, quarantined on first reuse by IRRELEVANT-INPUT PROBE
+    FAILED). Detection was deferred, not avoided.
+
+    Both probes exempt tools they do not apply to, so this is safe to call on
+    every capability regardless of shape.
+    """
+    ok, reason = _no_input_probe(cap, sub, manager, extra_env)
+    if not ok:
+        return False, reason
+    return _irrelevant_input_probe(cap, manager, extra_env)
+
+
 _STRUCTURAL_MARKUP_TAGS = ("html", "body", "section", "table", "div")
 
 
@@ -576,11 +606,7 @@ def revalidate_capability(cap: Capability, manager, registry) -> tuple[bool, str
                 return False, "image missing and no stored build context to rebuild from"
             manager.build_image(cap.image_tag,
                                 {p.name: p.read_text() for p in bc_dir.iterdir() if p.is_file()})
-        sub_like = {"sample_files": {}}
-        ok, reason = _no_input_probe(cap, sub_like, manager, None)
-        if not ok:
-            return False, reason
-        ok, reason = _irrelevant_input_probe(cap, manager, None)
+        ok, reason = _fabrication_probes(cap, {"sample_files": {}}, manager)
         if not ok:
             return False, reason
         return True, "passed current probe battery"
@@ -1128,12 +1154,13 @@ async def _author_capability(
                     workspace,
                 )
                 if ok:
-                    # Fabrication probe: a tool that DECLARES inputs but still
-                    # "succeeds" with none is inventing evidence (the exact
-                    # defect behind the sample_claude.pdf confabulation) — a
-                    # consolidation-blocking failure, fed back for repair.
+                    # Fabrication battery: a tool that DECLARES inputs but still
+                    # "succeeds" with none — or with input it cannot have parsed
+                    # — is inventing evidence. Run the SAME battery revalidation
+                    # will run, so a tool cannot be stamped trusted today and
+                    # quarantined on first reuse by a probe promotion skipped.
                     ok, detail = await asyncio.to_thread(
-                        _no_input_probe, cap, sub, manager, secret_env or None)
+                        _fabrication_probes, cap, sub, manager, secret_env or None)
                 vsp.set(passed=ok, detail=detail, source="author")
                 if not ok:
                     vsp.status = "failed"

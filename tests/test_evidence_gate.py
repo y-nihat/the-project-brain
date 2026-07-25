@@ -422,6 +422,14 @@ def test_recipe_web_search_holds_the_full_evidence_contract(tmp_path):
     mgr = ScriptedManager([
         _res(bad),                                                  # a1 generic -> fail
         _res(good, files={"search-results.json": b"{}"}),           # a2 generic -> ok
+        # The recipe path now runs the SAME fabrication battery as authored
+        # tools and as revalidation ("recipes get no privileged bypass"): the
+        # no-input probe applies (the recipe declares env-mapped arguments) and
+        # the shipped program answers honestly, exactly as WEB_SEARCH_PROGRAM
+        # does — {"error": "no query provided"}, exit 2. The irrelevant-input
+        # probe is exempt here (the recipe consumes no `files`), so it costs no
+        # container run.
+        _res(json.dumps({"error": "no query provided"}), exit_code=2),  # a2 no-input probe
         _res(good, files={"search-results.json": b"{}"}),           # a2 shape  -> ok
     ])
     cap = asyncio.run(acquisition.acquire(
