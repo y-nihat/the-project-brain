@@ -41,6 +41,13 @@ def max_stages(f: RunFacts, limit: int):
 
 
 @_check
+def min_stages(f: RunFacts, limit: int):
+    """The floor did not collapse: a turn that genuinely requires observation
+    must still be decomposed and executed, not answered from memory."""
+    return len(f.stages) >= limit, f"stages={len(f.stages)} (want >= {limit})"
+
+
+@_check
 def used_pattern(f: RunFacts, pattern: str):
     return pattern in f.patterns_used, f"patterns={sorted(f.patterns_used)} (want {pattern!r})"
 

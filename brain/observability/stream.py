@@ -44,10 +44,21 @@ def format_event(record: dict) -> Optional[str]:
             body = "\n".join(f"  │ {ln}" for ln in head.splitlines()[:14])
             line += f"\n{body}\n  └─ (full output: outputs/{name}.md)"
         return line
+    if kind == "analysis.verdict":
+        if data.get("resolution") == "satisfied":
+            return ("  💬 answering directly — nothing about this turn needs to be "
+                    "observed (uncertified)")
+        ref = data.get("referent")
+        return ("  🔎 something must be observed — planning the work"
+                + (f"; it refers to run {ref}" if ref else ""))
+    if kind == "referent.resolved":
+        return f"  ↩ this turn refers to run {name}"
     if kind == "run.classification":
         cls = data.get("classification")
         icon = "✅" if cls == "succeeded" else "⚠"
-        return f"  {icon} result: {str(cls).upper()} — {str(data.get('reason', ''))[:90]}"
+        # The honesty clause lives at the END of the reason string, so a short
+        # truncation cut off exactly the caveat it exists to deliver.
+        return f"  {icon} result: {str(cls).upper()} — {str(data.get('reason', ''))[:300]}"
     if kind == "plan.criteria":
         crit = data.get("criteria") or []
         return f"  ✓ success criteria ({len(crit)}): " + " · ".join(str(c)[:50] for c in crit[:4])

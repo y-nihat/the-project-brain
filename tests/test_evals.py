@@ -10,19 +10,27 @@ from brain.evals.scenarios import SCENARIOS, get, validate
 from brain.observability import Tracer
 
 
-def _fabricate_run(tmp_path, *, answer: str, stages=None, events=(), status="succeeded"):
-    """Record a synthetic but structurally real run through the actual Tracer."""
+def _fabricate_run(tmp_path, *, answer: str, stages=None, events=(), status="succeeded",
+                   sessions=("gather",)):
+    """Record a synthetic but structurally real run through the actual Tracer.
+
+    ``stages=[]`` fabricates a turn that was never planned at all — what the
+    analyze step produces when nothing about the turn must be observed.
+    """
     db, runs_dir = tmp_path / "b.db", tmp_path / "runs"
     tracer = Tracer(db, runs_dir)
     run = tracer.start_run("survey sources and report")
-    tracer.event("plan.created", "plan", status="info",
-                 stages=stages or [{"id": "gather", "pattern": "single"},
-                                   {"id": "survey", "pattern": "map"},
-                                   {"id": "merge", "pattern": "reduce"}])
+    if stages is None:
+        stages = [{"id": "gather", "pattern": "single"},
+                  {"id": "survey", "pattern": "map"},
+                  {"id": "merge", "pattern": "reduce"}]
+    if stages:
+        tracer.event("plan.created", "plan", status="info", stages=stages)
     for kind, name, data in events:
         tracer.event(kind, name, status="info", **data)
-    with tracer.span("agent.session", "gather"):
-        pass
+    for label in sessions:
+        with tracer.span("agent.session", label):
+            pass
     run.finish(status, outcome=answer)
     rid = run.run_id
     tracer.close()
@@ -76,9 +84,11 @@ def test_checks_pass_and_fail(tmp_path):
 
 
 def test_score_run_and_scorecard_render(tmp_path):
+    # A turn nothing about which had to be observed: answered by the analyze
+    # step, never planned, one session, no containers.
     db, runs_dir, rid = _fabricate_run(
         tmp_path, answer="one concise sentence.",
-        stages=[{"id": "solo", "pattern": "single"}],
+        stages=[], status="answered", sessions=("analyst",),
     )
     card = score_run(rid, get("tiny-no-tools"), db_path=db, runs_dir=runs_dir)
     assert card.ok, card.results
@@ -89,6 +99,19 @@ def test_score_run_and_scorecard_render(tmp_path):
     card2 = score_run(rid, get("multi-source-brief"), db_path=db, runs_dir=runs_dir)
     assert not card2.ok
     assert "❌" in render_markdown([card2])
+
+
+def test_the_escalation_floor_scenario_fails_a_collapsed_run(tmp_path):
+    """The other side of the judgment: a turn that genuinely required
+    observation must still be decomposed. An answered-from-memory run must
+    FAIL this scenario, or the floor could quietly collapse."""
+    db, runs_dir, rid = _fabricate_run(
+        tmp_path, answer="probably about now.", stages=[], status="answered",
+        sessions=("analyst",),
+    )
+    card = score_run(rid, get("escalation-floor"), db_path=db, runs_dir=runs_dir)
+    assert not card.ok
+    assert any(r["check"] == "min_stages" and not r["passed"] for r in card.results)
 
 
 def test_scenarios_validate_against_check_registry():

@@ -27,7 +27,7 @@ host (WSL2 + Docker Desktop)
 └─ docker compose
    ├─ docker-socket-proxy        (whitelisted access to the Docker daemon)
    └─ brain  (container)         our Python + Claude Agent SDK + claude CLI
-        │  plan → resolve → acquire → execute   (+ tracer records everything)
+        │  analyze → plan → resolve → acquire → execute  (+ tracer records everything)
         └─ creates short-lived SANDBOX containers (capability build/verify/run)
 ```
 
@@ -70,11 +70,22 @@ them directly in your editor). `data/` is git-ignored (runtime state).
 | **Each agent's exact system prompt** | `data/runs/<run_id>/agents/<agent>.prompt.md` |
 | Files produced by tools (incl. nested project trees) | `data/runs/<run_id>/workspace/` |
 
+**The analyze step.** Every turn is first judged on one question: is there anything that must be
+OBSERVED before it can be answered honestly, that the system cannot already state? Two resolutions
+and no third — answer it, or escalate to the full loop. An escalation carries no category: the
+planner starts from the user's own words, never from a label. The judgment never looks at the
+*form* of the input (no greeting test, no length rule, no keyword list) and it fails **open**, so a
+broken or disabled analyze step can only ever make the system do more work, never skip work it
+owed. A turn it answers is recorded, costed and turn-numbered like any other, ships as
+`answered` rather than `succeeded`, and says in its own text that it traces to nothing.
+
 **Continuity:** runs are not amnesiac. Before planning, the brain assembles relevant prior-run
 context (objectives, outcomes, produced files, capabilities created) and hands it to the planner
-and agents; the most relevant prior run's workspace files are seeded under `workspace/prior/` so
-follow-up tasks can build on earlier deliverables. (Semantic retrieval and a 24/7 service mode are
-future milestones on this foundation.)
+and agents; a prior run's workspace files are seeded under `workspace/prior/` so follow-up turns
+can build on earlier deliverables. *Which* prior turn is **resolved, not assumed**: the analyze
+step decides whether a stated requirement of this turn depends on an artifact an earlier turn
+produced. It used to be positional — the previous run of the process, unconditionally — so a turn
+that changed the subject inherited a stranger's deliverable as evidence about its own question.
 
 Everything generated lives under `data/` (an **output**, git-ignored) — kept separate from the
 engine source in `brain/`. A run never writes to tracked files.

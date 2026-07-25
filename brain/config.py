@@ -81,6 +81,11 @@ def model_for(role: str):
     return BRAIN_MODEL_STRONG or BRAIN_MODEL
 
 
+# 'analyst' is deliberately absent from the fast list above: deciding whether
+# anything must be observed — and resolving what a turn refers to — is judgment,
+# and a cheap wrong `satisfied` ships an unchecked claim as an answer.
+
+
 class ConfigError(RuntimeError):
     """Raised when the runtime environment violates a hard invariant."""
 
@@ -207,6 +212,15 @@ RESEARCH_AGENT_MAX_TURNS = int(os.environ.get("RESEARCH_AGENT_MAX_TURNS", "10"))
 # plateaus or the user's input is needed), so the ceiling can be higher without
 # risking a runaway; the per-run agent-session cap remains the hard cost rail.
 RECOVERIES_PER_RUN = int(os.environ.get("RECOVERIES_PER_RUN", "5"))
+
+# The ANALYZE step's full output range: one judgment per turn, deciding whether
+# anything must be OBSERVED before the turn can be answered honestly, and which
+# earlier turn (if any) its requirements refer to. Fail-OPEN to escalate, so
+# disabling it or breaking it can only ever make the system do MORE work.
+# Kept small and short-fused on purpose: it runs before every turn.
+ANALYST_ENABLED = os.environ.get("ANALYST_ENABLED", "1").lower() not in ("0", "false", "no")
+ANALYST_STALL_TIMEOUT = float(os.environ.get("ANALYST_STALL_TIMEOUT", "60"))
+ANALYST_TOTAL_TIMEOUT = float(os.environ.get("ANALYST_TOTAL_TIMEOUT", "120"))
 
 # Executive supervision: an LLM judgment consulted at decision moments
 # (pre-user-interaction, stage completions). Fail-open, budget-capped.

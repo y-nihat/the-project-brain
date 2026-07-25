@@ -24,14 +24,29 @@ SCENARIOS: list[Scenario] = [
     Scenario(
         id="tiny-no-tools",
         objective="In one sentence, what is idempotency? No tools needed.",
-        intent="A trivial task must stay trivial: one stage, zero containers, cents.",
+        intent=("Nothing about this must be OBSERVED, so the analyze step answers it: "
+                "one session, no plan, no containers, cents. This check used to be "
+                "unsatisfiable — the floor was planner + stage agent + supervisor — "
+                "which is the debt the analyze step's full output range pays."),
+        checks=[
+            ("status_is", {"expected": "answered"}),
+            ("max_stages", {"limit": 0}),
+            ("no_tools_used", {}),
+            ("max_sessions", {"limit": 1}),
+            ("max_cost_usd", {"limit": 0.05}),
+            ("answer_max_chars", {"limit": 800}),
+        ],
+    ),
+    Scenario(
+        id="escalation-floor",
+        objective=("What is the current UTC date and time, to the minute? "
+                   "Answer with the timestamp only."),
+        intent=("The other side of the same judgment: this cannot be answered without "
+                "observing something, so the full loop must run. A cheap path that "
+                "swallowed this would be shipping a guess as an answer."),
         checks=[
             ("status_is", {}),
-            ("max_stages", {"limit": 1}),
-            ("no_tools_used", {}),
-            ("max_sessions", {"limit": 2}),
-            ("max_cost_usd", {"limit": 0.15}),
-            ("answer_max_chars", {"limit": 600}),
+            ("min_stages", {"limit": 1}),
         ],
     ),
     Scenario(

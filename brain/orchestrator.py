@@ -710,7 +710,7 @@ class Orchestrator:
         self._help_request: Optional[dict] = None
         self._knowledge_briefs = ""
         self._session_context: Optional[str] = None
-        self._continues_session = False
+        self._referent_resolved = False
         self._fix_notes: dict[str, str] = {}
         self._tool_repairs = 0
         self._insufficient: dict[str, tuple] = {}
@@ -735,9 +735,9 @@ class Orchestrator:
     async def run(self, objective: str, history: Optional[str] = None,
                   seed_run: Optional[str] = None,
                   session_context: Optional[str] = None,
-                  continues_session: bool = False) -> str:
+                  referent_resolved: bool = False) -> str:
         self._session_context = session_context
-        self._continues_session = continues_session
+        self._referent_resolved = referent_resolved
         with self.tracer.span("plan", "planner"):
             plan = await self.planner.plan(objective, history=history,
                                            session_context=session_context)
@@ -847,34 +847,34 @@ class Orchestrator:
             # plan or objective IS the revision signal, judged by the engine.
             prior_referenced = "prior/" in (
                 objective + " " + " ".join(f"{s.goal} {s.role}" for s in stages))
-            # A SESSION continuation always seeds the previous turn's
-            # deliverable: the prior deliverable is the conversational
-            # referent whether or not this turn is judged a revision. Both
-            # detectors have now failed on evidence — the LLM revision
-            # judgment silently absent, and the path fallback blind to a
-            # planner that INLINED the prior deliverable's text into a stage
-            # goal (uncitable narration), leaving a preserve-discipline
-            # review no retained baseline to diff against; a healthy run
-            # blocked on an absence the engine could have provisioned.
-            # Continuity is a FACT the caller knows (a previous turn of THIS
-            # session), never an inference from the planner-context block: that
-            # block also carries open standing goals, so deriving continuity
-            # from it made one open goal turn every later run — in any session
-            # — into a "continuation" of whatever run keyword-matching picked.
-            # That run's ANSWER.md (agent NARRATION) was then recorded as a
-            # designated source, i.e. target-tier evidence about a target it
-            # never observed. Agent prose must never enter the ledger.
-            session_turn = self._continues_session
+            # A turn whose requirements REFER to an earlier turn's artifact
+            # seeds that artifact as material: both other detectors have failed
+            # on evidence — the LLM revision judgment silently absent, and the
+            # path fallback blind to a planner that INLINED the prior
+            # deliverable's text into a stage goal (uncitable narration),
+            # leaving a preserve-discipline review no retained baseline to diff
+            # against; a healthy run blocked on an absence the engine could have
+            # provisioned.
+            # The signal is a RESOLVED REFERENT, never position. It used to be
+            # "this run continues a session", which made every later turn
+            # inherit the previous one — so a turn that changed the subject
+            # recorded a stranger's deliverable as a designated source, i.e.
+            # target-tier evidence about a target it never observed. Before
+            # that it was inferred from the planner-context block, which also
+            # carries open standing goals, so one open goal made every run in
+            # any session a "continuation" of whatever keyword-matching picked.
+            # Agent prose must never enter the ledger by either route.
+            referred_to = self._referent_resolved
             if not getattr(plan, "revision", None) and \
-                    (prior_referenced or session_turn):
+                    (prior_referenced or referred_to):
                 self.tracer.event(
                     "revision.fallback_detected", seed_run, status="info",
                     note=("the plan references prior-run paths"
                           if prior_referenced else
-                          "this run continues a session")
+                          "this turn's requirements refer to that run")
                          + " but the planner emitted no revision judgment — "
                            "seeding the prior deliverable deterministically")
-            if getattr(plan, "revision", None) or prior_referenced or session_turn:
+            if getattr(plan, "revision", None) or prior_referenced or referred_to:
                 prior_out = Path(config.RUNS_DIR) / seed_run / "outputs"
                 for name in ("DELIVERABLE.md", "ANSWER.md"):
                     src = prior_out / name

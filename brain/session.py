@@ -220,6 +220,81 @@ class BrainSession:
     def add_listener(self, fn) -> None:
         self.tracer.add_listener(fn)
 
+    def _analyst(self):
+        from .analyze import Analyst
+
+        return Analyst(model=config.model_for("analyst"), tracer=self.tracer)
+
+    def _conversation_turns(self) -> list[dict]:
+        """This conversation's earlier turns, from the record.
+
+        Read back rather than held in memory, so a resumed conversation and a
+        live one are the same thing to everything downstream.
+        """
+        return [t for t in conversation_mod.turns(config.DB_PATH, self.conversation_id)
+                if t.get("status") != "running"]
+
+    def _conversation_context(self, referent: Optional[str]) -> Optional[str]:
+        """What the planner is told about the conversation this turn sits in.
+
+        Two separable facts, and they used to be fused into one: WHAT WAS SAID
+        before (context — it may explain a reference, and never implies this
+        turn continues it), and WHICH earlier turn this one's requirements
+        actually refer to (a resolved referent — the only thing that licenses
+        treating an earlier deliverable as material for this turn).
+        """
+        rows = [t for t in self._conversation_turns()
+                if (t.get("origin") or "user") == "user"][-4:]
+        blocks: list[str] = []
+        if rows:
+            lines = [f"- turn {t['turn']} (run {t['run_id']}, {t['status']}): "
+                     f"{(t['objective'] or '')[:200]}" for t in rows]
+            blocks.append("EARLIER TURNS OF THIS CONVERSATION (context only — this turn "
+                          "does NOT necessarily continue them):\n" + "\n".join(lines))
+        if referent:
+            row = next((t for t in rows if t["run_id"] == referent), None)
+            ref = _turn_referents(referent, (row or {}).get("objective", ""),
+                                 (row or {}).get("status", "unknown"),
+                                 (row or {}).get("outcome", "") or "")
+            blocks.append(
+                f"REFERENT — a stated requirement of THIS turn depends on what turn "
+                f"{(row or {}).get('turn', '?')} produced (run {referent}):\n"
+                f"it was asked: {ref['objective'][:600]}\n"
+                f"it ended: {ref['status']}\n"
+                f"what it produced (payload head):\n---\n{ref['deliverable'][:2500]}\n---\n"
+                f"files it produced (seeded under prior/{referent}/ in this run's "
+                f"workspace): {ref['files'][:12]}")
+        return "\n\n".join(blocks) or None
+
+    def _deliver_answer(self, run, objective: str, analysis) -> RunSummary:
+        """Ship a turn that required nothing to be observed.
+
+        It is recorded, costed and turn-numbered like any other run — an
+        untraced reply would make the cheap path invisible to every view that
+        exists. What it does NOT get is the certification vocabulary: no
+        DELIVERABLE.md, no success criteria, no grounding review, and a status
+        of its own rather than 'succeeded'. The engine's claim is that a
+        deliverable's load-bearing claims trace to something a tool retained;
+        this answer traces to nothing and says so in its own text.
+        """
+        from .analyze import answer_envelope
+
+        answer = answer_envelope(analysis)
+        out_dir = Path(config.RUNS_DIR) / run.run_id / "outputs"
+        try:
+            out_dir.mkdir(parents=True, exist_ok=True)
+            (out_dir / "ANSWER.md").write_text(answer)
+        except OSError:
+            pass
+        run.finish("answered", outcome=answer)
+        self._last_run = _turn_referents(run.run_id, objective, "answered", answer)
+        if self.auto_export:
+            self._export(run.run_id)
+        return RunSummary(
+            run_id=run.run_id, status="answered", answer=answer, containers=0, leaks=0,
+            used_history=False, seeded_from=None,
+            capabilities=[c.name for c in self.registry.all()])
+
     async def run_objective(self, objective: str, files: Optional[list[str]] = None) -> RunSummary:
         # Secrets must enter via the hidden gate prompt — objectives are stored
         # forever (trace DB, run folders, history). Catch the mistake BEFORE
@@ -276,49 +351,6 @@ class BrainSession:
                 "paths and NEVER fabricate its contents.")
             self.tracer.event("files.unavailable", "attach", status="failed", tokens=missing)
 
-        # Independent-trial mode: an operator running the SAME task repeatedly
-        # as separate, comparable attempts (a benchmark, an A/B, a competition
-        # re-run) does not want each run seeded from the last — that makes the
-        # system re-derive the prior deliverable instead of solving afresh.
-        # BRAIN_DISABLE_HISTORY_SEED skips relevance-based history seeding; the
-        # capability REGISTRY (authored tools) still persists and is reused, so
-        # only the prior-deliverable/workspace carry-over is suppressed.
-        import os as _os
-
-        if _os.environ.get("BRAIN_DISABLE_HISTORY_SEED"):
-            hist_text, seed_run = "", None
-            self.tracer.event("history.seed_disabled", "session", status="info",
-                              reason="independent-trial mode (BRAIN_DISABLE_HISTORY_SEED)")
-        else:
-            hist_text, seed_run = history_mod.history_block(
-                config.DB_PATH, config.RUNS_DIR, objective)
-        # Session continuity: the previous run OF THIS SESSION outranks the
-        # relevance-picked seed (a follow-up revises what was just made), and
-        # its summary goes to the planner as SESSION CONTEXT so feedback is
-        # recognized as feedback.
-        session_context = None
-        continues_session = bool(self._last_run)
-        if self._last_run:
-            seed_run = self._last_run["run_id"]
-            session_context = (
-                f"previous run id: {self._last_run['run_id']}\n"
-                f"previous objective: {self._last_run['objective'][:600]}\n"
-                f"previous result: {self._last_run['status']}\n"
-                f"previous deliverable (payload head):\n---\n"
-                f"{self._last_run['deliverable'][:2500]}\n---\n"
-                f"files it produced (seeded under prior/{self._last_run['run_id']}/ in "
-                f"this run's workspace): {self._last_run['files'][:12]}")
-        # Open standing goals reach the planner so a continuing objective can
-        # reference one (aspiration.goal_ref) instead of redeclaring it. They
-        # ride the same planner block but must NOT imply continuity: an open
-        # goal says what the operator is pursuing, never that this run follows
-        # a previous turn. `continues_session` above is the only continuity
-        # signal, and it is a fact, not an inference.
-        from .memory.goals import goals_block
-        gb = goals_block(self.goals)
-        if gb:
-            session_context = (session_context + "\n\n" + gb) if session_context else gb
-
         # A self-initiated pursuit run is a run of the brain, not a turn of the
         # conversation: it is recorded, but it must not consume a turn ordinal.
         run = self.tracer.start_run(
@@ -339,6 +371,66 @@ class BrainSession:
                               files=[m["path"] for m in manifest],
                               total_bytes=sum(m["bytes"] for m in manifest))
             objective += files_mod.manifest_note(manifest)
+
+        # ANALYZE — the loop's first step, with its full output range. It either
+        # answers (nothing must be observed) or escalates (something must be),
+        # and it resolves which earlier turn, if any, this one's requirements
+        # refer to. It runs BEFORE anything expensive is constructed: no Docker
+        # handshake, no capability catalog, no planner.
+        if self._pursuing:
+            # A self-initiated iteration is not a turn: the user granted budget
+            # for the brain to DO something toward a measured goal, and its
+            # result is recorded as an attempt against that goal. Answering one
+            # from memory would log an attempt that observed nothing.
+            from .analyze import Analysis
+
+            analysis = Analysis(reason="self-initiated iteration: the work is the point")
+        else:
+            analysis = await self._analyst().analyze(
+                objective, turns=self._conversation_turns(), attached=attach_paths)
+        if analysis.satisfied:
+            return self._deliver_answer(run, objective, analysis)
+
+        # Independent-trial mode: an operator running the SAME task repeatedly
+        # as separate, comparable attempts (a benchmark, an A/B, a competition
+        # re-run) does not want each run seeded from the last — that makes the
+        # system re-derive the prior deliverable instead of solving afresh.
+        # BRAIN_DISABLE_HISTORY_SEED suppresses BOTH carry-over paths (relevance
+        # and referent); the capability REGISTRY still persists and is reused, so
+        # only the prior-deliverable/workspace carry-over is suppressed.
+        import os as _os
+
+        independent = bool(_os.environ.get("BRAIN_DISABLE_HISTORY_SEED"))
+        if independent:
+            hist_text, seed_run = "", None
+            self.tracer.event("history.seed_disabled", "session", status="info",
+                              reason="independent-trial mode (BRAIN_DISABLE_HISTORY_SEED)")
+        else:
+            hist_text, seed_run = history_mod.history_block(
+                config.DB_PATH, config.RUNS_DIR, objective)
+
+        # Continuity is RESOLVED, not assumed. It used to be positional: the
+        # previous run of this process became the seed and a designated source
+        # unconditionally, so a turn that changed the subject still inherited a
+        # stranger's deliverable as evidence about its own question. The
+        # referent named by the analyze step outranks the relevance-picked seed;
+        # a turn that refers to nothing inherits nothing.
+        referent = None if independent else analysis.referent_run_id
+        if referent:
+            seed_run = referent
+            self.tracer.event("referent.resolved", referent, status="info",
+                              reason=analysis.reason)
+        session_context = self._conversation_context(referent)
+        # Open standing goals reach the planner so a continuing objective can
+        # reference one (aspiration.goal_ref) instead of redeclaring it. They
+        # ride the same planner block but must NOT imply continuity: an open
+        # goal says what the operator is pursuing, never that this run follows
+        # a previous turn.
+        from .memory.goals import goals_block
+        gb = goals_block(self.goals)
+        if gb:
+            session_context = (session_context + "\n\n" + gb) if session_context else gb
+
         blackboard = Blackboard(config.DB_PATH, session_id)
         manager = SandboxManager(session_id, self.ledger, tracer=self.tracer,
                                  conversation=self.conversation_id)
@@ -366,7 +458,7 @@ class BrainSession:
                 answer = await orchestrator.run(objective, history=hist_text,
                                                 seed_run=seed_run,
                                                 session_context=session_context,
-                                                continues_session=continues_session)
+                                                referent_resolved=bool(referent))
                 # Objective-success class (#17) — operational completion is not
                 # the same as meeting the objective.
                 status = orchestrator.classification

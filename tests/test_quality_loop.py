@@ -188,18 +188,23 @@ def test_session_context_reaches_planner_and_revision_is_traced(tmp_path, monkey
     assert "plan.revision" in tracer.kinds()
 
 
-def test_session_remembers_last_run_for_follow_ups():
-    # The session-level memory contract: after a run, the previous deliverable
-    # and produced files are carried; the code paths are exercised end-to-end
-    # in live runs — here we pin the planner-visible surface exists.
+def test_session_seeds_from_a_resolved_referent_not_from_position():
+    # The session-level memory contract: a turn whose requirements REFER to an
+    # earlier turn's artifact gets that artifact; a turn that refers to nothing
+    # gets nothing. It used to be positional — the previous run of the process
+    # became the seed unconditionally — so changing the subject inherited a
+    # stranger's deliverable as evidence. Behaviour is covered in
+    # tests/test_analyze.py; here we pin the planner-visible surface.
     import inspect
 
     from brain import session as session_mod
     src = inspect.getsource(session_mod)
     assert "_last_run" in src
     assert "session_context=session_context" in src
-    # The previous run of THIS session outranks the relevance-picked seed.
-    assert 'seed_run = self._last_run["run_id"]' in src
+    # The resolved referent outranks the relevance-picked seed...
+    assert "seed_run = referent" in src
+    # ...and nothing assigns the seed from position any more.
+    assert 'seed_run = self._last_run["run_id"]' not in src
 
 
 # --- P2: perceptual review ----------------------------------------------------------- #

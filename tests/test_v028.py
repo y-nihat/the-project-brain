@@ -73,7 +73,7 @@ def test_open_goal_context_does_not_seed_an_unrelated_run_as_evidence(
             # Exactly what session.py builds when a goal is open on a FRESH
             # session: goals block present, no previous turn.
             session_context="STANDING GOALS (open — ...):\n- goal #1: throughput",
-            continues_session=False))
+            referent_resolved=False))
     finally:
         bb.close()
     ws = tmp_path / "runs" / "goalrun" / "workspace"
@@ -102,7 +102,7 @@ def test_a_real_session_turn_still_seeds_the_prior_deliverable(tmp_path, monkeyp
         asyncio.run(orch.run("the details changed; update it",
                              seed_run="prev-run",
                              session_context="previous run id: prev-run",
-                             continues_session=True))
+                             referent_resolved=True))
     finally:
         bb.close()
     ws = tmp_path / "runs" / "sessrun" / "workspace"

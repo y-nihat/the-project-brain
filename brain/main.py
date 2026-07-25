@@ -45,7 +45,10 @@ async def _amain(objective: str, quiet: bool = False) -> int:
         if cost := _cost_line(summary.run_id):
             print(cost)
         print(f"[trace]      python -m brain.observability show {summary.run_id}")
-        return 0 if summary.status == "succeeded" else 1
+        # 'answered' is a completed turn that required nothing to be observed —
+        # a success, and deliberately not the same word as one that was checked
+        # against something a tool retained.
+        return 0 if summary.status in ("succeeded", "answered") else 1
     finally:
         session.close()
 
