@@ -5,6 +5,78 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
 [Semantic Versioning](https://semver.org/) — `0.x` while the core algorithm
 and behavior are still expected to change between releases.
 
+## [0.30.0] — 2026-07-25
+
+Two steps of the loop get their full output range. Both had the same defect:
+a question whose answer was structurally fixed, so it was never really asked.
+
+### Added
+- **`analyze` may now conclude that nothing must be observed.** The loop is
+  analyze → decompose → requirements → generate → execute, and analyze had
+  exactly ONE legal output: decompose. The orchestrator called the planner as
+  its first act, the planner was forbidden to answer in prose, and an empty
+  roster was rewritten into a research stage — so every input, however small,
+  bought a workflow, not because anything needed observing but because the step
+  that judges could only ever return one verdict. A new `brain/analyze.py` asks
+  the one question — is there anything that must be OBSERVED before this can be
+  answered honestly, that the system cannot already state? — with two
+  resolutions and no third. `escalate` carries **no category**: a verdict that
+  told the planner what kind of work this is would be a triage stage feeding a
+  fixed pipeline. Nothing anywhere inspects the form of the input — no greeting
+  test, no length rule, no keyword list — and it fails **open** in every mode
+  (disabled, timed out, malformed, provided file present), so it can only ever
+  make the system do MORE work, never skip work it owed. Self-initiated pursuit
+  runs bypass it: those exist to do the work, and answering one from memory
+  would log an attempt that observed nothing.
+- **A directly-answered turn is recorded, costed and turn-numbered**, because an
+  untraced reply would be invisible to every view that exists and would hide the
+  day the step quietly stops firing. It does NOT get the certification
+  vocabulary: no `DELIVERABLE.md`, no success criteria, no grounding review, a
+  status of its own (`answered`), and a line in its own text saying it traces to
+  nothing. The cheapest output in the system must not wear the clothes of the
+  most thoroughly checked one.
+- **The interactive path states what a turn cost** and what the conversation has
+  cost so far. The numbers were always recorded and only the one-shot path ever
+  printed them — so the path a conversation actually lives in asked people to
+  converse blind with a system whose turns span cents to double-digit dollars.
+
+### Changed
+- **Continuity is resolved, not positional.** The previous run of this process
+  became the seed AND a designated source unconditionally, so a turn that
+  changed the subject recorded a stranger's deliverable as target-tier evidence
+  about its own question. The analyze step now resolves whether a stated
+  requirement of this turn depends on an artifact an earlier turn produced. A
+  turn that refers to something gets exactly that turn's outputs; a turn that
+  refers to nothing inherits nothing. Being most recent is not a reason, and an
+  invented run id never reaches the seeding decision.
+- **Post-plan effort follows the plan.** `deliverable_stage_ids` can never
+  return empty, so "this plan produces no artifact of record" was inexpressible
+  and everything keyed to it ran for every plan: the ~1.4 KB fenced-payload
+  contract with its counting and self-render rules, a renderer bolted onto the
+  producing stage, format measurement, a `DELIVERABLE.md` asserting an artifact
+  that did not exist. The verdict is now read off the plan — a marked stage, a
+  review stage, a capability declaring it emits an artifact, a countable format
+  criterion, or declared knowledge needs. Five signals rather than the planner's
+  single unchecked marking, because a plan that quietly loses its deliverable is
+  worse than one paying unnecessary ceremony. Routing is untouched.
+- The run envelope reports the library's SIZE instead of reciting all 38
+  capability names on every run, which buried the run's own accounting under a
+  list that had nothing to do with it. The live stream says which way each turn
+  went, and no longer truncates a classification reason before the honesty
+  clause that sits at its end.
+- `BRAIN_DISABLE_HISTORY_SEED` now actually suppresses carry-over. It cleared
+  the seed and the next statement unconditionally re-set it from the previous
+  run, so every benchmark repeat after the first was seeded from the attempt it
+  was supposed to be independent of.
+
+### Fixed
+- **The eval suite says what the engine claims.** `tiny-no-tools` was
+  unsatisfiable by construction — a two-session limit against a structural floor
+  of planner + stage agent + supervisor — so a check that read as a guarantee
+  could never pass. That debt is what this release pays; it now pins the
+  answered shape. A new `escalation-floor` scenario pins the other side, so the
+  floor cannot quietly collapse into answering everything from memory.
+
 ## [0.29.0] — 2026-07-25
 
 Giving the CLI a conversation — the first of three capacities that are missing,
