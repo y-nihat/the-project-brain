@@ -148,19 +148,47 @@ SCENARIOS: list[Scenario] = [
 ]
 
 
+# An objective-NEUTRAL scenario: every check here is about how the engine
+# behaved, never about what the task was, so it can be scored against ANY
+# recorded run. That is what makes a cross-version baseline possible without
+# spending a cent — `score_run` reads a run that already happened.
+#
+# The bands are deliberately generous. This is a regression tripwire, not a
+# quality bar: it should stay silent through normal variation and speak up when
+# something structural changes (tools failing more often, sessions ballooning,
+# cost stepping up for the same work).
+ENGINE_HEALTH = Scenario(
+    id="engine-health",
+    objective="(not run live — scored against recorded runs)",
+    intent="Objective-neutral engine behaviour, scorable offline against any run.",
+    checks=[
+        ("tool_error_ratio_below", {"limit": 0.5}),
+        ("max_sessions", {"limit": 40}),
+        ("max_cost_usd", {"limit": 20.0}),
+    ],
+)
+
+
+# Offline scenarios are NOT part of the live suite: they are scored against
+# runs that already happened, so `run_suite` must never try to execute them.
+OFFLINE_SCENARIOS: list[Scenario] = [ENGINE_HEALTH]
+
+
 def get(scenario_id: str) -> Scenario:
-    for s in SCENARIOS:
+    for s in SCENARIOS + OFFLINE_SCENARIOS:
         if s.id == scenario_id:
             return s
-    raise KeyError(f"unknown scenario '{scenario_id}' (have: {[s.id for s in SCENARIOS]})")
+    raise KeyError(f"unknown scenario '{scenario_id}' "
+                   f"(have: {[s.id for s in SCENARIOS + OFFLINE_SCENARIOS]})")
 
 
 def validate() -> None:
     """Fail loudly on a scenario referencing a check that does not exist."""
-    for s in SCENARIOS:
+    for s in SCENARIOS + OFFLINE_SCENARIOS:
         for name, _params in s.checks:
             if name not in CHECKS:
                 raise ValueError(f"scenario '{s.id}' references unknown check '{name}'")
 
 
 validate()
+

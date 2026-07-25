@@ -789,3 +789,55 @@ def test_the_catalog_states_what_has_actually_been_reused():
     assert "never reused since it was built" in cat["dormant"]
     # Without counts the annotation is absent entirely (no false precision).
     assert "reused" not in qualified_catalog(reg, "epoch-1")["proven"]
+
+
+# --- the eval harness can score history offline ----------------------------------- #
+def test_the_engine_health_scenario_is_objective_neutral():
+    """A scenario scorable against ANY recorded run cannot assert anything
+    about the task. That is what makes a cross-version baseline possible
+    without spending a cent."""
+    from brain.evals.scenarios import ENGINE_HEALTH, OFFLINE_SCENARIOS, SCENARIOS, get
+
+    task_shaped = {"answer_matches", "produced_file", "cites_url", "status_is",
+                   "used_pattern", "min_workers", "answer_min_chars",
+                   "answer_max_chars", "no_tools_used", "max_stages"}
+    for name, _ in ENGINE_HEALTH.checks:
+        assert name not in task_shaped, f"{name} asserts something task-specific"
+
+    # Reachable by name, and kept OUT of the live suite so `run_suite` never
+    # tries to execute a scenario that has no real objective.
+    assert get("engine-health") is ENGINE_HEALTH
+    assert ENGINE_HEALTH in OFFLINE_SCENARIOS
+    assert ENGINE_HEALTH not in SCENARIOS
+
+
+def test_scoring_recorded_runs_costs_nothing_and_rolls_up_by_version(tmp_path):
+    """45 releases shipped with no cross-version behavioural baseline, and the
+    harness built to provide one had not run since engine 0.1.0 — because
+    running it LIVE costs money and minutes. `score_run` never needed either:
+    the runs already happened and their events are on disk."""
+    from brain.evals import runner
+    from brain.observability.tracer import Tracer
+
+    tracer = Tracer(db_path=tmp_path / "t.db", runs_dir=tmp_path / "runs")
+    try:
+        for ver, ratio_bad in (("0.27.0", False), ("0.28.0", True)):
+            run = tracer.start_run("a task")
+            tracer._conn.execute("UPDATE runs SET engine_version=? WHERE run_id=?",
+                                 (ver, run.run_id))
+            tracer.event("agent.finished", "s", status="ok", cost_usd=0.5)
+            # A tool that mostly errors trips the health check.
+            for _ in range(4 if ratio_bad else 0):
+                tracer.event("tool.result", "cap", status="info", result="error")
+            tracer.event("tool.result", "cap", status="info", result="ok")
+            run.finish("succeeded", outcome="done")
+        cards = runner.score_corpus("engine-health", db_path=tmp_path / "t.db",
+                                    runs_dir=tmp_path / "runs")
+        table = runner.render_corpus(cards, db_path=tmp_path / "t.db")
+    finally:
+        tracer.close()
+
+    assert len(cards) == 2
+    assert "0.27.0" in table and "0.28.0" in table
+    assert "$0" in table
+    assert "tripwire" in table          # states what it is, and is not

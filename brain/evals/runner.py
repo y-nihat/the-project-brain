@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from collections import Counter
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -119,4 +120,74 @@ def render_markdown(cards: list[ScoreCard]) -> str:
             mark = "✓" if r["passed"] else "✗"
             lines.append(f"| {r['check']} | {mark} | {r['detail']} |")
         lines.append("")
+    return "\n".join(lines)
+
+
+def score_corpus(scenario_id: str = "engine-health", db_path=None, runs_dir=None
+                 ) -> list[ScoreCard]:
+    """Score every recorded run offline — no LLM, no containers, no cost.
+
+    45 releases shipped with no cross-version behavioural baseline, and the
+    harness built to provide one had not run since engine 0.1.0. The reason it
+    stayed unused is that running it LIVE costs real money and minutes; but
+    `score_run` never needed either. The runs already happened, their events
+    are on disk, and an objective-neutral scenario can be applied to all of
+    them retroactively.
+    """
+    import sqlite3
+
+    db = db_path or config.DB_PATH
+    conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+    conn.row_factory = sqlite3.Row
+    try:
+        run_ids = [r["run_id"] for r in conn.execute(
+            "SELECT run_id FROM runs ORDER BY started_at")]
+    finally:
+        conn.close()
+    cards = []
+    for rid in run_ids:
+        try:
+            cards.append(score_run(rid, scenario_id, db_path=db, runs_dir=runs_dir))
+        except Exception:  # noqa: BLE001 — one unreadable run must not stop the sweep
+            continue
+    return cards
+
+
+def render_corpus(cards: list[ScoreCard], db_path=None) -> str:
+    """Per-engine-version roll-up of an offline corpus sweep."""
+    import sqlite3
+    from collections import defaultdict
+
+    db = db_path or config.DB_PATH
+    conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+    conn.row_factory = sqlite3.Row
+    try:
+        meta = {r["run_id"]: r for r in conn.execute(
+            "SELECT run_id, engine_version, status FROM runs")}
+    finally:
+        conn.close()
+
+    by_version: dict = defaultdict(lambda: {"runs": 0, "ok": 0, "failed_checks": Counter()})
+    for card in cards:
+        row = meta.get(card.run_id)
+        if not row or not row["engine_version"]:
+            continue
+        ver = str(row["engine_version"]).split("@")[0].split("+")[0]
+        slot = by_version[ver]
+        slot["runs"] += 1
+        slot["ok"] += card.ok
+        for res in card.results:
+            if not res["passed"]:
+                slot["failed_checks"][res["check"]] += 1
+
+    lines = [f"# Offline corpus sweep — {len(cards)} run(s), $0", "",
+             "| engine | runs | clean | tripped checks |",
+             "| --- | ---: | ---: | --- |"]
+    for ver in sorted(by_version):
+        s = by_version[ver]
+        tripped = ", ".join(f"{k}x{v}" for k, v in s["failed_checks"].most_common()) or "-"
+        lines.append(f"| {ver} | {s['runs']} | {s['ok']} | {tripped} |")
+    lines += ["", "_Objective-neutral checks only: this is a regression tripwire "
+                  "across versions, not a quality score. Task difficulty is not "
+                  "constant across versions._"]
     return "\n".join(lines)

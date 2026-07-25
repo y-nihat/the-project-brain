@@ -1,4 +1,5 @@
-"""CLI:  python -m brain.evals list | run [scenario ...] | score <run_id> <scenario>"""
+"""CLI:  python -m brain.evals list | run [scenario ...] | score <run_id> <scenario>
+         | score-corpus [scenario]"""
 from __future__ import annotations
 
 import asyncio
@@ -14,8 +15,12 @@ def main(argv: list[str]) -> int:
         print("scenarios:")
         for s in scenarios.SCENARIOS:
             print(f"  {s.id:<22} {s.intent}")
+        print("\noffline scenarios (scored against recorded runs, no cost):")
+        for s in scenarios.OFFLINE_SCENARIOS:
+            print(f"  {s.id:<22} {s.intent}")
         print("\nrun live:      python -m brain.evals run [id ...]")
         print("score a run:   python -m brain.evals score <run_id> <scenario_id>")
+        print("score history: python -m brain.evals score-corpus   (offline, $0)")
         return 0
 
     if cmd == "score":
@@ -25,6 +30,15 @@ def main(argv: list[str]) -> int:
         card = runner.score_run(argv[1], argv[2])
         print(runner.render_markdown([card]))
         return 0 if card.ok else 1
+
+    if cmd == "score-corpus":
+        sid = argv[1] if len(argv) > 1 else "engine-health"
+        cards = runner.score_corpus(sid)
+        if not cards:
+            print("(no recorded runs to score)")
+            return 0
+        print(runner.render_corpus(cards))
+        return 0
 
     if cmd == "run":
         from .. import config
