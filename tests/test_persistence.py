@@ -19,7 +19,7 @@ from brain.supervisor import Supervisor
 
 
 class CreateResolver:
-    def resolve(self, need):
+    def resolve(self, need, contract=None):
         return Decision(kind=CREATE, capability_need=need)
 
 

@@ -3790,7 +3790,21 @@ class Orchestrator:
         caps: dict[str, Capability] = {}
         for need in spec.capabilities:
             with self.tracer.span("resolve", need, agent=spec.id):
-                decision = self.resolver.resolve(need)
+                # The stage's own declared contract, so a key MISS can still
+                # reuse a capability that already serves this interface —
+                # capabilities are identified by contract, never by name.
+                need_spec = self._cap_needs.get(need) or {}
+                decision = self.resolver.resolve(need, contract={
+                    "accepts": need_spec.get("accepts"),
+                    "emits": need_spec.get("emits"),
+                    "arguments": list((need_spec.get("example_input") or {}).keys()),
+                })
+                if (decision.kind == REUSE and decision.capability is not None
+                        and decision.capability.name != need):
+                    self.tracer.event(
+                        "capability.matched_by_contract", decision.capability.name,
+                        status="info", need=need,
+                        note="key miss; a trusted capability already serves this contract")
                 if decision.kind == REUSE and decision.capability is not None:
                     # INTERFACE CONFORMANCE: description-level matching cannot
                     # see parameter schemas — a cached writer whose schema

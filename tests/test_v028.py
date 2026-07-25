@@ -696,3 +696,81 @@ def test_the_cost_estimate_never_blocks_the_gate(tmp_path, monkeypatch):
 
     monkeypatch.setattr(config, "DB_PATH", tmp_path / "missing.db")
     assert BrainSession._pursuit_cost_estimate(object(), 3) == ""
+
+
+# --- reuse: by contract when the key misses, and earned reuse made visible -------- #
+def _cap(name, *, accepts=(), emits="observation", args=(), verified=True,
+         quarantined=None):
+    return Capability(
+        name=name, description=f"{name} does a thing", image_tag="x", command=["r"],
+        env_map={}, accepts=list(accepts), emits=emits, verified=verified,
+        quarantined=quarantined,
+        input_schema={"type": "object",
+                      "properties": {a: {"type": "string"} for a in args}})
+
+
+class _FakeRegistry:
+    def __init__(self, caps):
+        self._caps = {c.name: c for c in caps}
+
+    def get(self, name):
+        return self._caps.get(name)
+
+    def all(self):
+        return list(self._caps.values())
+
+    def last_failures(self):
+        return {}
+
+
+def test_a_key_miss_reuses_a_capability_that_serves_the_same_contract():
+    """`Resolver.resolve` was `registry.get(exact_name)` — its own docstring
+    said "For M1 this is an exact lookup ... semantic matching is a later-phase
+    upgrade", still true at v0.27. So the library was reachable only by the
+    planner guessing the same snake_case string twice, and a synonym cost a
+    full authoring session plus an image build to rebuild what already
+    existed. The registry holds three Python executors, three PDF parsers and
+    six writers."""
+    from brain.models import CREATE, REUSE
+    from brain.resolver import Resolver
+
+    reg = _FakeRegistry([_cap("extract_pdf_text", accepts=[".pdf"],
+                              emits="observation", args=["path"])])
+    r = Resolver(reg)
+
+    # Same contract under a different name -> reuse, not author.
+    d = r.resolve("parse_pdf_to_text", contract={
+        "accepts": [".pdf"], "emits": "observation",
+        "example_input": {}, "arguments": ["path"]})
+    assert d.kind == REUSE and d.capability.name == "extract_pdf_text"
+
+    # A different output ROLE is a different contract -> author.
+    assert r.resolve("render_pdf", contract={
+        "accepts": [".pdf"], "emits": "artifact", "arguments": ["path"]}).kind == CREATE
+
+    # An input kind the incumbent does not accept -> author.
+    assert r.resolve("parse_docx", contract={
+        "accepts": [".docx"], "emits": "observation", "arguments": ["path"]}).kind == CREATE
+
+
+def test_contract_reuse_refuses_to_guess_when_several_match():
+    """Ambiguity is not resolved by picking one: naming a winner would be a
+    guess, and reuse must stay a deterministic fact."""
+    from brain.models import CREATE
+    from brain.resolver import Resolver
+
+    reg = _FakeRegistry([_cap("writer_a", emits="artifact", args=["content", "filename"]),
+                         _cap("writer_b", emits="artifact", args=["content", "filename"])])
+    assert Resolver(reg).resolve("write_markdown_file", contract={
+        "emits": "artifact", "arguments": ["content", "filename"]}).kind == CREATE
+
+
+def test_quarantined_and_unverified_capabilities_are_never_contract_matched():
+    from brain.models import CREATE
+    from brain.resolver import Resolver
+
+    reg = _FakeRegistry([
+        _cap("bad", accepts=[".pdf"], args=["path"], quarantined="needed repair"),
+        _cap("unverified_one", accepts=[".pdf"], args=["path"], verified=False)])
+    assert Resolver(reg).resolve("read_pdf", contract={
+        "accepts": [".pdf"], "emits": "observation", "arguments": ["path"]}).kind == CREATE

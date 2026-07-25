@@ -26,7 +26,7 @@ from brain.sandbox.manager import RunResult
 class CreateResolver:
     """Every capability need resolves to CREATE (nothing reusable exists)."""
 
-    def resolve(self, need):
+    def resolve(self, need, contract=None):
         return Decision(kind=CREATE, capability_need=need)
 
 

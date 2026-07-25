@@ -50,7 +50,7 @@ class _StubResolver:
     def __init__(self, cap):
         self.cap = cap
 
-    def resolve(self, need):
+    def resolve(self, need, contract=None):
         return ResolveDecision(kind=REUSE, capability_need=need, capability=self.cap)
 
 
