@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 
 from brain import acquisition, config, evidence
+from brain.acquisition import generalize_description
 from brain.memory.blackboard import Blackboard
 from brain.models import Capability, StageSpec
 from brain.observability import NullTracer
@@ -183,3 +184,36 @@ def test_every_trust_boundary_routes_through_the_shared_battery():
     # And the battery itself is wired at all three boundaries:
     # authored promotion, recipe promotion, revalidation (+ its own def).
     assert refs("_fabrication_probes") == 4
+
+
+# --- description generalization must not corrupt the catalog ---------------------- #
+def test_generalize_strips_paths_but_never_english_words():
+    """`_PATH_RESIDUE` matched the BARE words input/inputs/prior/workspace, so
+    the function that exists to clean the planner's reuse catalog was corrupting
+    it: the live registry still holds 'a provided file: query (str)' where the
+    tool wrote 'Input: query (str)'."""
+    assert generalize_description(
+        "Input: query (str), optional max_results (int).") == \
+        "Input: query (str), optional max_results (int)."
+    assert "input files" in generalize_description(
+        "Given a Python code string and any paths to local input files it needs.")
+    assert "prior analysis" in generalize_description("Reads the prior analysis.")
+    assert "workspace summary" in generalize_description("Writes the workspace summary.")
+    # Real paths are still stripped.
+    out = generalize_description("Parse input/pack.zip and prior/run-a/outputs/X.md.")
+    assert "input/pack.zip" not in out and "prior/run-a" not in out
+    assert "a provided file" in out
+
+
+def test_generalize_preserves_sentence_punctuation_and_locators():
+    """Two more corruptions in the same function: a greedy path match ate the
+    full stop that ended a sentence, and substituting filenames BEFORE locators
+    tore a URL in half."""
+    # A leading-dot extension keeps its preceding space.
+    assert generalize_description(
+        "Given a path to a local .aslog export file.").endswith("local .aslog export file.")
+    # A path ending a sentence leaves the full stop behind.
+    assert generalize_description("Reads /work/in/a.csv.").endswith(".")
+    # A URL is replaced whole, not shredded.
+    out = generalize_description("Fetch https://example.com/data.csv and parse it.")
+    assert out == "Fetch a provided source and parse it."

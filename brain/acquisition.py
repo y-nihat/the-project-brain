@@ -363,7 +363,17 @@ def _capability_from_submission(need_key: str, description: str, sub: dict) -> C
     )
 
 
-_PATH_RESIDUE = re.compile(r"\b(?:input|workspace|prior|/work)[\w./-]*", re.IGNORECASE)
+# A PATH, not a word. The separator is required: without it this matched the
+# bare English words "input", "inputs", "prior" and "workspace" anywhere in a
+# sentence, so the catalog the planner reads for its reuse-vs-build decision
+# was corrupted by the very function meant to clean it —
+#   "Input: query (str)"                  -> "a provided file: query (str)"
+#   "paths to local input files it needs" -> "paths to local a provided file files it needs"
+# The trailing `(?:\.[\w-]+)*` keeps an extension but refuses a BARE trailing
+# dot, so a path ending a sentence no longer swallows the full stop.
+_PATH_SEG = r"[\w/-]*(?:\.[\w-]+)*"
+_PATH_RESIDUE = re.compile(rf"\b(?:input|workspace|prior)/{_PATH_SEG}|/work{_PATH_SEG}",
+                           re.IGNORECASE)
 _FILENAME_RESIDUE = re.compile(r"\b[\w-]+\.(?:pdf|md|txt|csv|json|html?|docx?|xlsx?|png|jpe?g)\b",
                                re.IGNORECASE)
 # Remote locators are task residue exactly like local paths: a promoted tool
@@ -384,12 +394,20 @@ def generalize_description(desc: str) -> str:
     memory, so its description must be a GENERAL contract, not the originating
     task. Strip task residue — local paths/filenames, remote locators, and
     output-shape policy — that would mislead or anchor future planning."""
-    d = _PATH_RESIDUE.sub("a provided file", desc or "")
+    # Most specific pattern FIRST. Substituting filenames before locators tore
+    # URLs in half — the filename rule matched the basename inside the URL, and
+    # the locator rule then matched the mangled remainder ("https://h/data.csv"
+    # -> "a provided source provided file").
+    d = _URL_RESIDUE.sub("a provided source", desc or "")
+    d = _PATH_RESIDUE.sub("a provided file", d)
     d = _FILENAME_RESIDUE.sub("a provided file", d)
-    d = _URL_RESIDUE.sub("a provided source", d)
     d = _COUNT_POLICY_RESIDUE.sub("", d)
     d = re.sub(r"\(\s*\)", "", d)              # empty parens left by stripping
-    d = re.sub(r"\s+([,.;:])", r"\1", d)
+    # Close the gap a stripped token left before punctuation — but only where
+    # the punctuation ENDS a clause. Without the lookahead this also welded a
+    # leading-dot extension onto the preceding word ("a local .aslog export"
+    # -> "a local.aslog export").
+    d = re.sub(r"\s+([,.;:])(?=\s|$)", r"\1", d)
     d = re.sub(r"\s{2,}", " ", d).strip()
     return d[:500]
 
