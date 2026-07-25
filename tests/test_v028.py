@@ -534,3 +534,70 @@ def test_bounds_the_engine_cannot_measure_are_named_not_hidden():
     assert any("chart image" in u for u in unmeasurable)
     assert not any("exactly 5 sections" in u for u in unmeasurable)
     assert not any("Every claim" in u for u in unmeasurable)
+
+
+# --- cross-run recall: similarity, not surface area ------------------------------- #
+def _history_db(tmp_path, runs):
+    """runs: list of (run_id, objective, status, started_at)."""
+    import sqlite3
+    db = tmp_path / "h.db"
+    conn = sqlite3.connect(db)
+    conn.execute("CREATE TABLE runs (run_id TEXT, objective TEXT, status TEXT, "
+                 "outcome TEXT, started_at TEXT)")
+    conn.executemany("INSERT INTO runs VALUES (?,?,?,?,?)",
+                     [(r[0], r[1], r[2], "", r[3]) for r in runs])
+    conn.commit()
+    conn.close()
+    return db
+
+
+def test_relevance_is_normalized_so_length_stops_winning(tmp_path):
+    """Raw intersection size rewarded LENGTH: a long prior objective shares
+    more tokens with anything by accident. The winner's workspace is seeded
+    into the new run, so a bad pick does not merely fail to help — it puts the
+    wrong files in front of the agents, which is how one run ended up unable
+    to verify 'the 6 unaffected answers are unchanged' against an artifact
+    that was never seeded."""
+    from brain.memory.history import relevant_runs
+
+    db = _history_db(tmp_path, [
+        # Short and squarely on topic.
+        ("run-focused", "parse the calendar export and list every event",
+         "succeeded", "2026-07-01"),
+        # Sprawling and only incidentally overlapping — wins on raw count.
+        ("run-sprawling",
+         "parse the quarterly finance workbook, list every formula, list every "
+         "sheet, list every event handler, export the calendar of deadlines, "
+         "and produce an extensive report covering every section in detail",
+         "succeeded", "2026-07-02"),
+    ])
+    hits = relevant_runs(db, "parse the calendar export and list every event", limit=2)
+    assert hits[0]["run_id"] == "run-focused", \
+        "the most SIMILAR run must win, not the longest"
+
+
+def test_recall_reaches_past_the_most_recent_fifty_runs(tmp_path):
+    """The window was 50 while the corpus already held 107 runs, so the brain
+    silently forgot more than half of what it had done."""
+    from brain.memory.history import relevant_runs
+
+    rows = [(f"run-noise-{i}", f"unrelated topic {i} zzz", "succeeded",
+             f"2026-07-{(i % 28) + 1:02d}") for i in range(80)]
+    rows.append(("run-old-match", "transcribe the standup recording",
+                 "succeeded", "2026-01-01"))
+    hits = relevant_runs(_history_db(tmp_path, rows),
+                         "transcribe the standup recording", limit=3)
+    assert any(h["run_id"] == "run-old-match" for h in hits)
+
+
+def test_a_delivered_run_breaks_a_tie_but_never_outranks_similarity(tmp_path):
+    """The old flat +1 on a raw count was magnitude-dependent — decisive for
+    small overlaps, irrelevant for large ones. Status is a tiebreak."""
+    from brain.memory.history import relevant_runs
+
+    db = _history_db(tmp_path, [
+        ("run-failed-same", "summarize the incident report", "failed", "2026-07-01"),
+        ("run-ok-same", "summarize the incident report", "succeeded", "2026-07-02"),
+    ])
+    hits = relevant_runs(db, "summarize the incident report", limit=2)
+    assert hits[0]["run_id"] == "run-ok-same", "equal similarity -> prefer delivered"

@@ -34,31 +34,55 @@ def _connect_ro(db_path: str | Path) -> Optional[sqlite3.Connection]:
         return None
 
 
+# How far back relevance may look. The window exists so the scan stays bounded
+# as the corpus grows, not to define what the brain may remember: at 50 it was
+# already smaller than the recorded history, so the system silently forgot more
+# than half of what it had done.
+CANDIDATE_WINDOW = 500
+
+
 def relevant_runs(db_path: str | Path, objective: str, limit: int = 3) -> list[dict]:
-    """Prior runs ranked by token overlap with the new objective (best first)."""
+    """Prior runs ranked by token overlap with the new objective (best first).
+
+    Overlap is normalized (Jaccard). Raw intersection size rewarded LENGTH:
+    a long prior objective shares more tokens with anything by accident, so
+    the biggest previous task tended to win regardless of similarity — and the
+    winner's workspace is seeded into the new run, so a bad pick is not merely
+    unhelpful, it puts the wrong files in front of the agents.
+
+    Still deliberately dependency-free lexical matching. Semantic retrieval is
+    a real upgrade but there is nothing to judge it against yet: no signal
+    records whether a seeded run was actually USED, so a swap could not be
+    shown to be an improvement.
+    """
     conn = _connect_ro(db_path)
     if conn is None:
         return []
     try:
         rows = conn.execute(
             "SELECT run_id, objective, status, outcome, started_at FROM runs "
-            "ORDER BY started_at DESC LIMIT 50"
+            "ORDER BY started_at DESC LIMIT ?", (CANDIDATE_WINDOW,)
         ).fetchall()
     finally:
         conn.close()
 
     want = _tokens(objective)
+    if not want:
+        return []
     scored = []
     for r in rows:
-        have = _tokens(r["objective"]) | _tokens((r["outcome"] or "")[:2000])
-        score = len(want & have)
-        if r["status"] == "succeeded":
-            score += 1  # prefer runs that actually delivered
-        if len(want & _tokens(r["objective"])) == 0:
+        obj_tokens = _tokens(r["objective"])
+        if not want & obj_tokens:
             continue  # require at least some objective-level overlap
-        scored.append((score, dict(r)))
-    scored.sort(key=lambda pair: pair[0], reverse=True)
-    return [r for _, r in scored[:limit]]
+        have = obj_tokens | _tokens((r["outcome"] or "")[:2000])
+        union = want | have
+        score = len(want & have) / len(union) if union else 0.0
+        # Delivered outcomes and recency break ties; neither may outweigh
+        # similarity, which a flat +1 on a normalized score would.
+        scored.append((score, r["status"] == "succeeded",
+                       r["started_at"] or "", dict(r)))
+    scored.sort(key=lambda t: (t[0], t[1], t[2]), reverse=True)
+    return [t[3] for t in scored[:limit]]
 
 
 def _workspace_files(runs_dir: str | Path, run_id: str, cap: int = 20) -> list[str]:
