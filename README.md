@@ -43,8 +43,10 @@ For an interactive session with follow-up turns and live progress, use `./script
 4. If your host user is not uid/gid 1000, set `BRAIN_UID`/`BRAIN_GID` in `.env` so files the brain
    writes under `data/` belong to you.
 
-Runs cost real money. Recorded runs range from about **$0.01 to $17**, median ~$2.50; the answer
-prints what it spent, and `python -m brain.observability stats` summarizes spend by outcome.
+Runs cost real money. Over 108 recorded runs: **$0.01 to $10.74**, median **$1.16**, p90 $4.83. A
+turn that needs nothing observed is answered directly and costs cents. Both entry points print what
+a turn spent — and, while it is still running, what it has spent so far — and
+`python -m brain.observability stats` summarizes spend by outcome.
 
 ## Installing as a package
 
