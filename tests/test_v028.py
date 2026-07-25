@@ -217,3 +217,56 @@ def test_generalize_preserves_sentence_punctuation_and_locators():
     # A URL is replaced whole, not shredded.
     out = generalize_description("Fetch https://example.com/data.csv and parse it.")
     assert out == "Fetch a provided source and parse it."
+
+
+# --- an oversized image is FITTED, not discarded ---------------------------------- #
+def _noise_png(w=1600, h=1000):
+    """A real, poorly-compressible PNG — genuinely large on disk."""
+    import io
+    import os
+
+    from PIL import Image
+    img = Image.frombytes("RGB", (w, h), os.urandom(w * h * 3))
+    buf = io.BytesIO()
+    img.save(buf, "PNG")
+    return buf.getvalue()
+
+
+def test_an_oversized_image_is_downscaled_rather_than_dropped(tmp_path):
+    """`max_bytes` bounds what may be SENT, not what may be READ. The raw-size
+    guard sat two lines above the downscaler that exists to make exactly such a
+    file fit, so a rendered page or extracted frame the tool produced and
+    retained never reached the agent — and a review that demands perception
+    then voids its own approval as "unperceived artifact", shipping the run
+    unverified for want of evidence that existed all along."""
+    from brain.capabilities.runtime import image_blocks
+
+    ws = tmp_path / "ws"
+    (ws / "cap").mkdir(parents=True)
+    data = _noise_png()
+    (ws / "cap" / "page1.png").write_bytes(data)
+    per_image_cap = len(data) // 4                     # the file is 4x the cap
+
+    blocks = image_blocks(["cap/page1.png"], ws, max_images=3,
+                          max_bytes=per_image_cap, budget_bytes=2_000_000)
+
+    assert blocks, "an oversized but decodable image must be fitted, not dropped"
+    assert blocks[0]["type"] == "image"
+    # Fitted down to the encoded ceiling the caller asked for.
+    assert len(blocks[0]["data"]) <= _encoded_ceiling(per_image_cap)
+
+
+def _encoded_ceiling(raw_bytes: int) -> int:
+    return (raw_bytes * 4 + 2) // 3
+
+
+def test_undecodable_files_are_still_skipped(tmp_path):
+    """The guard that remains: bytes that are not an image at all."""
+    from brain.capabilities.runtime import image_blocks
+
+    ws = tmp_path / "ws"
+    (ws / "cap").mkdir(parents=True)
+    (ws / "cap" / "broken.png").write_bytes(b"x" * 4096)
+    (ws / "cap" / "empty.png").write_bytes(b"")
+    assert image_blocks(["cap/broken.png", "cap/empty.png"], ws,
+                        max_images=3, max_bytes=1024) == []

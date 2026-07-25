@@ -81,11 +81,16 @@ def image_blocks(produced: list[str], workspace: Path,
                  max_images: int, max_bytes: int,
                  budget_bytes: int = 0) -> list[dict]:
     """MCP image content blocks for image files among a tool's outputs, in
-    production order, capped in count, per-file size, and — decisively — in
-    TOTAL encoded size: the transport rejects messages over its frame limit,
-    so blocks that would overflow ``budget_bytes`` are downscaled to fit and
-    dropped only when they cannot be. Per-image caps alone proved fatal:
-    individually-legal images jointly exceeded the frame and killed sessions."""
+    production order, capped in count, per-image encoded size, and —
+    decisively — in TOTAL encoded size: the transport rejects messages over
+    its frame limit, so blocks that would overflow ``budget_bytes`` are
+    downscaled to fit and dropped only when they cannot be. Per-image caps
+    alone proved fatal: individually-legal images jointly exceeded the frame
+    and killed sessions.
+
+    ``max_bytes`` bounds the ENCODED size a single image may occupy, not the
+    size its file may be on disk. Reading a large file is cheap; refusing to
+    look at it is not."""
     blocks: list[dict] = []
     remaining = budget_bytes if budget_bytes > 0 else _encoded_len(max_bytes) * max_images
     for rel in produced:
@@ -99,9 +104,17 @@ def image_blocks(produced: list[str], workspace: Path,
             data = p.read_bytes()
         except OSError:
             continue
-        if not data or len(data) > max_bytes:
+        if not data:
             continue
-        fitted = _fit_image(data, mime, remaining)
+        # FIT, then drop — never the reverse. `max_bytes` bounds what may be
+        # SENT, not what may be READ: a raw file over it was discarded here,
+        # two lines before the downscaler that exists to make exactly such a
+        # file fit. The perceptual cost is real — a rendered page or extracted
+        # frame that a tool produced and retained never reached the agent, and
+        # a review that demanded perception then voided its own approval as
+        # "unperceived artifact", shipping the run unverified for want of
+        # evidence that existed the whole time.
+        fitted = _fit_image(data, mime, min(remaining, _encoded_len(max_bytes)))
         if fitted is None:
             continue
         raw, mime = fitted
