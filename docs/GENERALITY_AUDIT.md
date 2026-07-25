@@ -2,6 +2,11 @@
 
 **Date:** 2026-07-19 · **Engine at audit:** v0.25.1 (suite 395) · **Auditor:** owner session
 
+> Not re-run since. The engine is now v0.28.0; changes after v0.25.1 —
+> including `side_effects` (a new closed vocabulary) and contract-based
+> capability resolution — have not been put through the two audit tests
+> in §8. Treat the verdict as accurate for v0.25.1, not as current.
+
 ## 1. Purpose and standard
 
 The founding strategy: a system that **learns about the world through

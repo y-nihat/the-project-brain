@@ -135,18 +135,22 @@ without losing exported traces. It runs resource-capped (1 GB / 1 CPU) like ever
 - **Guaranteed stack teardown**: use `./scripts/run-objective.sh "<objective>"` to run an objective —
   it always tears the compose stack down afterwards, even on failure/Ctrl-C.
 
-## How others will use it (planned — **not built yet**, milestone M2)
+## How others will use it (M2 — partly built)
 
-- Installable Python package + a host-side **`brain` CLI** you point at any folder:
-  `brain init`, `brain build "<objective>"`, `brain show --last`.
+- **Built:** the project is pip-installable and ships a host-side `brain` command:
+  `pip install .` then `brain "<objective>"` (still needs Docker + the OAuth token
+  at run time). `python -m brain.observability stats | backfill` and
+  `python -m brain.evals score-corpus` are available too.
+- **Not built:** per-project `.brain/` state, and the `brain init` / `brain show`
+  verbs you point at an arbitrary folder.
 - Per-project state in a `.brain/` dir (like `.git`); shared capabilities and
-  agent/team profiles in a global `~/.brain/`.
-- Until M2 ships, the system is **run from this repo via docker compose** as above
-  (not yet `pip install`-able).
+  agent/team profiles in a global `~/.brain/` — still planned.
+- The supported path today remains **docker compose from this repo** as above; the
+  installed package runs the same engine but does not yet manage per-project state.
 
 ## Status & roadmap
 
-- **Done (through engine 0.11.0):** sandbox + safety substrate; staged
+- **Done (through engine 0.28.0):** sandbox + safety substrate; staged
   workflows (single/map/reduce/review) with runtime fan-out; capability
   authoring→verify→promote with revalidation/quarantine and atomic promotion;
   evidence-grounded review; the lineage ledger + deterministic approval gates;
