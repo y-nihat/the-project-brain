@@ -658,3 +658,41 @@ def test_every_run_folder_text_write_passes_through_scrub():
             # Anything else writing text into a run folder must be scrubbed.
             assert "RUNS_DIR" not in line and "attempt_dir" not in line \
                 and "outputs" not in line, f"unscrubbed run-folder write: {line.strip()}"
+
+
+# --- the autonomy gate prices what it asks for ------------------------------------ #
+def test_the_autonomy_gate_states_a_cost_not_just_a_count(tmp_path, monkeypatch):
+    """The gate is the only place a human decides to spend UNATTENDED, and it
+    asked to approve "up to N self-initiated run(s)" — a count. Recorded runs
+    span $0.01 to $17.30, so a count carries almost no information about the
+    commitment being made. Five iterations is somewhere between $0.05 and $86."""
+    import sqlite3
+
+    from brain import config
+    from brain.session import BrainSession
+
+    db = tmp_path / "b.db"
+    conn = sqlite3.connect(db)
+    conn.execute("CREATE TABLE runs (run_id TEXT, cost_usd REAL, started_at TEXT)")
+    conn.executemany("INSERT INTO runs VALUES (?,?,?)",
+                     [(f"r{i}", c, f"2026-07-{i + 1:02d}")
+                      for i, c in enumerate([1.0, 2.0, 3.0, 12.0])])
+    conn.commit()
+    conn.close()
+    monkeypatch.setattr(config, "DB_PATH", db)
+
+    estimate = BrainSession._pursuit_cost_estimate(object(), 5)
+    assert "$" in estimate
+    assert "15.00" in estimate, "median x budget"      # median of 4 samples = 3.0
+    assert "60.00" in estimate, "worst observed x budget"
+    assert "worst observed" in estimate
+
+
+def test_the_cost_estimate_never_blocks_the_gate(tmp_path, monkeypatch):
+    """Fail-open: no history, or an unreadable database, must leave the
+    approval prompt working and unchanged."""
+    from brain import config
+    from brain.session import BrainSession
+
+    monkeypatch.setattr(config, "DB_PATH", tmp_path / "missing.db")
+    assert BrainSession._pursuit_cost_estimate(object(), 3) == ""

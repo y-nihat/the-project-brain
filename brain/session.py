@@ -366,6 +366,35 @@ class BrainSession:
                               error=f"{type(e).__name__}: {str(e)[:200]}")
         return summary
 
+    def _pursuit_cost_estimate(self, budget: int) -> str:
+        """What `budget` more runs is likely to cost, from recorded history.
+
+        The gate is the only place a human decides to spend unattended, and it
+        asked for a COUNT. Recorded runs span roughly $0.01 to $17.30, so a
+        count carries almost no information about the commitment; the median
+        and the worst case do. Best-effort: no history, no estimate, and the
+        approval prompt is unchanged."""
+        try:
+            import sqlite3
+
+            conn = sqlite3.connect(f"file:{config.DB_PATH}?mode=ro", uri=True)
+            try:
+                costs = [r[0] for r in conn.execute(
+                    "SELECT cost_usd FROM runs WHERE cost_usd > 0 "
+                    "ORDER BY started_at DESC LIMIT 30") if r[0]]
+            finally:
+                conn.close()
+            if not costs:
+                return ""
+            costs.sort()
+            median = costs[len(costs) // 2]
+            worst = costs[-1]
+            return (f"typically ~${median * budget:.2f} total "
+                    f"(median ${median:.2f}/run over the last {len(costs)} runs), "
+                    f"up to ~${worst * budget:.2f} at the worst observed ${worst:.2f}/run")
+        except Exception:  # noqa: BLE001 — an estimate must never block the gate
+            return ""
+
     async def _maybe_pursue(self, summary: RunSummary) -> RunSummary:
         """Piece 4: bounded, user-authorized goal pursuit. Self-initiated runs
         happen ONLY when the objective granted a budget AND the human approves
@@ -387,12 +416,19 @@ class BrainSession:
         # reverse capability — they cost real compute and may act on live
         # services. The extracted budget is a REQUEST; only the human at the
         # gate grants it. Deny-by-default (the broker's contract for auto runs).
+        # A budget stated in RUNS is not a budget the approver can weigh: runs
+        # in the recorded history span $0.01 to $17.30. Price the request from
+        # this installation's own history so the human is consenting to an
+        # amount, not to a count.
+        estimate = self._pursuit_cost_estimate(budget)
         if not self.broker.request(
                 action=f"pursue standing goal #{goal_id} with up to {budget} "
-                       "SELF-INITIATED run(s)",
+                       "SELF-INITIATED run(s)" + (f" — {estimate}" if estimate else ""),
                 reason="the objective requested autonomous iteration toward a "
                        "measurable goal; each iteration is a full run that spends "
-                       "compute and may act on external services",
+                       "compute and may act on external services"
+                       + (f". Based on this installation's own history, {estimate}."
+                          if estimate else ""),
                 requirements=[f"approve up to {budget} autonomous run(s) "
                               "(deny to stop after this run and only PROPOSE next steps)"]):
             summary.answer += ("\n[goal pursuit] autonomous iteration was not "
