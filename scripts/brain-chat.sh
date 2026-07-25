@@ -2,8 +2,10 @@
 # Interactive terminal session with the brain, with guaranteed teardown.
 #
 # Usage:
-#   ./scripts/brain-chat.sh              # brain only
-#   ./scripts/brain-chat.sh --phoenix    # also start the Phoenix trace viewer
+#   ./scripts/brain-chat.sh                       # brain only
+#   ./scripts/brain-chat.sh --phoenix             # + the Phoenix trace viewer
+#   ./scripts/brain-chat.sh --resume last         # continue the last conversation
+#   ./scripts/brain-chat.sh --phoenix --resume <id>
 #
 # Brings the stack up, drops you into `python -m brain.repl` on a TTY, and always
 # tears everything down on exit (including the observability profile).
@@ -11,8 +13,14 @@ set -e
 cd "$(dirname "$0")/.."
 DC="docker compose -f docker/docker-compose.yml --env-file .env"
 
+# --phoenix is the LAUNCHER's flag; everything after it belongs to the REPL, so
+# it is consumed here rather than forwarded (which made `--phoenix` reach
+# brain.repl, print its usage and exit 2).
 PROFILE=""
-[ "$1" = "--phoenix" ] && PROFILE="--profile observability"
+if [ "$1" = "--phoenix" ]; then
+    PROFILE="--profile observability"
+    shift
+fi
 
 cleanup() {
     echo
