@@ -20,6 +20,7 @@ trace to files a tool actually retained, and a run that cannot prove its work sa
 ```sh
 git clone https://github.com/y-nihat/the-project-brain.git && cd the-project-brain
 cp .env.example .env && chmod 600 .env
+mkdir -p data                           # Docker would otherwise create it as root
 claude setup-token                      # paste the token into .env as CLAUDE_CODE_OAUTH_TOKEN
 
 DC="docker compose -f docker/docker-compose.yml --env-file .env"

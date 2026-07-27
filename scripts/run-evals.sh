@@ -8,6 +8,9 @@
 # only when every check in every scenario passed.
 set -e
 cd "$(dirname "$0")/.."
+# Docker creates a missing bind-mount source as ROOT, and the brain runs as
+# your uid — so an absent data/ becomes a directory the engine cannot write.
+mkdir -p data
 DC="docker compose -f docker/docker-compose.yml --env-file .env"
 
 cleanup() {
