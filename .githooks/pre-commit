@@ -1,18 +1,61 @@
 #!/bin/sh
-# Refuse to commit anything secret-shaped. Mirrors brain/observability/redact.py:
-# the runtime masks secrets in outputs; this guard keeps them out of the repo.
-# The .githooks directory itself is excluded (these patterns live here).
+# Refuse to commit anything secret-shaped.
+#
+# ONE pattern list. This hook does not carry its own: it loads
+# brain/observability/redact.py (pure stdlib, no package import) and asks the
+# same `contains_secret_shape` the runtime masks with. The two used to be
+# hand-mirrored and had already drifted apart — a comment claimed they matched
+# while the runtime knew shapes the hook did not.
+#
+# This is a safety net, not a control: `--no-verify` bypasses it by design, and
+# it reads the textual diff, so a secret inside a file git treats as binary
+# passes. See docs/SECURITY_MODEL.md.
+#
+# The .githooks directory itself is excluded (test fixtures live there).
 
-PATTERNS='sk-ant-[A-Za-z0-9_-]\{8,\}\|sk-[A-Za-z0-9]\{20,\}\|AKIA[0-9A-Z]\{16\}\|ghp_[A-Za-z0-9]\{20,\}\|gho_[A-Za-z0-9]\{20,\}\|xox[baprs]-[A-Za-z0-9-]\{10,\}\|eyJ[A-Za-z0-9_-]\{10,\}\.eyJ\|-----BEGIN [A-Z ]*PRIVATE KEY-----'
+ROOT=$(git rev-parse --show-toplevel) || exit 1
 
-hits=$(git diff --cached --diff-filter=ACM -U0 -- . ':(exclude).githooks/*' \
-       | grep '^+' | grep -n "$PATTERNS")
-
-if [ -n "$hits" ]; then
-    echo "COMMIT BLOCKED: staged changes contain secret-shaped strings:" >&2
-    echo "$hits" | head -5 | cut -c1-80 >&2
-    echo "Remove the secret (use the brain's hidden secret prompt instead)." >&2
-    echo "If this is a FAKE fixture, reshape it so it does not match real formats." >&2
+if [ ! -f "$ROOT/brain/observability/redact.py" ]; then
+    echo "COMMIT BLOCKED: brain/observability/redact.py is missing —" >&2
+    echo "cannot check for secrets." >&2
     exit 1
 fi
-exit 0
+
+PY=$(command -v python3 || command -v python) || {
+    echo "COMMIT BLOCKED: no python found — cannot check for secrets." >&2
+    echo "Install python3, or bypass deliberately with --no-verify." >&2
+    exit 1
+}
+
+# The script arrives on stdin; the diff is read by the script itself, so the
+# two never contend for the same channel.
+"$PY" - "$ROOT" <<'PYEOF'
+import importlib.util
+import subprocess
+import sys
+
+root = sys.argv[1]
+spec = importlib.util.spec_from_file_location(
+    "redact", root + "/brain/observability/redact.py")
+redact = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(redact)
+
+diff = subprocess.run(
+    ["git", "diff", "--cached", "--diff-filter=ACM", "-U0", "--",
+     ".", ":(exclude).githooks/*"],
+    cwd=root, capture_output=True, text=True, errors="replace").stdout
+
+hits = [ln for ln in diff.splitlines()
+        if ln.startswith("+") and redact.contains_secret_shape(ln)]
+
+if hits:
+    print("COMMIT BLOCKED: staged changes contain secret-shaped strings:",
+          file=sys.stderr)
+    for ln in hits[:5]:
+        print("   ", redact.scrub_text(ln)[:100], file=sys.stderr)
+    print("Remove the secret (use the brain's hidden secret prompt instead).",
+          file=sys.stderr)
+    print("If this is a FAKE fixture, reshape it so it does not match real "
+          "formats.", file=sys.stderr)
+    sys.exit(1)
+PYEOF

@@ -292,3 +292,56 @@ def test_author_credentialed_tool_collects_and_verifies_with_secret(tmp_path):
         assert ledger.find_leaks("secret-test") == []
     finally:
         mgr.close(); ledger.close(); reg.close(); tracer.close()
+
+
+# --- the shape denylist and its single source of truth ---------------------- #
+
+_CURRENT_PROVIDER_SHAPES = {
+    "openai-project": "sk-proj-" + "a" * 40,
+    "google-api": "AIza" + "B" * 35,
+    "google-oauth": "ya29." + "i" * 30,
+    "github-fine-grained": "github_pat_" + "c" * 25,
+    "github-server": "ghs_" + "j" * 36,
+    "huggingface": "hf_" + "d" * 34,
+    "stripe": "sk_live_" + "e" * 20,
+    "gitlab": "glpat-" + "f" * 20,
+    "aws-sts": "ASIA" + "G" * 16,
+    "npm": "npm_" + "h" * 36,
+}
+
+
+def test_denylist_matches_the_formats_providers_issue_today():
+    """A denylist is only as current as its last review, and this one had gone
+    stale in a way that mattered: `session.py` screens objectives with the same
+    function the tracer masks with, so a shape it did not know was neither
+    intercepted nor masked — it was written verbatim and permanently into the
+    runs table by one paste, with no tool, no injection and no attacker."""
+    from brain.observability.redact import contains_secret_shape, scrub_text
+
+    for provider, sample in _CURRENT_PROVIDER_SHAPES.items():
+        assert contains_secret_shape(sample), f"{provider} shape not matched"
+        assert sample not in scrub_text(f"key={sample} end"), provider
+
+
+def test_ordinary_text_is_not_secret_shaped():
+    """The cost of widening a denylist is false positives, and a false positive
+    here REFUSES a run at the objective screen."""
+    from brain.observability.redact import contains_secret_shape
+
+    for benign in ("a normal sentence with sk- in it", "tokens_in=1234",
+                   "https://example.com/a/b?c=d", "AKIA is an acronym",
+                   "def scrub_text(s): return s"):
+        assert not contains_secret_shape(benign), benign
+
+
+def test_the_commit_guard_has_no_pattern_list_of_its_own():
+    """The hook and the runtime used to hand-mirror this list, with a comment
+    claiming they matched — and they had already drifted. The hook now loads
+    redact.py and asks it, so divergence is not expressible."""
+    hook = (config.PROJECT_ROOT / ".githooks" / "pre-commit").read_text()
+    assert "brain/observability/redact.py" in hook
+    assert "contains_secret_shape" in hook
+    for shape_fragment in ("sk-ant-", "AKIA", "ghp_", "BEGIN "):
+        assert shape_fragment not in hook, (
+            f"the hook carries its own copy of {shape_fragment!r}; it must ask "
+            "redact.py instead")

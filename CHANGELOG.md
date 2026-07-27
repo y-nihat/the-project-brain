@@ -39,6 +39,15 @@ was made public, fixed in the order it found it.
   `session.py` now state this one, and cite the query that produces it. A
   project whose thesis is that claims trace to evidence cannot publish three
   mutually inconsistent statements of its own headline self-measurement.
+- **The shape denylist knows the formats providers issue today**, and the
+  commit guard no longer keeps its own copy of it. `sk-proj-` (OpenAI's default
+  since 2023), `AIza`, `github_pat_`, `hf_`, `sk_live_`, `glpat-`, `ASIA`,
+  `npm_`, `ya29.` and the rest of the `gh?_` family were all unmatched — and
+  because `session.py` screens objectives with the same function the tracer
+  masks with, a user pasting one into an objective had it written verbatim and
+  permanently into the runs table. No tool, no injection, no attacker: one
+  paste. `.githooks/pre-commit` now loads `redact.py` and asks it, so the two
+  lists cannot drift apart again the way they already had.
 - **The trace viewer is no longer published to the network.** Phoenix bound
   `0.0.0.0:6006` — an unauthenticated UI of every exported run (objectives,
   agent prompts, tool output), and the only port this project opened. Now

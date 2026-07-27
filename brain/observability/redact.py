@@ -30,13 +30,27 @@ _SENSITIVE_KEY = re.compile(
 # Keys that merely COUNT tokens (LLM usage) are not secrets.
 _USAGE_KEY = re.compile(r"^(tokens?_(in|out)|.*token_count.*)$", re.IGNORECASE)
 
+# A DENYLIST, and therefore only as current as its last review. Several entries
+# below exist because the list was measured against the formats providers
+# actually issue today and missed them: OpenAI has defaulted to `sk-proj-` since
+# 2023, which `sk-[A-Za-z0-9]{20,}` could never match because of the hyphen, and
+# GitHub's fine-grained `github_pat_` is now the default a user is handed. That
+# gap was not academic: `session.py` screens objectives with this same function,
+# so an unmatched shape pasted into an objective was neither intercepted nor
+# masked — it was written verbatim and permanently into the runs table.
 _SECRET_SHAPES = re.compile(
     "|".join([
-        r"sk-ant-[A-Za-z0-9_\-]{8,}",              # Anthropic keys/tokens
-        r"sk-[A-Za-z0-9]{20,}",                     # generic sk- API keys
-        r"AKIA[0-9A-Z]{16}",                        # AWS access key id
-        r"ghp_[A-Za-z0-9]{20,}",                    # GitHub PAT
-        r"gho_[A-Za-z0-9]{20,}",
+        r"sk-ant-[A-Za-z0-9_\-]{8,}",               # Anthropic keys/tokens
+        r"sk-[A-Za-z0-9_\-]{20,}",                  # OpenAI & generic sk- (incl. sk-proj-)
+        r"sk_(live|test)_[A-Za-z0-9]{16,}",         # Stripe
+        r"(AKIA|ASIA)[0-9A-Z]{16}",                 # AWS access key id (incl. STS)
+        r"gh[pousr]_[A-Za-z0-9]{20,}",              # GitHub classic PAT / OAuth / app tokens
+        r"github_pat_[A-Za-z0-9_]{20,}",            # GitHub fine-grained PAT
+        r"glpat-[A-Za-z0-9_\-]{16,}",               # GitLab PAT
+        r"AIza[0-9A-Za-z_\-]{30,}",                 # Google API key
+        r"ya29\.[A-Za-z0-9_\-]{20,}",               # Google OAuth access token
+        r"hf_[A-Za-z0-9]{30,}",                     # Hugging Face
+        r"npm_[A-Za-z0-9]{30,}",                    # npm
         r"xox[baprs]-[A-Za-z0-9\-]{10,}",           # Slack
         r"eyJ[A-Za-z0-9_\-]{10,}\.eyJ[A-Za-z0-9_\-]{10,}",  # JWT
         r"\d{8,10}:[A-Za-z0-9_\-]{30,}",            # bot-token shape (id:hash)
