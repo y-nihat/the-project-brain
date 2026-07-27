@@ -30,7 +30,7 @@ $DC exec brain python -m brain.main "In one sentence, what is idempotency? No to
 
 Nothing about that objective has to be *observed*, so the analyze step answers it directly. Measured
 on a clean install of this exact tree — fresh clone, empty `data/`, no prior configuration:
-**13 seconds, $0.01, zero containers**, and the answer says in its own text that it traces to
+**about 10 seconds, $0.01, zero containers**, and the answer says in its own text that it traces to
 nothing. That confirms auth and the answer path — not the sandbox. For the rest of the stack, run
 something that must observe:
 
