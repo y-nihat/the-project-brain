@@ -1,0 +1,41 @@
+The Project Brain
+Copyright 2026 Nihat Uzunalioglu, Y Inovasyon
+
+Licensed under the Apache License, Version 2.0 (the "License"); you may not use
+this file except in compliance with the License. You may obtain a copy of the
+License in the LICENSE file distributed with this work, or at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+
+THIRD-PARTY COMPONENTS
+----------------------
+
+This license covers the source in this repository. It does NOT extend to the
+third-party software this project depends on or installs, each of which is
+governed by its own terms.
+
+In particular: the container image built by `docker/brain.Dockerfile` installs
+Anthropic's Claude Code CLI (`@anthropic-ai/claude-code`), which is proprietary
+software licensed by Anthropic under Anthropic's own terms. Nothing here grants
+any right to redistribute it. Do not publish a prebuilt image of this project to
+any registry without reviewing those terms; build the image locally instead, as
+the README documents.
+
+Running this project requires your own Claude subscription credential
+(`claude setup-token`). Credentials are per-account and are never shared,
+pooled, or bundled with this software.
+
+Declared Python dependencies and their licenses, as reported by their own
+distribution metadata:
+
+    claude-agent-sdk                          MIT
+    docker                                    Apache-2.0
+    python-dotenv                             BSD-3-Clause
+    opentelemetry-sdk                         Apache-2.0
+    opentelemetry-exporter-otlp-proto-http    Apache-2.0
+    pillow                                    MIT-CMU
+    pytest (dev)                              MIT
+    pytest-asyncio (dev)                      Apache-2.0
+
+No third-party source is vendored into this repository.

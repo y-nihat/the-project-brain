@@ -106,3 +106,9 @@ healthy push into seven red tests.
 `CONTRIBUTING.md` has the git workflow and — read first — the architectural invariant every change
 must preserve. `docs/RATIONALE.md` maps each subsystem to the release entries that explain why it
 exists.
+
+## License
+
+Apache-2.0 — see [`LICENSE`](LICENSE). `NOTICE` records the third-party terms this license does not
+cover: most importantly, the container image installs Anthropic's proprietary Claude Code CLI, so do
+not publish a prebuilt image of this project to any registry. Build it locally, as above.

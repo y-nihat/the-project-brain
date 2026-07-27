@@ -7,6 +7,17 @@ name = "the-project-brain"
 # assignment), so building never imports the package.
 dynamic = ["version"]
 description = "A self-organizing agent brain on the Claude Agent SDK."
+readme = "README.md"
+license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE"]
+authors = [{ name = "Nihat Uzunalioglu" }]
+keywords = ["agents", "orchestration", "claude", "sandbox", "llm"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Topic :: Software Development :: Libraries :: Application Frameworks",
+]
 requires-python = ">=3.10"
 dependencies = [
     "claude-agent-sdk",
@@ -23,13 +34,22 @@ dev = [
     "pytest-asyncio>=0.23.0",
 ]
 
+[project.urls]
+Homepage = "https://github.com/y-nihat/the-project-brain"
+Repository = "https://github.com/y-nihat/the-project-brain"
+Changelog = "https://github.com/y-nihat/the-project-brain/blob/main/CHANGELOG.md"
+Issues = "https://github.com/y-nihat/the-project-brain/issues"
+
 [project.scripts]
 # The host-side entry point M2 calls for. `brain.main:main` already parses
 # argv and exits with the run's status.
 brain = "brain.main:main"
 
 [build-system]
-requires = ["setuptools>=68"]
+# >=77 for PEP 639: the SPDX `license` string and `license-files`. An older
+# setuptools silently drops both, and a wheel with no license is the one
+# packaging defect that cannot be repaired for whoever already installed it.
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.dynamic]
