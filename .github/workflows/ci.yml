@@ -1,0 +1,84 @@
+# The gate that replaces the pre-push hook once contributions arrive from
+# outside this machine. The hook still runs locally; it cannot run on a fork.
+#
+# Deliberate choices:
+#   * `pull_request`, never `pull_request_target` — the latter runs with write
+#     permissions and the BASE repo's secrets against a fork's code, which is
+#     the standard way CI becomes the supply-chain hole.
+#   * every action pinned by commit SHA, not a tag a maintainer can repoint.
+#   * the default token is read-only; no job asks for more.
+#   * pip-audit is a scheduled job, not a PR gate: a new CVE in a transitive
+#     dependency must not turn an unrelated contributor's PR red.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: "17 6 * * 1"   # Mondays, for the audit job only
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  tests:
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # The declared floor and the current ceiling. The floor had never been
+        # executed anywhere before this workflow existed.
+        python-version: ["3.10", "3.13"]
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09  # v5
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+      - name: Offline suite
+        # No Docker here: the sandbox tests detect that and skip with a reason,
+        # which is the honest result rather than a false green.
+        run: python -m pytest tests/ -q
+
+  secrets:
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09  # v5
+        with:
+          fetch-depth: 0   # gitleaks scans history, not just the tip
+      - name: Install gitleaks (pinned)
+        env:
+          GITLEAKS_VERSION: 8.30.1
+        run: |
+          curl -sSfL -o /tmp/gitleaks.tar.gz \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          tar -xzf /tmp/gitleaks.tar.gz -C /tmp gitleaks
+          sudo install -m 0755 /tmp/gitleaks /usr/local/bin/gitleaks
+          gitleaks version
+      - name: Scan
+        run: gitleaks detect --source . --redact --no-banner --verbose
+
+  audit:
+    # Weekly only. Never blocks a pull request.
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09  # v5
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6
+        with:
+          python-version: "3.13"
+      - name: Audit dependencies
+        run: |
+          python -m pip install --upgrade pip pip-audit
+          pip install -e .
+          pip-audit --strict

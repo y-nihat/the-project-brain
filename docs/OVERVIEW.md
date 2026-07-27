@@ -164,7 +164,7 @@ without losing exported traces. It runs resource-capped (1 GB / 1 CPU) like ever
   (`peak_mem_mb` in the ledger and trace) so limits can be tuned from data.
 - **Output capture is bounded** (`SANDBOX_MAX_OUTPUT_MB`, default 128 MB) so a runaway tool cannot
   exhaust the orchestrator.
-- **The control plane is capped too**: compose sets brain 2 GB / 2 CPU, socket-proxy 128 MB / 0.5.
+- **The control plane is capped too**: compose sets brain 2 GB / 2 CPU, socket-proxy 64 MB / 0.25.
 - **No sprawl**: session containers are reaped; dangling brain-built image layers are pruned on
   shutdown (tagged capability images — the library — are kept).
 - **Guaranteed stack teardown**: use `./scripts/run-objective.sh "<objective>"` to run an objective —

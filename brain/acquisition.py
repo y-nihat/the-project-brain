@@ -59,8 +59,14 @@ def _write_context(directory: Path, build_context: dict) -> None:
 
 
 def _error_tail(text: str, limit: int = 2000) -> str:
-    """Keep the END of an error text — tracebacks and pip/build errors live there."""
-    text = (text or "").strip()
+    """Keep the END of an error text — tracebacks and pip/build errors live there.
+
+    Scrubbed here, at the one place every caller passes through: this text goes
+    into the developer agent's repair prompt and into failure details, and a
+    tool that prints its own credential prints it in a traceback. The files
+    written beside it were already scrubbed; the string in memory was not.
+    """
+    text = scrub_text((text or "").strip())
     return text if len(text) <= limit else "…" + text[-limit:]
 
 

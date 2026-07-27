@@ -388,7 +388,13 @@ def build_caps_server(
                     reason = (f"the tool exceeded its memory limit ({pol.mem}) and was killed; "
                               "try a smaller input or report this limitation")
                 else:
-                    tail = (result.stderr or "").strip()[-800:]
+                    # Scrubbed at the boundary, exactly like stdout twelve lines
+                    # below: a tool that prints its own credential prints it in
+                    # a traceback, and this tail reaches agent context and the
+                    # repair prompt.
+                    from ..observability.redact import scrub_text as _scrub
+
+                    tail = _scrub((result.stderr or "").strip())[-800:]
                     reason = (f"exit={result.exit_code}, timed_out={result.timed_out}: "
                               + (tail if tail else
                                  "(the tool wrote NOTHING to stderr — it likely "

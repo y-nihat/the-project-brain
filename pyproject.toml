@@ -8,8 +8,8 @@ name = "the-project-brain"
 dynamic = ["version"]
 description = "A self-organizing agent brain on the Claude Agent SDK."
 readme = "README.md"
-license = "Apache-2.0"
-license-files = ["LICENSE", "NOTICE"]
+license = "AGPL-3.0-only"
+license-files = ["LICENSE", "NOTICE", "CLA.md"]
 authors = [{ name = "Nihat Uzunalioglu" }]
 keywords = ["agents", "orchestration", "claude", "sandbox", "llm"]
 classifiers = [
@@ -65,6 +65,10 @@ include = ["brain*"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+# Outside the tree. The documented way to run this suite is inside the brain
+# container, where /app is mounted READ-ONLY — pytest's default `.pytest_cache`
+# in the rootdir would make the documented command fail on a permission error.
+cache_dir = "/tmp/.pytest_cache"
 # Collect ONLY the engine's own suite. Without this, a bare `pytest` from the
 # repo root walks data/ — the git-ignored RUN OUTPUT tree — and collects test
 # files that agents authored and tools extracted during past runs. That both

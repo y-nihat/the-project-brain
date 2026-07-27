@@ -72,7 +72,7 @@ def test_a_host_shaped_token_is_not_read_as_a_designated_file(tmp_path, monkeypa
     monkeypatch.setattr(config, "PROJECT_ROOT", tmp_path)
     monkeypatch.setattr(config, "INBOX_DIR", tmp_path / "inbox")
 
-    for token in ("shop.kelvane.com", "api.github.io", "example.co.uk",
+    for token in ("shop.example.com", "api.github.io", "example.co.uk",
                   "registry.npmjs.org", "cdn.jsdelivr.net"):
         text = f"deploy the site and point it at {token} when it is live"
         rewritten, resolved, unresolved, _g = files_mod.resolve_local_sources(text)
@@ -118,7 +118,7 @@ def test_an_unmarked_multi_segment_token_is_stated_not_swallowed(tmp_path, monke
     monkeypatch.setattr(config, "PROJECT_ROOT", tmp_path)
     monkeypatch.setattr(config, "INBOX_DIR", tmp_path / "inbox")
 
-    for token in ("archive.tar.gz", "shop.kelvane.com", "data.2024.csv"):
+    for token in ("archive.tar.gz", "shop.example.com", "data.2024.csv"):
         _t, _r, unresolved, guessed = files_mod.resolve_local_sources(
             f"handle {token} next")
         assert unresolved == [], token          # nobody is asked about a guess
@@ -147,11 +147,11 @@ def test_the_residual_limit_is_demonstrated_not_asserted(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "INBOX_DIR", tmp_path / "inbox")
 
     # Two segments: still read as a filename, and still asked about.
-    _t, _r, unresolved, guessed = files_mod.resolve_local_sources("deploy to kelvane.com")
-    assert unresolved == ["kelvane.com"] and guessed == []
+    _t, _r, unresolved, guessed = files_mod.resolve_local_sources("deploy to example.com")
+    assert unresolved == ["example.com"] and guessed == []
     # Three: reported as a guess, and nobody is interrogated.
-    _t, _r, unresolved, guessed = files_mod.resolve_local_sources("deploy to shop.kelvane.com")
-    assert unresolved == [] and guessed == ["shop.kelvane.com"]
+    _t, _r, unresolved, guessed = files_mod.resolve_local_sources("deploy to shop.example.com")
+    assert unresolved == [] and guessed == ["shop.example.com"]
 
 
 def test_a_bare_filename_that_exists_is_still_picked_up(tmp_path, monkeypatch):

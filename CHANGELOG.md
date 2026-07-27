@@ -74,6 +74,34 @@ was made public, fixed in the order it found it.
   networks or volumes at all. Both third-party images are pinned by digest —
   the proxy is the one container holding the raw docker socket, so a mutable
   tag made an upstream repoint host root at the next `up --build`.
+- **Tool stderr is scrubbed at the boundary, like stdout.** On a failed call the
+  last 800 bytes of stderr went to the agent and into the repair prompt with no
+  redaction, twelve lines above the code scrubbing stdout — so a tool printing
+  its own credential in a traceback leaked it by the one path the security
+  document claimed was closed. Scrubbed now in both the runtime and
+  `acquisition._error_tail`, which every failure detail passes through.
+- **The orchestrator container stops being the least-hardened one in the file.**
+  `cap_drop: [ALL]` and `no-new-privileges` on the brain and the socket-proxy,
+  and `/app` mounted READ-ONLY with `data/` rw on top — the engine only ever
+  reads under `/app`, so a defect that wrote outside a run folder used to land
+  in the repository itself, including `.git`.
+- **The image stops executing an unreviewed remote script as root.** The
+  NodeSource install moves from `curl … | bash -` to the signed apt repository
+  with a pinned keyring, `@anthropic-ai/claude-code` is pinned to a version, and
+  the hand-written pip list — which had already drifted from `pyproject.toml` —
+  is replaced by installing the project's own declared dependencies.
+- **The offline suite is offline.** Four tests that run no container still opened
+  a Docker client through `BrainSession`, so they failed with ConnectionRefused
+  on any machine whose daemon was merely stopped. A contributor's first `pytest`
+  must not depend on whether Docker Desktop is up; the genuinely
+  container-dependent tests already skip honestly with a reason.
+- **A client's domain leaves the test fixtures.** `shop.kelvane.com` was a
+  hostname-versus-filename fixture; `example.com` is reserved for exactly this
+  (RFC 2606) and discloses nothing.
+- **Stale stamps.** `docs/OVERVIEW.md` claimed the socket-proxy budget was
+  128 MB / 0.5 CPU where compose sets 64 MB / 0.25; `docs/ARCHITECTURE.md`
+  carried 0.28.0 and 0.11.0 stamps and pointed at review documents that are not
+  published.
 - **The README's safety section says what the code enforces.** The approval gate
   is scoped to credentials and tool allow-listing — it never gated an authored
   tool's network egress or file writes, which happen with no per-action prompt.
@@ -84,10 +112,18 @@ was made public, fixed in the order it found it.
   real URL rather than a placeholder.
 
 ### Added
-- **Apache-2.0.** LICENSE and NOTICE, carried into the wheel. NOTICE bounds what
-  the license does not cover — chiefly that the image installs Anthropic's
-  proprietary Claude Code CLI, so no prebuilt image of this project may be
-  published to a registry.
+- **AGPL-3.0, with a CLA.** The repository carried no license at all, which
+  meant default exclusive copyright: nobody could legally use, fork, or
+  contribute. AGPL rather than a permissive license because the protection is
+  the point — run it yourself and nothing constrains you, but offer it to others
+  as a network service and you publish your modifications, or you take a
+  commercial license. That second door is why contributions come in under
+  `CLA.md`: a single contribution accepted without it would foreclose commercial
+  licensing permanently, for the author as much as for anyone. In exchange the
+  CLA binds the maintainer to keep every accepted contribution available under
+  the AGPL. NOTICE bounds what the license does not cover — chiefly that the
+  image installs Anthropic's proprietary Claude Code CLI, so no prebuilt image
+  of this project may be published to a registry.
 - **A security policy with a channel.** `SECURITY.md` is now how to report a
   vulnerability (private reporting, 14-day acknowledgement, 90-day disclosure,
   scope, safe harbour). The model itself moves to `docs/SECURITY_MODEL.md`, with
@@ -96,6 +132,22 @@ was made public, fixed in the order it found it.
 - **A NON-GOALS section and a stated support posture** in the README: not a
   hosted service, not multi-provider, not spend-controlled, one maintainer, no
   SLA outside the security channel.
+- **`docs/THREAT_MODEL.md`** — the document a system that runs model-authored
+  code owes its users. Five numbered trust boundaries with the code that
+  enforces each, what is in and out of scope, prompt injection declared IN scope
+  and undefended (with what contains the damage anyway and what does not), and
+  the known weaknesses ranked in the order an attacker would try them.
+- **`CODE_OF_CONDUCT.md`** (Contributor Covenant 2.1) and a contribution flow in
+  `CONTRIBUTING.md`: branch, PR, green CI, sign-off, and a written release
+  ritual so the release record cannot drift from the engine again. The three
+  "until we publish to GitHub" statements are gone.
+- **CI, of a shape one maintainer can keep green.** `.github/workflows/ci.yml`
+  runs the offline suite on 3.10 (the declared floor, never executed anywhere
+  before) and 3.13, plus gitleaks over full history. `pull_request`, never
+  `pull_request_target`; every action pinned by commit SHA; the default token
+  read-only; `pip-audit` weekly and never as a PR gate, so a new CVE in a
+  transitive dependency cannot turn an unrelated contributor's PR red.
+  Dependabot monthly.
 
 ## [0.31.1] — 2026-07-25
 

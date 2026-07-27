@@ -1,8 +1,8 @@
 # The Project Brain — core algorithm architecture
 
-Technical structure of the Brain core, current as of **engine 0.28.0**. The
+Technical structure of the Brain core, current as of **engine 0.32.0**. The
 diagrams and the budget table were written at 0.11.0 and re-verified against
-`brain/config.py` at 0.28.0; §11 lists what is still deliberately open. This
+`brain/config.py` at 0.32.0; §11 lists what is still deliberately open. This
 document explains how the system thinks; `OVERVIEW.md` explains how to run it, and
 `CHANGELOG.md` records how each mechanism was earned (nearly every box below
 exists because a live run failed without it).
@@ -399,9 +399,10 @@ evidence never ships unreviewed.
 
 ---
 
-## 11. Known gaps (deliberately open at 0.11.0)
+## 11. Known gaps (deliberately open)
 
-Tracked for the 1.0 line, in `CHANGELOG.md` and the review documents:
+Tracked for the 1.0 line in `CHANGELOG.md`, and — for the security-relevant
+ones — in `docs/SECURITY_MODEL.md` and `docs/THREAT_MODEL.md`:
 uncertainty-driven *active* observation (densify/re-observe where claims
 depend on gaps); conflicting-reference adjudication (incompatible user notes
 vs. direct evidence, explained rather than silently merged); observe-once

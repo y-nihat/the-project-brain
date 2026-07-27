@@ -9,10 +9,10 @@ Its distinguishing property is not autonomy but **honesty**: a deliverable's loa
 trace to files a tool actually retained, and a run that cannot prove its work says so
 (`unverified` / `blocked` / `failed`) instead of narrating success.
 
-> **Status:** engine **v0.31.1**, pre-1.0, actively developed by one author. The safety substrate,
+> **Status:** engine **v0.32.0**, pre-1.0, actively developed by one author. The safety substrate,
 > staged workflows, capability authoring/verification/promotion, the evidence-and-review plane,
 > adaptive recovery, standing goals, the eval harness, and observability are built and covered by
-> 523 tests. `CHANGELOG.md` is the authoritative release record.
+> 542 tests. `CHANGELOG.md` is the authoritative release record.
 > See **[docs/OVERVIEW.md](docs/OVERVIEW.md)** for the stack, how to run it, and where logs live.
 
 ## Try it
@@ -153,6 +153,18 @@ exists.
 
 ## License
 
-Apache-2.0 — see [`LICENSE`](LICENSE). `NOTICE` records the third-party terms this license does not
-cover: most importantly, the container image installs Anthropic's proprietary Claude Code CLI, so do
-not publish a prebuilt image of this project to any registry. Build it locally, as above.
+**AGPL-3.0** — see [`LICENSE`](LICENSE).
+
+Run it on your own machine, the documented way, and the license constrains nothing: use it, change
+it, do what you like. Section 13 governs one case — **offering this software to others over a
+network as a service** — and requires that you publish your modified source under the same license.
+If that does not fit your product, a commercial license is available; open an issue titled
+"commercial licensing".
+
+Contributions are accepted under a Contributor License Agreement ([`CLA.md`](CLA.md)) — sign off with
+`git commit -s`. It is what keeps the commercial option open; in exchange, every accepted
+contribution stays available under the AGPL.
+
+[`NOTICE`](NOTICE) records the third-party terms this license does not cover: most importantly, the
+container image installs Anthropic's proprietary Claude Code CLI, so do not publish a prebuilt image
+of this project to any registry. Build it locally, as above.

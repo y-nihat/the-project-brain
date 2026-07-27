@@ -33,7 +33,6 @@ Two rules follow:
    replace or bypass the planner's per-objective design.
 
 A lightweight, industry-standard git workflow so changes stay easy to track.
-Until we publish to GitHub we manage everything locally.
 
 ## Commit messages — Conventional Commits
 
@@ -74,7 +73,7 @@ why you need it.
 There is deliberately **no hosted CI**. This is a private, single-author repo
 with no deploy target, and 11 of the tests need a Docker daemon plus registry
 and PyPI egress — a hosted runner would need real setup to cover a minority of
-the suite. The other ~430 tests are pure Python, skip their Docker-gated peers
+the suite. The other ~530 tests are pure Python, skip their Docker-gated peers
 cleanly, and finish in under ten seconds, which is affordable on every push.
 Revisit when a second committer joins or the repo goes public.
 
@@ -112,12 +111,47 @@ One genuine exception: a test whose subject really *is* a version boundary —
 schema migration, backward compatibility, reading an old format with a new
 engine. Name it for that (migration, compatibility), not for the release.
 
-## Branching
+## Licensing and the CLA — read before your first pull request
 
-- **Now (local only):** trunk-based — commit small, coherent changes directly to
-  `main`. A plan-mode-approved slice lands as one or a few logical commits.
-- **After we create the GitHub repo:** short-lived feature branches + pull
-  requests for review before merging to `main`.
+This project is **AGPL-3.0**, and contributions are accepted under a Contributor
+License Agreement: **[`CLA.md`](CLA.md)**. You keep your copyright; you grant the
+maintainer the rights that keep a commercial license possible, and in exchange
+every accepted contribution stays available under the AGPL.
+
+Sign off on every commit — `git commit -s` writes the line for you:
+
+```
+Signed-off-by: Your Name <you@example.com>
+```
+
+A pull request without sign-off cannot be merged. That is not bureaucracy: a
+single unsigned contribution would permanently foreclose the project's only
+funding model.
+
+## Branching and pull requests
+
+- Short-lived feature branches, one coherent idea each, opened as a pull request
+  against `main`. `main` is protected: no direct pushes, no force-push.
+- CI must be green (the offline suite on 3.10 and 3.13, plus a secret scan).
+- The suite runs in the container, which is the environment it targets:
+  `docker compose -f docker/docker-compose.yml --env-file .env exec brain python -m pytest tests/`
+- Security-relevant changes: say in the PR description which guarantee in
+  `docs/SECURITY_MODEL.md` your change strengthens, weakens, or is bounded by.
+  If it weakens one, that document changes in the same PR.
+- Do **not** report a security vulnerability in a pull request or a public
+  issue — see [`SECURITY.md`](SECURITY.md).
+
+## Releases
+
+One ritual, so the release record never drifts from the engine again:
+
+1. `brain/config.py:ENGINE_VERSION` is the single version source — bump it.
+2. Add the matching `## [x.y.z] — YYYY-MM-DD` section to `CHANGELOG.md`. The
+   packaging test enforces that the newest entry equals `ENGINE_VERSION`.
+3. Tag it (`git tag -s vx.y.z`) and cut a GitHub Release whose body is that
+   changelog section, verbatim.
+
+At most one minor per two weeks; a tag with no Release is a tag nobody can read.
 
 ## History
 

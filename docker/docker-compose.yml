@@ -29,6 +29,7 @@ services:
       # SWARM, SYSTEM, INFO, CONFIGS, NODES, PLUGINS, SERVICES, TASKS, SESSION.
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
+    security_opt: ["no-new-privileges:true"]
     restart: unless-stopped
     # haproxy measures ~15MiB in use; 64m hard cap (no swap) is 4x headroom.
     mem_limit: 64m
@@ -60,8 +61,17 @@ services:
       # is not writable for an arbitrary uid. /tmp always is.
       HOME: /tmp
     working_dir: /app
+    # The orchestrator holds the credential and reaches the whole Docker API
+    # through the proxy, and it was the least-hardened container in this file.
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
     volumes:
-      - ..:/app                      # live source for iteration
+      # READ-ONLY source. The engine only ever READS under /app — every write
+      # goes to data/, which is mounted rw on top. A defect that wrote outside a
+      # run folder used to land in the repo itself (including .git), because the
+      # whole tree was writable for no reason.
+      - ..:/app:ro
+      - ../data:/app/data:rw         # the one writable path: run output, DB, library
       - /dev/null:/app/.env:ro       # mask the host .env file inside the container:
                                      # the allowlisted env vars above are the only delivery path
       - /etc/localtime:/etc/localtime:ro   # container clock renders in the laptop's timezone

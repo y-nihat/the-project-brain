@@ -9,29 +9,38 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     DEBIAN_FRONTEND=noninteractive
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
-        git ca-certificates curl \
-    && curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
-    && apt-get install -y --no-install-recommends nodejs \
-    && npm install -g @anthropic-ai/claude-code \
-    && apt-get purge -y curl && apt-get autoremove -y \
-    && rm -rf /var/lib/apt/lists/*
+# Node, from NodeSource's SIGNED apt repository rather than `curl … | bash -`.
+# The old form executed whatever that URL returned, as root, on every build:
+# a compromise upstream was a compromise on every user's machine, with nothing
+# to review and nothing to pin.
+ARG NODE_MAJOR=22
+# Pinned, because `npm install -g @anthropic-ai/claude-code` took whatever was
+# newest at build time — two users building a day apart ran different CLIs and
+# neither could say which.
+ARG CLAUDE_CODE_VERSION=2.1.220
 
-# Python dependencies (source is bind-mounted at runtime; we install deps only).
-RUN pip install --no-cache-dir \
-        claude-agent-sdk \
-        "docker>=7.0.0" \
-        python-dotenv \
-        "opentelemetry-sdk>=1.20.0" \
-        "opentelemetry-exporter-otlp-proto-http>=1.20.0" \
-        "pillow>=10.0.0" \
-        pytest \
-        pytest-asyncio
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        git ca-certificates curl gnupg \
+    && mkdir -p /etc/apt/keyrings \
+    && curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key \
+       | gpg --dearmor -o /etc/apt/keyrings/nodesource.gpg \
+    && echo "deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_${NODE_MAJOR}.x nodistro main" \
+       > /etc/apt/sources.list.d/nodesource.list \
+    && apt-get update && apt-get install -y --no-install-recommends nodejs \
+    && npm install -g "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" \
+    && npm cache clean --force \
+    && apt-get purge -y curl gnupg && apt-get autoremove -y \
+    && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
 # Source tree is mounted over /app by docker-compose; this keeps the image
 # usable standalone too.
 COPY . /app
+
+# Dependencies come from pyproject.toml — ONE declaration. The hand-written pip
+# list that used to live here had already drifted from it, so the image and the
+# distribution disagreed about what this project depends on.
+RUN pip install --no-cache-dir -e ".[dev]"
 
 CMD ["python", "-c", "import brain; print('brain image OK')"]

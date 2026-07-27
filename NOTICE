@@ -1,11 +1,38 @@
 The Project Brain
 Copyright 2026 Nihat Uzunalioglu, Y Inovasyon
 
-Licensed under the Apache License, Version 2.0 (the "License"); you may not use
-this file except in compliance with the License. You may obtain a copy of the
-License in the LICENSE file distributed with this work, or at
+This program is free software: you can redistribute it and/or modify it under
+the terms of the GNU Affero General Public License, version 3, as published by
+the Free Software Foundation. See the LICENSE file, or
+<https://www.gnu.org/licenses/agpl-3.0.txt>.
 
-    http://www.apache.org/licenses/LICENSE-2.0
+It is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY;
+without even the implied warranty of MERCHANTABILITY or FITNESS FOR A
+PARTICULAR PURPOSE. See the License for the specific language governing
+permissions and limitations.
+
+
+WHAT AGPL-3.0 MEANS HERE, IN PLAIN TERMS
+----------------------------------------
+
+If you run this on your own machine — the documented way — nothing about the
+license constrains you. Use it, change it, run it for whatever you like. Its
+section 13 governs one case only: **offering this software to other people over
+a network as a service.** Do that, and you must offer those users the complete
+corresponding source of your modified version, under this same license.
+
+If that does not suit your product, a **commercial license** is available. See
+<https://github.com/y-nihat/the-project-brain> or open an issue titled
+"commercial licensing" to start that conversation.
+
+
+CONTRIBUTIONS
+-------------
+
+Contributions are accepted under a Contributor License Agreement (see CLA.md).
+It is what makes the commercial license above possible: without it, the project
+could never be offered under any terms but the AGPL, including by its own
+author.
 
 
 THIRD-PARTY COMPONENTS
@@ -38,4 +65,5 @@ distribution metadata:
     pytest (dev)                              MIT
     pytest-asyncio (dev)                      Apache-2.0
 
-No third-party source is vendored into this repository.
+All are permissive and compatible with distribution under the AGPL-3.0. No
+third-party source is vendored into this repository.

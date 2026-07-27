@@ -282,13 +282,34 @@ def test_a_recorded_conversation_can_be_read_back_and_continued(tmp_path, monkey
     assert last["run_id"] == first.run_id and last["turn"] == 1
 
 
+class _NoSandbox:
+    """Stands in for SandboxManager where no container is ever run."""
+
+    def __init__(self, *_a, **_kw):
+        pass
+
+    def close(self):
+        pass
+
+
 def _isolated_session(tmp_path, monkeypatch, **kwargs):
-    """A BrainSession rooted entirely inside tmp_path (no Docker, no LLM call)."""
+    """A BrainSession rooted entirely inside tmp_path (no Docker, no LLM call).
+
+    "No Docker" is now enforced rather than asserted. `run_objective` builds a
+    SandboxManager, which opens a Docker client at construction — so every test
+    driving a turn through this helper failed with ConnectionRefused on a
+    machine whose daemon was merely STOPPED, even though it never runs a
+    container. A contributor's first `pytest` must not depend on whether Docker
+    Desktop happens to be up; the sandbox-gated tests already skip honestly via
+    `tests/_sandbox.py`, and these are not those.
+    """
     from brain import config
     from brain.session import BrainSession
+    from brain import session as session_mod
 
     monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "test-token")
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.setattr(session_mod, "SandboxManager", _NoSandbox)
     for name, sub in (("DATA_DIR", ""), ("DB_PATH", "brain.db"), ("RUNS_DIR", "runs"),
                       ("LOCKS_DIR", "locks"), ("CAPABILITIES_STORE", "caps")):
         monkeypatch.setattr(config, name, tmp_path / sub if sub else tmp_path)
