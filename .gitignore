@@ -1,5 +1,27 @@
-# Secrets — never commit
+# Secrets — never commit.
+# Written BEFORE a secret is placed, not after: a drop zone is defended by the
+# patterns that were already there. `.env.*` catches the variants people
+# actually make (.env.local, .env.prod, .env.bak) — every one of which the
+# single `.env` line missed.
 .env
+.env.*
+!.env.example
+
+# Credential file shapes, wherever they land.
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+*.token
+.netrc
+.npmrc
+.pypirc
+id_rsa*
+id_ecdsa*
+id_ed25519*
+*credentials*.json
+secrets/
 
 # Python
 __pycache__/

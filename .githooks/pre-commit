@@ -40,10 +40,34 @@ spec = importlib.util.spec_from_file_location(
 redact = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(redact)
 
-diff = subprocess.run(
-    ["git", "diff", "--cached", "--diff-filter=ACM", "-U0", "--",
-     ".", ":(exclude).githooks/*"],
-    cwd=root, capture_output=True, text=True, errors="replace").stdout
+def _git(*args):
+    return subprocess.run(["git", *args], cwd=root, capture_output=True,
+                          text=True, errors="replace").stdout
+
+
+# Local-only working files. They are kept out of the PUBLIC .gitignore on
+# purpose (they are this operator's notes, not every clone's), which means
+# .git/info/exclude is the only thing hiding them — and that file lives inside
+# .git/, so it survives neither a fresh clone nor a second machine. There, one
+# `git add -A` publishes them. This refusal travels with the repo.
+LOCAL_ONLY = ("CLAUDE.md", "JOURNAL.md", ".claude/")
+
+staged = [p for p in _git("diff", "--cached", "--name-only").splitlines() if p]
+leaked = [p for p in staged
+          if p in LOCAL_ONLY or any(p.startswith(d) for d in LOCAL_ONLY
+                                    if d.endswith("/"))]
+if leaked:
+    print("COMMIT BLOCKED: these are local-only working files and must never "
+          "be committed:", file=sys.stderr)
+    for p in leaked:
+        print("   ", p, file=sys.stderr)
+    print("Unstage them (git restore --staged <path>). If you genuinely mean "
+          "to publish one, remove it from LOCAL_ONLY in this hook first.",
+          file=sys.stderr)
+    sys.exit(1)
+
+diff = _git("diff", "--cached", "--diff-filter=ACM", "-U0", "--",
+            ".", ":(exclude).githooks/*")
 
 hits = [ln for ln in diff.splitlines()
         if ln.startswith("+") and redact.contains_secret_shape(ln)]

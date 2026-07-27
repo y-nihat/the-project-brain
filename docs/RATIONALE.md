@@ -18,7 +18,8 @@ diff: the entry says what broke.
 
 ## The invariant everything serves
 
-`CONTRIBUTING.md` states it and `docs/GENERALITY_AUDIT.md` audits it: the core
+`CONTRIBUTING.md` states it, and the 0.26.0 entry in `CHANGELOG.md` records the
+audit that measured the engine against it: the core
 loop is *analyze → decompose → identify requirements → generate agents/tools →
 execute*, statable with **no task, topic, or tool name**; capabilities are
 identified by **contract**, never by name; there are **no fixed pipelines**.

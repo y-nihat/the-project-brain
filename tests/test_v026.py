@@ -1,6 +1,6 @@
 """Generality audit implementation (v0.26.0): innate needs are declared data.
 
-The audit (docs/GENERALITY_AUDIT.md) found no task contamination, but four
+The 0.26.0 generality audit found no task contamination, but four
 places where engine code NAMED a capability instead of declaring a contract:
 a name-keyed verifier registry, an inline research toolbox, a fixed
 renderable-extension table, and a literal in the planner fallback. The fix is

@@ -39,6 +39,16 @@ was made public, fixed in the order it found it.
   `session.py` now state this one, and cite the query that produces it. A
   project whose thesis is that claims trace to evidence cannot publish three
   mutually inconsistent statements of its own headline self-measurement.
+- **Repo hygiene, before it becomes permanent.** `.gitignore` now defends the
+  variants people actually create (`.env.local`, `.env.bak`) and the credential
+  file shapes, rather than the single `.env` line that would have missed all of
+  them — written before a secret is placed, which is the only time it counts.
+  `uv.lock` is committed rather than left as the one untracked, unignored file
+  for `git add -A` to decide by accident. The commit hook hard-refuses staging
+  `CLAUDE.md`, `JOURNAL.md` or `.claude/`: those are kept out of the public
+  ignore file deliberately, which left `.git/info/exclude` — a file inside
+  `.git/` — as their only protection, and that survives neither a fresh clone
+  nor a second machine.
 - **The shape denylist knows the formats providers issue today**, and the
   commit guard no longer keeps its own copy of it. `sk-proj-` (OpenAI's default
   since 2023), `AIza`, `github_pat_`, `hf_`, `sk_live_`, `glpat-`, `ASIA`,
