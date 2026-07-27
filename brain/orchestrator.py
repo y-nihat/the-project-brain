@@ -33,6 +33,7 @@ from .acquisition import (AcquisitionError, acquire, generalize_description,
                           make_builder_agent)
 from .acquisition import repair_capability as acquire_repair
 from .capabilities.runtime import build_caps_server
+from .files import contained
 from .observability.redact import scrub_text
 from .models import (CREATE, MAP, REDUCE, REUSE, REVIEW, AgentSpec, Capability,
                      Decision, MethodOutcome, StageSpec)
@@ -1673,8 +1674,8 @@ class Orchestrator:
         try:
             root = Path(workspace).resolve()
             rel = str(rel or "").strip().lstrip("/")
-            p = (root / rel).resolve()
-            if not str(p).startswith(str(root)) or not p.is_file():
+            p = contained(root, rel)
+            if p is None or not p.is_file():
                 return {"content": [{"type": "text",
                                      "text": _missing_file_error(root, rel)}],
                         "is_error": True}

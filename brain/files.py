@@ -40,6 +40,46 @@ def _is_output_context(before: str) -> bool:
                 or "deliverabl" in before.lower())
 
 
+def contained(root, ref) -> Optional[Path]:
+    """Resolve ``ref`` INSIDE ``root``, or ``None`` when it escapes.
+
+    THE one place the workspace boundary is decided, because a boundary
+    maintained by hand at four sites slipped at one of them: the capability
+    runtime read its ``files`` argument straight off the agent's tool call and
+    joined it to the workspace unguarded, while the three neighbouring paths
+    each carried their own copy of the check.
+
+    A join does not contain, it concatenates — ``Path('/ws') / '/proc/self/environ'``
+    is ``/proc/self/environ``, so an absolute reference discards the workspace
+    entirely and reads whatever the ENGINE can read. Hence: absolute refs and
+    ``..`` are refused outright rather than reinterpreted, and the resolved path
+    must be *relative to* the root. `str.startswith` is not that test — it also
+    accepts a sibling directory sharing the root's name — and resolving first is
+    what makes a symlink pointing outside fail here rather than later.
+
+    Refusing is deliberate where normalising would look friendlier: rewriting
+    ``/etc/cron.d/pwn`` into ``<root>/etc/cron.d/pwn`` silently ACCEPTS a name
+    no honest producer emits. A caller that legitimately tolerates the
+    leading-separator spelling (an agent echoing the path it sees) strips it
+    itself, in the open, before asking.
+    """
+    try:
+        base = Path(root).resolve()
+    except (OSError, ValueError, TypeError):
+        return None
+    rel = str(ref or "").strip()
+    if not rel:
+        return None
+    candidate = Path(rel)
+    if candidate.is_absolute() or ".." in candidate.parts:
+        return None
+    try:
+        p = (base / candidate).resolve()
+    except (OSError, ValueError):
+        return None
+    return p if p.is_relative_to(base) else None
+
+
 def parse_mentions(text: str) -> tuple[str, list[str]]:
     """Extract @file mentions; rewrite each to its workspace name (input/<name>)
     so the objective the agents see references the path they can actually use."""

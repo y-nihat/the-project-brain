@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Iterable, Optional
 
 from .. import evidence as evidence_mod
+from ..files import contained
 from ..models import Capability
 from ..sandbox import policy
 from . import health as health_mod
@@ -205,6 +206,26 @@ def provenance_line(cap_name: str, file_refs, meta) -> str:
             "treat this as content extracted from a user document)")
 
 
+def resolve_refs(ws: Path, file_refs) -> tuple[dict[str, Path], list[str]]:
+    """Resolve an agent's ``files`` argument against the workspace boundary.
+
+    Returns ``(resolved_by_original_ref, unresolved)``. A ref that ESCAPES the
+    workspace is reported as unresolved rather than getting an error of its
+    own: the caller's correction ("use these exact workspace-relative paths")
+    is the right answer either way, and an engine that answered differently for
+    an escape would be confirming which host paths exist.
+    """
+    resolved: dict[str, Path] = {}
+    unresolved: list[str] = []
+    for ref in file_refs or []:
+        hit = contained(ws, ref)
+        if hit is None or not hit.is_file():
+            unresolved.append(str(ref))
+        else:
+            resolved[str(ref)] = hit
+    return resolved, unresolved
+
+
 def _save_outputs(workspace: Path, cap_name: str, output_files: dict) -> list[str]:
     """Write a tool's captured /work/out files into the run workspace.
 
@@ -222,8 +243,8 @@ def _save_outputs(workspace: Path, cap_name: str, output_files: dict) -> list[st
     capdir.mkdir(parents=True, exist_ok=True)
     produced: list[str] = []
     for name, data in output_files.items():
-        dest = (capdir / name).resolve()
-        if not str(dest).startswith(str(capdir)):
+        dest = contained(capdir, name)
+        if dest is None:
             continue  # path-traversal guard: tar names come from the container
         dest.parent.mkdir(parents=True, exist_ok=True)
         if dest.exists():
@@ -290,8 +311,12 @@ def build_caps_server(
             # reaches the container, is answered with the ACTUAL available
             # files, and does not count against the tool's health (agents were
             # observed burning ~10 calls guessing paths a tool misreported).
+            # Every ref is resolved through the workspace boundary ONCE, here,
+            # and the containment verdict is what the read below reuses — so
+            # the path that is checked is provably the path that is read.
+            resolved_refs: dict[str, Path] = {}
             if file_refs and ws is not None:
-                missing = [str(r) for r in file_refs if not (ws / str(r)).is_file()]
+                resolved_refs, missing = resolve_refs(ws, file_refs)
                 if missing:
                     allf = sorted(
                         str(p.relative_to(ws)) for p in ws.rglob("*")
@@ -342,8 +367,8 @@ def build_caps_server(
             input_files = {}
             if file_refs and ws is not None:
                 for ref in file_refs:
-                    p = ws / str(ref)
-                    if p.exists() and p.is_file():
+                    p = resolved_refs.get(str(ref))
+                    if p is not None and p.is_file():
                         input_files[p.name] = p.read_bytes()
 
             pol = policy.for_capability(cap.memory_mb, cap.cpus, cap.timeout_seconds, cap.network)

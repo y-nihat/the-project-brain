@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Awaitable, Callable, Optional
 
 from . import config, factory
+from .files import contained
 from .models import Capability
 from .observability import NullTracer, trace_query
 from .observability.redact import scrub_text
@@ -688,8 +689,8 @@ def _generic_verify(cap: Capability, sample_input: dict, sample_files: dict, man
                     "(synthetic text fixtures) instead, or drop the references.", None)
         root = _Path(workspace).resolve() if workspace is not None else None
         for ref in unresolved:
-            p = (root / str(ref)).resolve()
-            if not str(p).startswith(str(root)) or not p.is_file():
+            p = contained(root, ref) if root is not None else None
+            if p is None or not p.is_file():
                 # List what actually exists (parity with the runtime's
                 # file-not-found error): a developer was observed guessing
                 # paths three times while the real file sat one listing away.

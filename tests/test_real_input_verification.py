@@ -83,6 +83,11 @@ def test_verification_flags_missing_or_unavailable_sample_files(tmp_path):
     ok2, d2, _ = acquisition._generic_verify(
         _tool_cap(), {"files": ["../../etc/passwd"]}, {}, mgr, workspace=ws)
     assert not ok2 and "SAMPLE FILE NOT FOUND" in d2
+    # ...including an ABSOLUTE one, which a join does not contain at all.
+    ok2b, d2b, _ = acquisition._generic_verify(
+        _tool_cap(), {"files": ["/proc/self/environ"]}, {}, mgr, workspace=ws)
+    assert not ok2b and "SAMPLE FILE NOT FOUND" in d2b
+    assert mgr.mounted is None
     # References without an attached workspace -> instructive failure.
     ok3, d3, _ = acquisition._generic_verify(
         _tool_cap(), {"files": ["input/x.bin"]}, {}, mgr, workspace=None)
