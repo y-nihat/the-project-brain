@@ -162,7 +162,10 @@ was made public, fixed in the order it found it.
   `pull_request_target`; every action pinned by commit SHA; the default token
   read-only; `pip-audit` weekly and never as a PR gate, so a new CVE in a
   transitive dependency cannot turn an unrelated contributor's PR red.
-  Dependabot monthly.
+  Dependabot monthly. The suite itself now runs on the declared floor: a bare
+  `import tomllib` (3.11+) against `requires-python = ">=3.10"` would have made
+  the 3.10 leg red on the repository's first public day, which reads as a broken
+  project rather than as a caught defect.
 
 ## [0.31.1] — 2026-07-25
 

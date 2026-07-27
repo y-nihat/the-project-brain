@@ -11,7 +11,10 @@ Both properties below are load-bearing and both were observed broken:
 """
 from __future__ import annotations
 
-import tomllib
+try:
+    import tomllib                      # 3.11+
+except ModuleNotFoundError:             # 3.10, the declared floor
+    import tomli as tomllib
 
 import pytest
 from pathlib import Path
