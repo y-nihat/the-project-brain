@@ -5,7 +5,16 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
 [Semantic Versioning](https://semver.org/) — `0.x` while the core algorithm
 and behavior are still expected to change between releases.
 
-## [0.32.0] — 2026-07-27
+## [0.33.0] — 2026-07-28
+
+The pre-publication pass, released. Version 0.32.0 was tagged before the
+relicense in the same batch, so that tag and its Release distributed the whole
+engine under Apache-2.0 — an express permissive grant over the code the AGPL was
+adopted to protect, one click from a page asserting the opposite. It was
+withdrawn before anyone could take it (zero assets, zero downloads, repository
+still private) and 0.32.0 was never released. Everything below is what 0.32.0
+would have been, plus the relicense itself.
+
 
 The pre-publication pass: what a security review found before this repository
 was made public, fixed in the order it found it.
@@ -100,9 +109,10 @@ was made public, fixed in the order it found it.
   on any machine whose daemon was merely stopped. A contributor's first `pytest`
   must not depend on whether Docker Desktop is up; the genuinely
   container-dependent tests already skip honestly with a reason.
-- **A client's domain leaves the test fixtures.** `shop.kelvane.com` was a
-  hostname-versus-filename fixture; `example.com` is reserved for exactly this
-  (RFC 2606) and discloses nothing.
+- **A real, live third-party domain leaves the test fixtures.** It was a
+  hostname-versus-filename fixture and had no business being a real address;
+  `example.com` is reserved for exactly this (RFC 2606) and discloses nothing.
+  Naming it here would defeat the point of removing it.
 - **Stale stamps.** `docs/OVERVIEW.md` claimed the socket-proxy budget was
   128 MB / 0.5 CPU where compose sets 64 MB / 0.25; `docs/ARCHITECTURE.md`
   carried 0.28.0 and 0.11.0 stamps and pointed at review documents that are not

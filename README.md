@@ -9,7 +9,7 @@ Its distinguishing property is not autonomy but **honesty**: a deliverable's loa
 trace to files a tool actually retained, and a run that cannot prove its work says so
 (`unverified` / `blocked` / `failed`) instead of narrating success.
 
-> **Status:** engine **v0.32.0**, pre-1.0, actively developed by one author. The safety substrate,
+> **Status:** engine **v0.33.0**, pre-1.0, actively developed by one author. The safety substrate,
 > staged workflows, capability authoring/verification/promotion, the evidence-and-review plane,
 > adaptive recovery, standing goals, the eval harness, and observability are built and covered by
 > 542 tests. `CHANGELOG.md` is the authoritative release record.
@@ -21,6 +21,7 @@ trace to files a tool actually retained, and a run that cannot prove its work sa
 git clone https://github.com/y-nihat/the-project-brain.git && cd the-project-brain
 cp .env.example .env && chmod 600 .env
 mkdir -p data                           # Docker would otherwise create it as root
+npm install -g @anthropic-ai/claude-code   # the CLI, on your HOST (once)
 claude setup-token                      # paste the token into .env as CLAUDE_CODE_OAUTH_TOKEN
 
 DC="docker compose -f docker/docker-compose.yml --env-file .env"
@@ -47,7 +48,10 @@ For an interactive session with follow-up turns and live progress, use `./script
 
 1. **Docker** available (`docker run --rm hello-world` works). Everything agent-authored runs in a
    container; nothing runs on your host.
-2. `claude setup-token` → put `CLAUDE_CODE_OAUTH_TOKEN` in `.env` (see `.env.example`).
+2. **The Claude Code CLI on your host** — `npm install -g @anthropic-ai/claude-code`, or another
+   installer from [the Claude Code docs](https://code.claude.com/docs/en/setup). This is separate
+   from the pinned copy inside the brain image; you need it once, to mint the token. Then
+   `claude setup-token` → put `CLAUDE_CODE_OAUTH_TOKEN` in `.env` (see `.env.example`).
 3. **`ANTHROPIC_API_KEY` must be unset.** It silently overrides the OAuth token, so the brain
    refuses to start when it is present.
 4. If your host user is not uid/gid 1000, set `BRAIN_UID`/`BRAIN_GID` in `.env` so files the brain
