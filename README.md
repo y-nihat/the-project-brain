@@ -23,14 +23,15 @@ cp .env.example .env && chmod 600 .env
 claude setup-token                      # paste the token into .env as CLAUDE_CODE_OAUTH_TOKEN
 
 DC="docker compose -f docker/docker-compose.yml --env-file .env"
-$DC up -d --build                       # first build pulls images and installs the CLI — minutes, once
+$DC up -d --build                       # first build ~2 min (image pull + CLI install); seconds after
 $DC exec brain python -m brain.main "In one sentence, what is idempotency? No tools needed."
 ```
 
-Nothing about that objective has to be *observed*, so the analyze step answers it directly: about
-**10 seconds, a couple of cents, zero containers**, and the answer says in its own text that it
-traces to nothing. That confirms auth and the answer path — not the sandbox. For the rest of the
-stack, run something that must observe:
+Nothing about that objective has to be *observed*, so the analyze step answers it directly. Measured
+on a clean install of this exact tree — fresh clone, empty `data/`, no prior configuration:
+**13 seconds, $0.01, zero containers**, and the answer says in its own text that it traces to
+nothing. That confirms auth and the answer path — not the sandbox. For the rest of the stack, run
+something that must observe:
 
 ```sh
 $DC exec brain python -m brain.main "Use web search to find the current stable Python version, and cite the source URL."

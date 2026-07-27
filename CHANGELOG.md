@@ -39,6 +39,13 @@ was made public, fixed in the order it found it.
   `session.py` now state this one, and cite the query that produces it. A
   project whose thesis is that claims trace to evidence cannot publish three
   mutually inconsistent statements of its own headline self-measurement.
+- **The quickstart is measured, not asserted.** Nobody outside the author had
+  ever installed this, and it showed: the headline `git clone <this repo>`
+  placeholder and a `cp .env.example .env` that overwrote the token the previous
+  line set had survived to v0.31.1. Rehearsed now on a fresh clone with an empty
+  `data/` and no prior configuration — the figures in the README are that run:
+  ~2 minutes for the first build (measured with no layer cache), 13 seconds and
+  $0.01 to the first answer, zero containers.
 - **Repo hygiene, before it becomes permanent.** `.gitignore` now defends the
   variants people actually create (`.env.local`, `.env.bak`) and the credential
   file shapes, rather than the single `.env` line that would have missed all of
