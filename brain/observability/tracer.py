@@ -27,6 +27,8 @@ import uuid
 from pathlib import Path
 from typing import Any, Optional
 
+from ..files import is_safe_segment
+
 _current_span: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar(
     "brain_current_span", default=None
 )
@@ -470,9 +472,21 @@ class Run:
             _current_span.reset(token)
 
     def artifact_path(self, *parts: str) -> Path:
-        """`runs/<run_id>/artifacts/<parts...>` (created on demand)."""
+        """`runs/<run_id>/artifacts/<parts...>` (created on demand).
+
+        Each part must be ONE ordinary path segment. Callers reach here with
+        model-chosen names — a capability's name arrives before its image is
+        ever built, up to ten times per need — and a blind join would let one
+        of them mkdir (and then write) outside the run directory entirely.
+        Refusing is right rather than sanitising: this is an engine invariant,
+        and a caller holding an untrusted name coerces it before asking.
+        """
         p = self._dir / "artifacts"
         for part in parts:
+            if not is_safe_segment(part):
+                raise ValueError(
+                    f"artifact_path segment {str(part)[:60]!r} is not a single "
+                    "safe path segment")
             p = p / str(part)
         p.mkdir(parents=True, exist_ok=True)
         return p

@@ -182,3 +182,25 @@ def test_every_containment_site_routes_through_the_shared_helper():
         assert "startswith(str(" not in py.read_text(), (
             f"{py.relative_to(root)}: containment must use brain.files.contained, "
             "not a string-prefix comparison")
+
+
+# --- the segment rule (stage ids, capability names -> filenames) ------------
+
+def test_is_safe_segment_admits_engine_names_and_refuses_path_syntax():
+    from brain.files import is_safe_segment
+
+    for ok in ("extract_frames", "attempt-3-author", "stage1.fix", "promoted", "a"):
+        assert is_safe_segment(ok), ok
+    for bad in ("../../etc", "a/b", "/abs", "..", ".", "", None, ".hidden",
+                "a" * 65, "x\ny", "with space"):
+        assert not is_safe_segment(bad), bad
+
+
+def test_safe_segment_coerces_or_falls_back():
+    from brain.files import safe_segment
+
+    assert safe_segment("extract_frames", "cap") == "extract_frames"
+    assert safe_segment("../../VICTIM/evil", "cap") == "VICTIM-evil"
+    assert safe_segment("/", "cap") == "cap"
+    assert safe_segment("..", "cap") == "cap"
+    assert safe_segment(None, "cap") == "cap"

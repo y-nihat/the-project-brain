@@ -80,6 +80,34 @@ def contained(root, ref) -> Optional[Path]:
     return p if p.is_relative_to(base) else None
 
 
+# A single path segment the engine is willing to build a filename out of.
+# Deliberately narrow: identifiers the planner and the capability author emit
+# ("extract_frames", "attempt-3-author", "stage1.fix") all fit, and nothing that
+# fits can be a directory separator, a parent reference, or a dotfile.
+_SEGMENT = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+
+
+def is_safe_segment(part) -> bool:
+    """True when ``part`` is one ordinary path segment, safe to join blindly."""
+    s = str(part or "")
+    return bool(_SEGMENT.fullmatch(s)) and ".." not in s
+
+
+def safe_segment(part, fallback: str) -> str:
+    """Coerce ``part`` into one safe path segment, or return ``fallback``.
+
+    For the callers that must keep going (a planner id becomes a filename, and
+    a run must not die because a model chose a strange one). Callers that can
+    treat a bad segment as an engine bug should test with
+    :func:`is_safe_segment` and refuse instead.
+    """
+    s = str(part or "").strip()
+    if is_safe_segment(s):
+        return s
+    cleaned = re.sub(r"[^A-Za-z0-9._-]+", "-", s).strip("-.")[:64]
+    return cleaned if is_safe_segment(cleaned) else fallback
+
+
 def parse_mentions(text: str) -> tuple[str, list[str]]:
     """Extract @file mentions; rewrite each to its workspace name (input/<name>)
     so the objective the agents see references the path they can actually use."""

@@ -126,3 +126,25 @@ def test_wait_for_collector_returns_once_reachable(monkeypatch):
 
     monkeypatch.setattr(urllib.request, "urlopen", never_up)
     otel_export.wait_for_collector("http://phoenix:6006/v1/traces", timeout_s=0.05)  # no raise
+
+
+def test_artifact_path_refuses_a_segment_that_is_not_a_segment(tmp_path):
+    """The reachable sink for a MODEL-CHOSEN capability name, which arrives
+    here before the image is ever built. A blind join let it mkdir outside the
+    run; the engine refuses instead of quietly sanitising, because a caller
+    holding an untrusted name is expected to coerce it before asking."""
+    import pytest
+
+    from brain.observability import Tracer
+
+    tracer = Tracer(tmp_path / "t.db", tmp_path / "runs")
+    tracer.start_run("obj")
+    try:
+        for bad in ("../../etc", "a/b", "/abs", "..", "", ".hidden"):
+            with pytest.raises(ValueError):
+                tracer.artifact_path(bad)
+        with pytest.raises(ValueError):
+            tracer.artifact_path("web_search", "../../escape")
+        assert tracer.artifact_path("web_search", "attempt-1-author").is_dir()
+    finally:
+        tracer.close()

@@ -112,3 +112,38 @@ def test_topo_order_and_feeds_a_map():
     assert order == ["gather", "work", "merge"]
     assert workflow.feeds_a_map("gather", stages)
     assert not workflow.feeds_a_map("merge", stages)
+
+
+def test_stage_id_is_forced_to_a_usable_filename_and_edges_follow():
+    """A stage id becomes outputs/<id>.md. The planner emitted it, so it is not
+    allowed to be path syntax: '../../VICTIM/evil' wrote outside the run
+    directory, and under compose the repo is mounted read-write, so it landed
+    on the host. Renaming must carry the DAG with it — slugging one id while
+    leaving a dependant pointing at the old one severs the edge silently."""
+    stages, warnings = workflow.normalize_stages([
+        {"id": "../../VICTIM/evil", "pattern": "single", "role": "r", "goal": "g"},
+        {"id": "next", "pattern": "reduce", "role": "r", "goal": "g",
+         "depends_on": ["../../VICTIM/evil"]},
+    ])
+    assert stages[0].id == "VICTIM-evil"
+    assert "/" not in stages[0].id and ".." not in stages[0].id
+    assert stages[1].depends_on == ["VICTIM-evil"]      # edge survived the rename
+    assert any("not a usable name" in w for w in warnings)
+
+
+def test_stage_id_slug_falls_back_when_nothing_usable_remains():
+    stages, warnings = workflow.normalize_stages([
+        {"id": "../..", "pattern": "single", "role": "r", "goal": "g"},
+        {"id": "/", "pattern": "single", "role": "r", "goal": "g"},
+    ])
+    assert [s.id for s in stages] == ["stage1", "stage2"]
+    assert len(warnings) >= 2
+
+
+def test_ordinary_stage_ids_are_left_alone():
+    stages, warnings = workflow.normalize_stages([
+        {"id": "collect_sources", "pattern": "single", "role": "r", "goal": "g"},
+        {"id": "stage-2.fix", "pattern": "single", "role": "r", "goal": "g"},
+    ])
+    assert [s.id for s in stages] == ["collect_sources", "stage-2.fix"]
+    assert not [w for w in warnings if "usable name" in w]

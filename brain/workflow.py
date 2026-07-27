@@ -22,6 +22,7 @@ import re
 from typing import Any, Optional
 
 from . import config
+from .files import safe_segment
 from .models import MAP, REDUCE, REVIEW, SINGLE, STAGE_PATTERNS, StageSpec
 
 MANIFEST_FENCE = "manifest"
@@ -224,10 +225,21 @@ def normalize_stages(raw: list) -> tuple[list[StageSpec], list[str]]:
     warnings: list[str] = []
     seen: set[str] = set()
 
+    renames: dict[str, str] = {}
+
     for i, r in enumerate(raw or []):
         if not isinstance(r, dict):
             continue
-        sid = str(r.get("id") or f"stage{i + 1}").strip() or f"stage{i + 1}"
+        fallback = f"stage{i + 1}"
+        raw_id = str(r.get("id") or fallback).strip() or fallback
+        # A stage id BECOMES A FILENAME — outputs/<id>.md, agents/<id>.prompt.md,
+        # the aggregate output — so the planner does not get to choose path
+        # syntax. An id of '../../x' wrote outside the run directory, and under
+        # compose the repo is mounted read-write, so it reached the host.
+        sid = safe_segment(raw_id, fallback)
+        if sid != raw_id:
+            warnings.append(f"stage id '{raw_id[:60]}' is not a usable name; renamed to '{sid}'")
+            renames[raw_id] = sid
         if sid in seen:
             new = f"{sid}-{i + 1}"
             warnings.append(f"duplicate stage id '{sid}' renamed to '{new}'")
@@ -252,6 +264,14 @@ def normalize_stages(raw: list) -> tuple[list[StageSpec], list[str]]:
             expectation=str(r.get("expectation") or ""),
             deliverable=bool(r.get("deliverable")) and pattern != REVIEW,
         ))
+
+    # A renamed id must keep its edges: rewrite references before the dangling
+    # pass below, or slugging one stage silently severs the DAG.
+    if renames:
+        for s in stages:
+            s.depends_on = [renames.get(d, d) for d in s.depends_on]
+            if s.shard_from:
+                s.shard_from = renames.get(s.shard_from, s.shard_from)
 
     ids = {s.id for s in stages}
     for idx, s in enumerate(stages):

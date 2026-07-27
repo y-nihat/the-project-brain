@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Awaitable, Callable, Optional
 
 from . import config, factory
-from .files import contained
+from .files import contained, safe_segment
 from .models import Capability
 from .observability import NullTracer, trace_query
 from .observability.redact import scrub_text
@@ -273,7 +273,8 @@ async def _acquire_from_recipe(
             else:
                 build_context = make_context()
 
-            attempt_dir = tracer.artifact_path(cap.name, f"attempt-{attempt}-{source}")
+            attempt_dir = tracer.artifact_path(safe_segment(cap.name, "capability"),
+                                            f"attempt-{attempt}-{source}")
             _write_context(attempt_dir, build_context)
 
             with tracer.span("capability.build", cap.name, image=cap.image_tag,
@@ -308,7 +309,7 @@ async def _acquire_from_recipe(
             if result.passed:
                 cap.verified = True
                 cap.validated_engine = validation_epoch()
-                promoted_dir = tracer.artifact_path(cap.name, "promoted")
+                promoted_dir = tracer.artifact_path(safe_segment(cap.name, "capability"), "promoted")
                 _write_context(promoted_dir, build_context)
                 with tracer.span("capability.promote", cap.name) as psp:
                     registry.add(cap, build_context=build_context)
@@ -1135,7 +1136,8 @@ async def _author_capability(
             cap.credential_help = (str(sub.get("credential_help")).strip()[:2000]
                                    if rc and sub.get("credential_help") else None)
             build_context = {"Dockerfile": sub["dockerfile"], "tool.py": sub["program"]}
-            attempt_dir = tracer.artifact_path(cap.name, f"attempt-{attempt}-author")
+            attempt_dir = tracer.artifact_path(safe_segment(cap.name, "capability"),
+                                            f"attempt-{attempt}-author")
             _write_context(attempt_dir, build_context)
 
             # Transactional build: an UNVERIFIED candidate must never replace the
@@ -1199,7 +1201,7 @@ async def _author_capability(
                 cap.verified = True
                 cap.validated_engine = validation_epoch()  # passed the current battery+contract
                 cap.description = generalize_description(cap.description)  # #15: general contract
-                promoted_dir = tracer.artifact_path(cap.name, "promoted")
+                promoted_dir = tracer.artifact_path(safe_segment(cap.name, "capability"), "promoted")
                 _write_context(promoted_dir, build_context)
                 with tracer.span("capability.promote", cap.name) as psp:
                     registry.add(cap, build_context=build_context)
