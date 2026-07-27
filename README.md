@@ -15,15 +15,15 @@ trace to files a tool actually retained, and a run that cannot prove its work sa
 > 523 tests. `CHANGELOG.md` is the authoritative release record.
 > See **[docs/OVERVIEW.md](docs/OVERVIEW.md)** for the stack, how to run it, and where logs live.
 
-## Try it in about a minute
+## Try it
 
 ```sh
-git clone <this repo> && cd the-project-brain
-claude setup-token                      # then put CLAUDE_CODE_OAUTH_TOKEN in .env
-cp .env.example .env && $EDITOR .env
+git clone https://github.com/y-nihat/the-project-brain.git && cd the-project-brain
+cp .env.example .env && chmod 600 .env
+claude setup-token                      # paste the token into .env as CLAUDE_CODE_OAUTH_TOKEN
 
 DC="docker compose -f docker/docker-compose.yml --env-file .env"
-$DC up -d --build
+$DC up -d --build                       # first build pulls images and installs the CLI — minutes, once
 $DC exec brain python -m brain.main "In one sentence, what is idempotency? No tools needed."
 ```
 
@@ -51,20 +51,25 @@ For an interactive session with follow-up turns and live progress, use `./script
 4. If your host user is not uid/gid 1000, set `BRAIN_UID`/`BRAIN_GID` in `.env` so files the brain
    writes under `data/` belong to you.
 
-Runs cost real money. Over 108 recorded runs: **$0.01 to $10.74**, median **$1.13**, p90 $4.83. A
-turn that needs nothing observed is answered directly and costs cents. Both entry points print what
-a turn spent — and, while it is still running, what it has spent so far — and
-`python -m brain.observability stats` summarizes spend by outcome.
+Runs cost real money, on **your** subscription. One derivation, from this repository's own recorded
+history via `python -m brain.observability stats`: **121 runs, $220.27 recorded spend**. Of those,
+114 carry accounting — **$0.01 to $10.74 per run, median $1.07, p90 $4.79** (nearest-rank, over runs
+with a recorded cost) — and 7 aborted runs still have none, so they are missing from every number
+here; `python -m brain.observability backfill` recovers them. A turn that needs nothing observed is
+answered directly and costs cents. Both entry points print what a turn spent, and what it has spent
+so far while it is still running.
 
-## Installing as a package
+**There is no spend ceiling yet.** The limits are counts (agent turns, sessions per run, repair
+attempts), not dollars. Watch the live counter on your first few runs.
 
-```sh
-pip install .          # provides the `brain` command
-brain "<objective>"    # still requires Docker + CLAUDE_CODE_OAUTH_TOKEN at run time
-```
+## Installing as a package — not supported yet
 
-Installability is not yet the full M2 milestone: per-project `.brain/` state and the
-`brain init` / `brain show` verbs are not built. See `docs/OVERVIEW.md`.
+`pip install .` builds and exposes a `brain` command, but **use compose instead.** The installed
+path is incomplete in ways that matter: the orchestrator runs on your host rather than in its own
+container, so the containment described below applies only to the sandboxes and not to the brain
+itself; state (the trace DB, run folders, the capability library, the `.env` it reads) lands beside
+the installed package in `site-packages`; and per-project `.brain/` state with the `brain init` /
+`brain show` verbs is not built. See `docs/OVERVIEW.md`.
 
 ## Safety model (enforced structurally, not by trusting the model)
 
@@ -72,21 +77,59 @@ Installability is not yet the full M2 milestone: per-project `.brain/` state and
   their only way to act is a tool call. Agents get **no host `Bash`, no host file-write, and no
   `Agent` tool** (so they cannot spawn agents — the hierarchy is flat). The only execution path an
   agent has is "call a capability," which the orchestrator runs in a resource-limited container.
-- **Deny-by-default approval gate.** Every tool call passes through `can_use_tool`. Anything that is
-  not an allow-listed capability is denied; anything needing a credential, payment, account, or
-  irreversible external action is routed to a **blocking interactive prompt**.
-- **Containerized brain.** The orchestrator runs in its own container and reaches the host Docker
-  daemon only through a whitelisted `docker-socket-proxy`, creating sibling sandbox containers.
+- **Deny-by-default tool gate.** Every tool call passes through `can_use_tool`; anything that is not
+  an allow-listed capability is denied.
+- **Blocking prompt for credentials.** A step that needs a credential the session does not hold
+  stops at an interactive prompt, and the secret is collected there rather than through the model.
+  An objective that itself looks like it contains a credential is intercepted before it is recorded.
+- **Containerized brain, under compose.** The orchestrator runs in its own container and reaches the
+  host Docker daemon only through a whitelisted `docker-socket-proxy`, creating sibling sandbox
+  containers. As `docker/docker-compose.yml` says in its own header: controlling container creation
+  is still powerful — the proxy shrinks the blast radius, it does not make the brain harmless. This
+  bullet describes the compose path only; see "Installing as a package" above.
 - **Resource accounting.** Every container has explicit CPU/memory/pids limits, a network policy
   (default `none`), a TTL, and labels; a ledger records each one and flags leaks.
 
-`SECURITY.md` states both the guarantees and — deliberately — the non-guarantees.
+**What is NOT gated per action.** There is no approval prompt at the moment an authored tool acts.
+A capability the brain built can be granted network egress (the model chooses `network: bridge` when
+it judges the tool needs it) and can write files into its run workspace, and it does both without
+asking. The gate above is about *credentials* and *which tools may be called*, not about each
+outward action. Treat an objective you did not write, or content the brain fetches, as untrusted
+input to a system that writes and runs code — prompt injection is in scope and undefended.
+
+`SECURITY.md` is where to report a vulnerability; `docs/SECURITY_MODEL.md` states both the
+guarantees and — deliberately — the non-guarantees.
 
 ## Free-first + auth
 
 - Prefer free, keyless APIs/libraries/models at every step. A step with no free path stops at the
   approval gate.
 - Auth is **OAuth only**: `CLAUDE_CODE_OAUTH_TOKEN` from `claude setup-token`.
+
+Every operator brings their own credential. `claude setup-token` is Anthropic's documented mechanism
+for scripts and CI, the token requires your own Pro/Max/Team/Enterprise plan, and Agent SDK usage
+draws on that plan's monthly Agent SDK credit. It can only make model requests. Keep it in your own
+`.env` (mode 600, git-ignored): credentials are per-account and are never shared, pooled, or
+committed. No token ships with this project and none ever should.
+
+## Non-goals
+
+- **Not a hosted service.** One shared instance running many people's work on one credential is
+  outside both the design and the credential's terms. Run your own.
+- **Not a Claude Code replacement.** This drives the Agent SDK for autonomous, staged runs; for
+  interactive coding, use Claude Code.
+- **Not multi-provider yet.** OAuth only. Local models and other providers are on the roadmap, not
+  in the engine.
+- **Not hardened against a malicious operator.** Anyone with your user account or Docker daemon can
+  read `.env` and container environments; that is out of scope, and stated as such.
+- **Not a spend-controlled system yet.** See the cost note above.
+
+## Support
+
+Built and maintained by one author, in the open, pre-1.0. Issues and discussions are welcome and
+answered when there is time; there is no SLA. Security reports go through `SECURITY.md`, which is
+the one channel with a stated response commitment. Interfaces may change before 1.0 — pin a tag if
+you need stability.
 
 ## Development
 

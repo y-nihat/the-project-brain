@@ -645,7 +645,8 @@ class BrainSession:
         """What `budget` more runs is likely to cost, from recorded history.
 
         The gate is the only place a human decides to spend unattended, and it
-        asked for a COUNT. Recorded runs span roughly $0.01 to $17.30, so a
+        asked for a COUNT. Recorded runs span $0.01 to $10.74 (median $1.07
+        over the 114 accounted runs; `python -m brain.observability stats`), so a
         count carries almost no information about the commitment; the median
         and the worst case do. Best-effort: no history, no estimate, and the
         approval prompt is unchanged."""
@@ -692,7 +693,7 @@ class BrainSession:
         # services. The extracted budget is a REQUEST; only the human at the
         # gate grants it. Deny-by-default (the broker's contract for auto runs).
         # A budget stated in RUNS is not a budget the approver can weigh: runs
-        # in the recorded history span $0.01 to $17.30. Price the request from
+        # in the recorded history span $0.01 to $10.74. Price the request from
         # this installation's own history so the human is consenting to an
         # amount, not to a count.
         estimate = self._pursuit_cost_estimate(budget)

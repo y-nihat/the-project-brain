@@ -5,6 +5,63 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
 [Semantic Versioning](https://semver.org/) — `0.x` while the core algorithm
 and behavior are still expected to change between releases.
 
+## [0.32.0] — 2026-07-27
+
+The pre-publication pass: what a security review found before this repository
+was made public, fixed in the order it found it.
+
+### Fixed
+- **Every path the model names is contained, in one place.** Three of the four
+  sites that take a path segment from an untrusted producer carried a
+  hand-copied guard; the ordinary tool-call path — the agent's `files` argument
+  — carried none, and a join does not contain, it concatenates. An absolute ref
+  discarded the workspace entirely, so `files: ["/proc/self/environ"]` read the
+  orchestrator's own environment (which compose loads the OAuth token into) and
+  delivered it into a model-authored container. The three guards that existed
+  compared with `str.startswith`, which accepts a sibling directory sharing the
+  root's name. All four now route through `brain.files.contained`.
+- **A planner id is a filename, so it must be one.** `normalize_stages`
+  returned the planner's stage id verbatim into `outputs/<id>.md`; an id of
+  `../../x` wrote outside the run, and under compose the repo is mounted
+  read-write. Ids are now coerced to one safe segment with a warning, and the
+  rename is carried through `depends_on`/`shard_from`. `Tracer.artifact_path`
+  refuses a part that is not a single segment — its callers pass a model-chosen
+  capability name, before the image build that would have rejected it.
+- **One cost derivation, and it is the measured one.** The 0.27.0 entry below
+  claims a recovery pass took the corpus to $279.64 with a worst run of $17.30.
+  The shipped database supports neither, and the README asserted a third set
+  (108 runs, median $1.13). Measured now, by the one command that owns the
+  question — `python -m brain.observability stats` — the corpus is **121 runs,
+  $220.27**, of which 114 carry accounting: $0.01 to $10.74, median $1.07, p90
+  $4.79 (nearest-rank). Seven aborted runs still have no accounting and are
+  disclosed rather than quietly folded in. The older numbers stay in their
+  entries as the record of what was believed at the time; README and
+  `session.py` now state this one, and cite the query that produces it. A
+  project whose thesis is that claims trace to evidence cannot publish three
+  mutually inconsistent statements of its own headline self-measurement.
+- **The README's safety section says what the code enforces.** The approval gate
+  is scoped to credentials and tool allow-listing — it never gated an authored
+  tool's network egress or file writes, which happen with no per-action prompt.
+  The containment bullet is scoped to the compose path, since `pip install .`
+  runs the orchestrator on the host. `pip install .` is demoted to "not
+  supported yet". The quickstart's `cp .env.example .env` no longer overwrites
+  the token the previous line told the reader to set, and the clone URL is a
+  real URL rather than a placeholder.
+
+### Added
+- **Apache-2.0.** LICENSE and NOTICE, carried into the wheel. NOTICE bounds what
+  the license does not cover — chiefly that the image installs Anthropic's
+  proprietary Claude Code CLI, so no prebuilt image of this project may be
+  published to a registry.
+- **A security policy with a channel.** `SECURITY.md` is now how to report a
+  vulnerability (private reporting, 14-day acknowledgement, 90-day disclosure,
+  scope, safe harbour). The model itself moves to `docs/SECURITY_MODEL.md`, with
+  every guarantee restated to what a test proves and a **Known gaps** section
+  naming what is true today and open.
+- **A NON-GOALS section and a stated support posture** in the README: not a
+  hosted service, not multi-provider, not spend-controlled, one maintainer, no
+  SLA outside the security channel.
+
 ## [0.31.1] — 2026-07-25
 
 The sixteen follow-ups a ship review left on the table. None was a blocker;
