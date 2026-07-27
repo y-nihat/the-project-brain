@@ -10,16 +10,23 @@
 
 services:
   docker-socket-proxy:
-    image: tecnativa/docker-socket-proxy:latest
+    # PINNED BY DIGEST. This is the one container holding the raw docker socket,
+    # so a mutable tag makes an upstream repoint host root on every user's
+    # machine at their next `up --build`.
+    image: tecnativa/docker-socket-proxy:v0.5.0@sha256:1f5038b54f06c3e18422902cf00ba21803d1c97805aae032e5e6673d532d3459
     environment:
       POST: 1          # master switch: allow write operations on enabled groups
       CONTAINERS: 1    # create / start / stop / inspect / remove sandbox containers
       IMAGES: 1        # inspect / pull base images
       BUILD: 1         # build capability images from streamed contexts
-      NETWORKS: 1      # attach sandboxes to bridge / none
-      VOLUMES: 1       # named volumes for artifact exchange (later phases)
-      # Explicitly denied (default 0): EXEC, AUTH, SECRETS, SWARM, SYSTEM,
-      # INFO, CONFIGS, NODES, PLUGINS, SERVICES, TASKS, SESSION.
+      # NETWORKS and VOLUMES were enabled for a use that never arrived: the
+      # engine only ever calls containers.create with a predefined
+      # `network_mode`, which is CONTAINERS, and creates no networks or volumes
+      # at all. Two write-capable API groups on the most dangerous container in
+      # the topology, for nothing. Removed — restore one only alongside the code
+      # that needs it.
+      # Explicitly denied (default 0): NETWORKS, VOLUMES, EXEC, AUTH, SECRETS,
+      # SWARM, SYSTEM, INFO, CONFIGS, NODES, PLUGINS, SERVICES, TASKS, SESSION.
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
     restart: unless-stopped
@@ -77,12 +84,15 @@ services:
   # with `python -m brain.observability export ...`. Traces persist under
   # data/phoenix (host bind-mount), so the viewer can be stopped anytime.
   phoenix:
-    image: arizephoenix/phoenix:latest
+    image: arizephoenix/phoenix:19.7.0@sha256:890ec498f4e37d8b2d2f1a81bd102b11f0739a7eb48158e9cf61c6b8821de395
     profiles: ["observability"]
     environment:
       PHOENIX_WORKING_DIR: /mnt/data
     ports:
-      - "6006:6006"     # UI + OTLP HTTP collector (/v1/traces)
+      # LOOPBACK ONLY. This UI has no authentication and shows every exported
+      # run — objectives, agent prompts, tool output. Published on 0.0.0.0 it
+      # was the only port this project opened, and it opened it to the network.
+      - "127.0.0.1:6006:6006"     # UI + OTLP HTTP collector (/v1/traces)
     volumes:
       - ../data/phoenix:/mnt/data
     # Phoenix sits at ~400MiB with today's trace volume and grows with it;

@@ -39,6 +39,15 @@ was made public, fixed in the order it found it.
   `session.py` now state this one, and cite the query that produces it. A
   project whose thesis is that claims trace to evidence cannot publish three
   mutually inconsistent statements of its own headline self-measurement.
+- **The trace viewer is no longer published to the network.** Phoenix bound
+  `0.0.0.0:6006` — an unauthenticated UI of every exported run (objectives,
+  agent prompts, tool output), and the only port this project opened. Now
+  loopback only. The socket-proxy loses `NETWORKS` and `VOLUMES`, two
+  write-capable API groups enabled for a use that never arrived: the engine
+  calls `containers.create` with a predefined `network_mode` and creates no
+  networks or volumes at all. Both third-party images are pinned by digest —
+  the proxy is the one container holding the raw docker socket, so a mutable
+  tag made an upstream repoint host root at the next `up --build`.
 - **The README's safety section says what the code enforces.** The approval gate
   is scoped to credentials and tool allow-listing — it never gated an authored
   tool's network egress or file writes, which happen with no per-action prompt.
