@@ -9,27 +9,37 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     DEBIAN_FRONTEND=noninteractive
 
-# Node, from NodeSource's SIGNED apt repository rather than `curl … | bash -`.
-# The old form executed whatever that URL returned, as root, on every build:
-# a compromise upstream was a compromise on every user's machine, with nothing
-# to review and nothing to pin.
-ARG NODE_MAJOR=22
+# Node, as the official release tarball VERIFIED AGAINST ITS PUBLISHED CHECKSUM.
+#
+# What this replaces: `curl -fsSL https://deb.nodesource.com/setup_22.x | bash -`,
+# which executed whatever that URL returned, as root, on every build — nothing
+# to review, nothing to pin, and a compromise upstream was a compromise on every
+# user's machine. The obvious alternative, NodeSource's signed apt repo, was
+# tried and rejected: its gpgkey endpoint answers 403, so the build depended on
+# a URL that is not reliably reachable. Debian's own nodejs is 20.x, and the
+# Claude Code CLI declares `engines: node >= 22`.
+#
+# So: one exact version, one exact hash, no third-party repository. Bump both
+# lines together (checksum from https://nodejs.org/dist/<version>/SHASUMS256.txt).
+ARG NODE_VERSION=v22.23.1
+ARG NODE_SHA256=9749e988f437343b7fa832c69ded82a312e41a03116d766797ac14f6f9eee578
 # Pinned, because `npm install -g @anthropic-ai/claude-code` took whatever was
 # newest at build time — two users building a day apart ran different CLIs and
 # neither could say which.
 ARG CLAUDE_CODE_VERSION=2.1.220
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        git ca-certificates curl gnupg \
-    && mkdir -p /etc/apt/keyrings \
-    && curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key \
-       | gpg --dearmor -o /etc/apt/keyrings/nodesource.gpg \
-    && echo "deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_${NODE_MAJOR}.x nodistro main" \
-       > /etc/apt/sources.list.d/nodesource.list \
-    && apt-get update && apt-get install -y --no-install-recommends nodejs \
+        git ca-certificates curl xz-utils \
+    && curl -fsSL -o /tmp/node.tar.xz \
+       "https://nodejs.org/dist/${NODE_VERSION}/node-${NODE_VERSION}-linux-x64.tar.xz" \
+    && echo "${NODE_SHA256}  /tmp/node.tar.xz" | sha256sum -c - \
+    && tar -xJf /tmp/node.tar.xz -C /usr/local --strip-components=1 \
+         --exclude=CHANGELOG.md --exclude=LICENSE --exclude=README.md \
+    && rm -f /tmp/node.tar.xz \
+    && node --version && npm --version \
     && npm install -g "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" \
     && npm cache clean --force \
-    && apt-get purge -y curl gnupg && apt-get autoremove -y \
+    && apt-get purge -y curl xz-utils && apt-get autoremove -y \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app

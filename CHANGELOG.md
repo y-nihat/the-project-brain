@@ -85,11 +85,16 @@ was made public, fixed in the order it found it.
   and `/app` mounted READ-ONLY with `data/` rw on top — the engine only ever
   reads under `/app`, so a defect that wrote outside a run folder used to land
   in the repository itself, including `.git`.
-- **The image stops executing an unreviewed remote script as root.** The
-  NodeSource install moves from `curl … | bash -` to the signed apt repository
-  with a pinned keyring, `@anthropic-ai/claude-code` is pinned to a version, and
-  the hand-written pip list — which had already drifted from `pyproject.toml` —
-  is replaced by installing the project's own declared dependencies.
+- **The image stops executing an unreviewed remote script as root.** Node came
+  from `curl … | bash -`: whatever that URL returned, run as root, on every
+  build. It is now the official release tarball at a pinned version, verified
+  against its published SHA-256 before anything is unpacked — no third-party
+  repository at all. (The obvious middle step, NodeSource's signed apt repo, was
+  tried and rejected: its gpgkey endpoint answers 403, and Debian's own nodejs is
+  20.x while the Claude Code CLI declares `engines: node >= 22`.) The CLI itself
+  is pinned to a version, and the hand-written pip list — which had already
+  drifted from `pyproject.toml` — is replaced by installing the project's own
+  declared dependencies.
 - **The offline suite is offline.** Four tests that run no container still opened
   a Docker client through `BrainSession`, so they failed with ConnectionRefused
   on any machine whose daemon was merely stopped. A contributor's first `pytest`
