@@ -26,13 +26,14 @@ By submitting a contribution to this project, you agree to the following.
 1. **You keep ownership.** You retain all right, title, and interest in your
    contribution. Nothing here assigns your copyright.
 
-2. **Copyright license.** You grant Nihat Uzunalioglu (Y Inovasyon) a perpetual,
-   worldwide, non-exclusive, royalty-free, irrevocable license to reproduce,
+2. **Copyright license.** You grant **Nihat Uzunalioglu** ("the maintainer") a
+   perpetual, worldwide, non-exclusive, royalty-free, irrevocable license to
+   reproduce,
    modify, publicly display, sublicense, and distribute your contribution and
    works derived from it, **under any license terms, including proprietary and
    commercial terms.**
 
-3. **Patent license.** You grant the same parties a perpetual, worldwide,
+3. **Patent license.** You grant the maintainer a perpetual, worldwide,
    non-exclusive, royalty-free, irrevocable patent license to make, use, sell,
    offer for sale, import, and otherwise transfer your contribution, covering
    only those patent claims you own or control that your contribution
@@ -53,7 +54,12 @@ By submitting a contribution to this project, you agree to the following.
 6. **No warranty.** You provide your contribution "as is", without warranty of
    any kind.
 
-7. **Your contribution stays open.** The maintainer commits that every
+7. **Assignment.** The maintainer may assign the rights granted here to a
+   successor in interest to this project — an entity he controls, or an acquirer
+   of the project as a whole. Clause 8 binds any such successor. Nothing else
+   about this agreement changes on assignment.
+
+8. **Your contribution stays open.** The maintainer commits that every
    contribution accepted under this agreement remains available under the
    AGPL-3.0 (or a later AGPL version, or a more permissive open-source license).
    This agreement enables commercial licensing; it does not permit closing the

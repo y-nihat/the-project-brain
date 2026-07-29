@@ -127,6 +127,24 @@ was made public, fixed in the order it found it.
   real URL rather than a placeholder.
 
 ### Added
+- **The build context is defended like the repository is.** `.dockerignore` was
+  nine name-based lines that excluded the literal `.env` and nothing else, while
+  `COPY . /app` baked everything else into an image layer — including
+  `CLAUDE.md`, `JOURNAL.md` and `.claude/`, which are kept out of the public
+  ignore file deliberately and were therefore in the context. It now mirrors
+  `.gitignore`'s credential block, and the image was rebuilt and inspected
+  without its bind mount to prove what is actually inside it.
+- **The image builds on arm64.** The Node tarball was hardcoded to `linux-x64`
+  against a multi-arch base, so Apple Silicon and arm64 servers could not build
+  at all — for a project whose only supported path is `docker compose up`, that
+  reads as "does not run here". The layer now selects by `TARGETARCH` with a
+  published SHA-256 pinned per architecture, and refuses an architecture it has
+  no checksum for rather than downloading something it cannot verify.
+- **Arize Phoenix is named in NOTICE.** The optional trace viewer ships under the
+  Elastic License 2.0 — source-available, not open source. Its restriction binds
+  whoever offers *Phoenix* as a hosted service and places no condition on this
+  project, but a third-party component under non-OSS terms belongs in NOTICE
+  whether or not it constrains anything.
 - **AGPL-3.0, with a CLA.** The repository carried no license at all, which
   meant default exclusive copyright: nobody could legally use, fork, or
   contribute. AGPL rather than a permissive license because the protection is
@@ -136,7 +154,12 @@ was made public, fixed in the order it found it.
   `CLA.md`: a single contribution accepted without it would foreclose commercial
   licensing permanently, for the author as much as for anyone. In exchange the
   CLA binds the maintainer to keep every accepted contribution available under
-  the AGPL. NOTICE bounds what the license does not cover — chiefly that the
+  the AGPL. The CLA now names one grantee throughout — it granted to "Nihat
+  Uzunalioglu (Y Inovasyon)" in one clause and to "the same parties" in the next,
+  which is exactly the ambiguity a commercial licensee's counsel would find — and
+  carries an assignment clause so the rights can move to a successor entity
+  without renegotiating with every contributor. NOTICE bounds what the license
+  does not cover — chiefly that the
   image installs Anthropic's proprietary Claude Code CLI, so no prebuilt image
   of this project may be published to a registry.
 - **A security policy with a channel.** `SECURITY.md` is now how to report a

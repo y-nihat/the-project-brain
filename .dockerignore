@@ -1,9 +1,51 @@
+# What must never enter the build context.
+#
+# `COPY . /app` in brain.Dockerfile means everything here is a decision about
+# what ends up baked into an image layer — and an image layer is not something
+# you can quietly delete later. This file mirrors .gitignore's credential block
+# for the same reason that block exists: the patterns have to be here BEFORE the
+# secret is, not after.
+
+# Secrets. `.env` alone missed every variant a person actually creates.
+.env
+.env.*
+!.env.example
+
+# Credential file shapes, wherever they land.
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+*.token
+.netrc
+.npmrc
+.pypirc
+id_rsa*
+id_ecdsa*
+id_ed25519*
+*credentials*.json
+secrets/
+
+# Local-only operator working files. They are excluded from the PUBLIC
+# .gitignore on purpose, so without these three lines `COPY . /app` bakes them
+# into the image — the one artifact this project must never publish.
+CLAUDE.md
+JOURNAL.md
+.claude
+
+# Runtime state and history: never useful in an image, and data/ carries every
+# run's output including whatever a tool retained.
 .git
-.venv
 data
 *.db
-.env
+capabilities_store/_artifacts
+
+# Build and environment noise.
+.venv
+build
+dist
+*.egg-info
 __pycache__
 **/__pycache__
 .pytest_cache
-capabilities_store/_artifacts

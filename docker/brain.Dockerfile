@@ -22,17 +22,27 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 # So: one exact version, one exact hash, no third-party repository. Bump both
 # lines together (checksum from https://nodejs.org/dist/<version>/SHASUMS256.txt).
 ARG NODE_VERSION=v22.23.1
-ARG NODE_SHA256=9749e988f437343b7fa832c69ded82a312e41a03116d766797ac14f6f9eee578
+ARG NODE_SHA256_amd64=9749e988f437343b7fa832c69ded82a312e41a03116d766797ac14f6f9eee578
+ARG NODE_SHA256_arm64=0294e8b915ab75f92c7513d2fcb830ae06e10684e6c603e99a87dbf8835389c1
 # Pinned, because `npm install -g @anthropic-ai/claude-code` took whatever was
 # newest at build time — two users building a day apart ran different CLIs and
 # neither could say which.
 ARG CLAUDE_CODE_VERSION=2.1.220
+# Set by BuildKit. The base image is multi-arch, so hardcoding the x64 tarball
+# made the build fail on Apple Silicon and on arm64 servers — for a project whose
+# only supported path is `docker compose up`, that is "does not run here".
+ARG TARGETARCH
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
         git ca-certificates curl xz-utils \
+    && NODE_ARCH="$(case "${TARGETARCH:-amd64}" in \
+           amd64) echo x64 ;; arm64) echo arm64 ;; \
+           *) echo "unsupported architecture: ${TARGETARCH}" >&2; exit 1 ;; esac)" \
+    && NODE_SHA="$(case "${TARGETARCH:-amd64}" in \
+           amd64) echo "${NODE_SHA256_amd64}" ;; arm64) echo "${NODE_SHA256_arm64}" ;; esac)" \
     && curl -fsSL -o /tmp/node.tar.xz \
-       "https://nodejs.org/dist/${NODE_VERSION}/node-${NODE_VERSION}-linux-x64.tar.xz" \
-    && echo "${NODE_SHA256}  /tmp/node.tar.xz" | sha256sum -c - \
+       "https://nodejs.org/dist/${NODE_VERSION}/node-${NODE_VERSION}-linux-${NODE_ARCH}.tar.xz" \
+    && echo "${NODE_SHA}  /tmp/node.tar.xz" | sha256sum -c - \
     && tar -xJf /tmp/node.tar.xz -C /usr/local --strip-components=1 \
          --exclude=CHANGELOG.md --exclude=LICENSE --exclude=README.md \
     && rm -f /tmp/node.tar.xz \

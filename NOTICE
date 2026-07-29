@@ -49,6 +49,14 @@ any right to redistribute it. Do not publish a prebuilt image of this project to
 any registry without reviewing those terms; build the image locally instead, as
 the README documents.
 
+The optional trace viewer, enabled only by the `observability` compose profile,
+runs Arize Phoenix (`arizephoenix/phoenix`) under the **Elastic License 2.0** —
+a source-available licence, not an open-source one. Using it locally to look at
+your own traces is exactly what it permits. Its one real restriction binds
+whoever offers *Phoenix itself* to third parties as a hosted service; it places
+no condition on this project or on your use of it. Phoenix is pulled as its own
+image and no Phoenix code is included or redistributed here.
+
 Running this project requires your own Claude subscription credential
 (`claude setup-token`). Credentials are per-account and are never shared,
 pooled, or bundled with this software.
