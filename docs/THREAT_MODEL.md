@@ -9,7 +9,7 @@ Companion documents: [`SECURITY_MODEL.md`](SECURITY_MODEL.md) states the
 guarantees and the known gaps; [`../SECURITY.md`](../SECURITY.md) is how to
 report a vulnerability.
 
-Scoped to engine 0.32.0, compose topology.
+Scoped to engine 0.33.0, compose topology.
 
 ## What is being protected
 
@@ -109,9 +109,13 @@ from the instruction the operator wrote.
 
 - An injected instruction still cannot reach the host: boundary (3) means the
   model's only verb is "call an allow-listed capability".
-- A capability that needs a credential still stops at the interactive gate.
-- Written paths are contained to the run workspace by `contained`; stage ids and
-  capability names cannot be path syntax.
+- A capability that needs a credential it does not already hold stops at the
+  interactive gate. A secret already collected this session is reused without a
+  second prompt, so the gate is per-credential, not per-call.
+- Written paths are contained to the run workspace by `contained`, and stage ids
+  are coerced to one safe segment. Capability names are not coerced; they are
+  constrained only by having to be a legal Docker image reference, which is what
+  rejects path syntax today.
 - A sandbox with `network: none` — the default — cannot exfiltrate.
 
 **What does not contain it:**

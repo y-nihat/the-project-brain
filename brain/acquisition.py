@@ -27,7 +27,7 @@ from .observability.redact import scrub_text
 from .sandbox import policy
 from .verifier import VerificationResult, verify_web_search
 
-CAP_IMAGE_PREFIX = "brain/cap-"
+CAP_IMAGE_PREFIX = config.CAP_IMAGE_PREFIX   # one definition, in config
 
 
 class AcquisitionError(RuntimeError):

@@ -144,7 +144,7 @@ you need stability.
 
 # Run the suite INSIDE the container — that is the environment it targets.
 DC="docker compose -f docker/docker-compose.yml --env-file .env"
-$DC exec brain python -m pytest tests/            # 523 tests
+$DC exec brain python -m pytest tests/            # 542 tests
 ```
 
 On the host the suite still runs; the 11 sandbox tests skip and say why. They gate

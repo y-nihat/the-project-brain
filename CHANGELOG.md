@@ -5,6 +5,52 @@ follows [Keep a Changelog](https://keepachangelog.com/); versioning is
 [Semantic Versioning](https://semver.org/) — `0.x` while the core algorithm
 and behavior are still expected to change between releases.
 
+## [0.33.1] — 2026-07-31
+
+What an adversarial three-team panel found in the hour before publication. Two
+of the three are defects this project introduced while hardening itself, which
+is the argument for having the panel.
+
+### Fixed
+- **The credential-shape denylist stopped eating ordinary English.** Widening
+  the generic `sk-` rule to allow hyphens made it match mid-word: "Build a
+  task-management-system-for-small-teams" was masked from its third character.
+  Both consumers were live — `scrub_text` writes DELIVERABLE.md and ANSWER.md,
+  so a project whose whole claim is that assertions trace to evidence was
+  replacing citations with a mask that reads as "a secret was here"; and
+  `contains_secret_shape` gates `run_objective`, so an innocent objective was
+  REFUSED as containing a credential. The rule is now anchored at a word
+  boundary and takes no hyphens in the body. Every current provider format still
+  matches, asserted per provider.
+- **The file-shaped path into the workspace is closed.** `resolve_file`'s
+  docstring said "absolute (inside the brain's mount)" and the code enforced no
+  such thing: every candidate was resolved and then read if it existed. A
+  symlink planted in `data/inbox` — the drop folder the threat model names as
+  the most likely attacker channel — resolved to `/proc/self/environ`, which
+  under compose holds `CLAUDE_CODE_OAUTH_TOKEN`, and carried it into the run
+  workspace. Candidates are now held inside the project root or the inbox, and
+  resolved before they are judged so a symlink cannot step over the boundary.
+- **Capability images are never fetched from a registry.** `brain/cap-<name>` is
+  a two-segment reference that Docker resolves to `docker.io/brain/cap-*` — a
+  real namespace this project does not own — and `ensure_image` pulled
+  unconditionally on ImageNotFound, on the path every capability call takes. One
+  `docker system prune`, one rebuilt VM, one second machine, and a stranger's
+  image would have run as a capability the registry still listed as verified,
+  with that capability's declared credential injected. The prefix is now a
+  single segment, and `ensure_image` refuses to pull a capability image at all:
+  a missing one means rebuild from its retained build context.
+- **Three published documents claimed things the code did not do.** Guarantee 2
+  ("the credential never enters a capability container") was true of the
+  environment path and false of the file path — now true of both, and it says
+  which two boundaries make it so. Guarantee 4 no longer claims capability names
+  are coerced, because they are not; what rejects path syntax there is Docker's
+  own reference validation, and the document now says that rather than taking
+  credit for it. The threat model's "a capability that needs a credential stops
+  at the interactive gate" is qualified: a secret already collected this session
+  is reused without a second prompt. Two Known gaps that had been closed —
+  stderr scrubbing and the denylist's provider coverage — were still listed as
+  open, and three documents still stamped 0.32.0, the withdrawn Apache tag.
+
 ## [0.33.0] — 2026-07-28
 
 The pre-publication pass, released. Version 0.32.0 was tagged before the

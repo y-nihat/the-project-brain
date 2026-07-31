@@ -345,3 +345,26 @@ def test_the_commit_guard_has_no_pattern_list_of_its_own():
         assert shape_fragment not in hook, (
             f"the hook carries its own copy of {shape_fragment!r}; it must ask "
             "redact.py instead")
+
+
+_ORDINARY_ENGLISH = [
+    "Build a task-management-system-for-small-teams",
+    "https://blog.example.com/2026/task-management-best-practices",
+    "disk-usage-report-for-production-cluster",
+]
+
+
+def test_widening_the_denylist_did_not_swallow_ordinary_prose():
+    """REGRESSION. Widening the generic `sk-` rule to allow hyphens made it
+    match mid-word: 'task-management-system-for-small-teams' was masked from its
+    third character. Two consequences, both live — `scrub_text` writes
+    DELIVERABLE.md and ANSWER.md, so citations were replaced by a mask that
+    reads as 'a secret was here'; and `contains_secret_shape` gates
+    run_objective, so an innocent objective was REFUSED as containing a
+    credential. The existing false-positive test could not catch it: none of its
+    samples had 20 matchable characters after 'sk-'."""
+    from brain.observability.redact import contains_secret_shape, scrub_text
+
+    for text in _ORDINARY_ENGLISH:
+        assert not contains_secret_shape(text), text
+        assert scrub_text(text) == text, text

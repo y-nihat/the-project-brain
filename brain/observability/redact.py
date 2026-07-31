@@ -41,7 +41,12 @@ _USAGE_KEY = re.compile(r"^(tokens?_(in|out)|.*token_count.*)$", re.IGNORECASE)
 _SECRET_SHAPES = re.compile(
     "|".join([
         r"sk-ant-[A-Za-z0-9_\-]{8,}",               # Anthropic keys/tokens
-        r"sk-[A-Za-z0-9_\-]{20,}",                  # OpenAI & generic sk- (incl. sk-proj-)
+        # Anchored at a word boundary and WITHOUT hyphens in the body. The
+        # unanchored, hyphen-permitting form matched ordinary prose:
+        # "task-management-system-for-small-teams" was masked from its third
+        # character on, and `contains_secret_shape` gates run_objective, so an
+        # innocent objective was REFUSED as containing a credential.
+        r"(?<![A-Za-z0-9_-])sk-(?:proj-)?[A-Za-z0-9_]{20,}",  # OpenAI, incl. sk-proj-
         r"sk_(live|test)_[A-Za-z0-9]{16,}",         # Stripe
         r"(AKIA|ASIA)[0-9A-Z]{16}",                 # AWS access key id (incl. STS)
         r"gh[pousr]_[A-Za-z0-9]{20,}",              # GitHub classic PAT / OAuth / app tokens

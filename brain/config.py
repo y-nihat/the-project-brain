@@ -31,7 +31,7 @@ LOCKS_DIR = DATA_DIR / "locks"        # liveness locks: which conversations a pr
 # change invalidates promoted capabilities even without a release bump).
 # KEEP IN LOCKSTEP WITH THE RELEASE TAG — a stale label here let a biased reader
 # skip revalidation for a whole release cycle.
-ENGINE_VERSION = "0.33.0"
+ENGINE_VERSION = "0.33.1"
 
 
 def _git_commit() -> str:
@@ -58,6 +58,15 @@ DOCKER_HOST = os.environ.get("DOCKER_HOST") or None
 
 # Base image for sandboxed capabilities.
 SANDBOX_BASE_IMAGE = os.environ.get("SANDBOX_BASE_IMAGE", "python:3.12-slim")
+
+# Local-only image names for authored capabilities. The previous value,
+# "brain/cap-", is a two-segment reference that Docker resolves to
+# docker.io/brain/cap-* — a real, third-party-owned Hub namespace. Any
+# ImageNotFound (a `docker system prune`, a rebuilt VM, a second machine) would
+# then have pulled a stranger's image and run it as a verified capability with
+# its declared credential injected. A single segment resolves under
+# docker.io/library/, which no one can push to.
+CAP_IMAGE_PREFIX = "brain-cap-"
 
 # Optional model override for orchestrator-side reasoning (None => SDK/CLI default).
 BRAIN_MODEL = os.environ.get("BRAIN_MODEL") or None

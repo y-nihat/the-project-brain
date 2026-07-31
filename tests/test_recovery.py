@@ -524,7 +524,7 @@ def test_remote_authoring_requires_full_evidence_contract(tmp_path):
 def test_candidate_image_promotes_atomically(tmp_path):
     """An unverified attempt must NEVER hold the canonical tag: candidates are
     attempt-scoped; only the verified one is retagged (all three failed YouTube
-    attempts were observed overwriting `brain/cap-...:1.0.0` in place)."""
+    attempts were observed overwriting `<prefix>atomic_probe:1.0.0` in place)."""
     reg = Registry(tmp_path / "r.db", tmp_path / "store")
 
     async def dev(need_key, description, previous=None, error=None):
@@ -542,7 +542,7 @@ def test_candidate_image_promotes_atomically(tmp_path):
         "atomic_probe", "a tool", manager=mgr, registry=reg, broker=None,
         model=None, developer=dev, max_attempts=3, tracer=NullTracer()))
     reg.close()
-    canonical = "brain/cap-atomic_probe:1.0.0"
+    canonical = f"{config.CAP_IMAGE_PREFIX}atomic_probe:1.0.0"
     assert cap.verified and cap.image_tag == canonical
     assert canonical not in mgr.built                  # never built in place
     assert all(":cand-" in t for t in mgr.built) and len(mgr.built) == 2

@@ -147,7 +147,17 @@ def resolve_file(token: str) -> Optional[Path]:
     heart of "why can't the agent read the file I named": a sandboxed tool only
     ever sees files the engine copies into the workspace, so a path the engine
     cannot resolve here can never reach a tool, no matter how the agent spells
-    it."""
+    it.
+
+    "Inside the brain's mount" is now ENFORCED, not merely described. It was
+    only ever a sentence in this docstring: every candidate was resolved and
+    then read if it existed, so a symlink planted in the inbox — the drop folder
+    the threat model names as the most likely attacker channel — redirected the
+    read anywhere the orchestrator could reach, and a bare absolute path was
+    taken as given. Under compose that includes /proc/self/environ, which holds
+    CLAUDE_CODE_OAUTH_TOKEN, so this was the file-shaped path into the workspace
+    that SECURITY_MODEL.md claimed did not exist.
+    """
     tok = token.strip().strip('\'"`').rstrip(".,;:!?)]}")
     if not tok:
         return None
@@ -162,10 +172,22 @@ def resolve_file(token: str) -> Optional[Path]:
         except OSError:
             pass
     candidates.append(config.INBOX_DIR / Path(tok).name)
+
+    roots = []
+    for root in (config.PROJECT_ROOT, config.INBOX_DIR):
+        try:
+            roots.append(Path(root).resolve())
+        except (OSError, ValueError):
+            pass
+
     for c in candidates:
         try:
             r = c.resolve()
         except (OSError, ValueError):
+            continue
+        # Resolved FIRST, judged second: a symlink is followed before the
+        # boundary is applied, so it cannot be used to step over it.
+        if not any(r == root or r.is_relative_to(root) for root in roots):
             continue
         if r.is_file():
             return r

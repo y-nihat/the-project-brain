@@ -1,8 +1,8 @@
 # The Project Brain — core algorithm architecture
 
-Technical structure of the Brain core, current as of **engine 0.32.0**. The
+Technical structure of the Brain core, current as of **engine 0.33.0**. The
 diagrams and the budget table were written at 0.11.0 and re-verified against
-`brain/config.py` at 0.32.0; §11 lists what is still deliberately open. This
+`brain/config.py` at 0.33.0; §11 lists what is still deliberately open. This
 document explains how the system thinks; `OVERVIEW.md` explains how to run it, and
 `CHANGELOG.md` records how each mechanism was earned (nearly every box below
 exists because a live run failed without it).

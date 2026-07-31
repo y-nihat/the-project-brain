@@ -204,3 +204,62 @@ def test_safe_segment_coerces_or_falls_back():
     assert safe_segment("/", "cap") == "cap"
     assert safe_segment("..", "cap") == "cap"
     assert safe_segment(None, "cap") == "cap"
+
+
+# --- site 4: files the OPERATOR names (@mentions, designated paths) ---------
+
+def test_resolve_file_refuses_a_symlink_planted_in_the_inbox(tmp_path, monkeypatch):
+    """data/inbox is the drop folder docs/THREAT_MODEL.md calls the most likely
+    attacker channel, and `resolve_file` resolved every candidate and then read
+    it if it existed. A symlink placed there redirected the read anywhere the
+    orchestrator could reach — under compose that includes /proc/self/environ,
+    which holds CLAUDE_CODE_OAUTH_TOKEN. That was the file-shaped path into the
+    workspace SECURITY_MODEL.md claimed did not exist."""
+    from brain import config, files as files_mod
+
+    inbox = tmp_path / "data" / "inbox"
+    inbox.mkdir(parents=True)
+    outside = tmp_path.parent / f"outside-{tmp_path.name}.txt"
+    outside.write_text("not yours")
+    monkeypatch.setattr(config, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(config, "INBOX_DIR", inbox)
+
+    (inbox / "escape.txt").symlink_to(outside)
+    assert files_mod.resolve_file("escape.txt") is None
+    assert files_mod.resolve_file("/etc/hostname") is None
+    assert files_mod.resolve_file("/proc/self/environ") is None
+
+
+def test_resolve_file_still_finds_what_the_operator_legitimately_named(tmp_path, monkeypatch):
+    """The boundary must not cost the feature it guards: a real drop in the
+    inbox and a real project-relative path both still resolve."""
+    from brain import config, files as files_mod
+
+    inbox = tmp_path / "data" / "inbox"
+    inbox.mkdir(parents=True)
+    monkeypatch.setattr(config, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(config, "INBOX_DIR", inbox)
+
+    (inbox / "real.csv").write_text("a,b\n1,2\n")
+    (tmp_path / "report.md").write_text("# hi")
+    assert files_mod.resolve_file("real.csv") == (inbox / "real.csv").resolve()
+    assert files_mod.resolve_file("report.md") == (tmp_path / "report.md").resolve()
+
+
+def test_a_capability_image_is_never_fetched_from_a_registry():
+    """`brain/cap-<name>` resolved to docker.io/brain/cap-* — a namespace this
+    project does not own — and ensure_image pulled unconditionally on
+    ImageNotFound. One `docker system prune` and a stranger's image would have
+    run as a capability the registry still listed as verified."""
+    import inspect
+
+    from brain import config
+    from brain.sandbox import manager as mgr
+
+    assert "/" not in config.CAP_IMAGE_PREFIX, (
+        "a multi-segment prefix resolves to a public registry namespace")
+    src = inspect.getsource(mgr.SandboxManager.ensure_image)
+    assert "CAP_IMAGE_PREFIX" in src and "images.pull" in src, (
+        "ensure_image must distinguish capability images from base images")
+    assert src.index("CAP_IMAGE_PREFIX") < src.index("images.pull"), (
+        "the capability check must come BEFORE the pull")

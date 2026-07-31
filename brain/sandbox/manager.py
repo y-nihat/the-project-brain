@@ -110,9 +110,31 @@ class SandboxManager:
 
     # -- images ----------------------------------------------------------- #
     def ensure_image(self, image: str) -> None:
+        """Make ``image`` available locally — by pulling it ONLY if it is a base
+        image, never if it is an authored capability.
+
+        A capability image is built here and exists only here. If it is missing,
+        the honest answer is "rebuild it from its retained build context", not
+        "fetch something with that name from a public registry": the tag used to
+        be `brain/cap-<name>`, which Docker resolves to docker.io/brain/cap-*, a
+        namespace this project does not own. One `docker system prune`, one
+        rebuilt VM, one move to a second machine — and an unconditional pull
+        would have run a stranger's image as a capability the registry still
+        lists as verified, with that capability's declared credential injected
+        and its output entering the evidence ledger.
+        """
         try:
             self.client.images.get(image)
         except ImageNotFound:
+            from .. import config
+
+            name = image.rsplit("/", 1)[-1]
+            if name.startswith(config.CAP_IMAGE_PREFIX):
+                raise ImageNotFound(
+                    f"capability image '{image}' is missing locally. It is built "
+                    "here and is never fetched from a registry — rebuild it from "
+                    f"data/capabilities/<name>/build/ instead."
+                ) from None
             self.client.images.pull(image)
 
     def tag_image(self, source: str, target: str) -> None:
