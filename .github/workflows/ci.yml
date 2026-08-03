@@ -69,7 +69,16 @@ jobs:
         run: gitleaks detect --source . --redact --no-banner --verbose
 
   audit:
-    # Weekly only. Never blocks a pull request.
+    # Weekly only, and it must stay weekly only. Never blocks a pull request.
+    #
+    # Do not add `workflow_dispatch` or `pull_request` here. pip-audit's project
+    # mode writes the strings from [project.dependencies] verbatim into a pip
+    # requirements file, and pip honours `--index-url` / `--extra-index-url`
+    # there as global options on their own lines. A `schedule` trigger can only
+    # run from the default branch, so those strings are always the reviewed
+    # ones; any trigger that lets another ref run this job would let that ref
+    # steer the resolver's package index. That sink did not exist while the job
+    # audited an already-installed environment. This job's form creates it.
     if: github.event_name == 'schedule'
     runs-on: ubuntu-latest
     steps:
@@ -78,7 +87,81 @@ jobs:
         with:
           python-version: "3.13"
       - name: Audit dependencies
+        # Audit the project, not the runner's site-packages. Given a project
+        # directory, pip-audit resolves [project.dependencies] in a throwaway
+        # virtualenv and audits the whole transitive closure, not just the names
+        # declared in pyproject.toml.
+        #
+        # The previous form ran `pip install -e .` first and audited whatever the
+        # runner happened to be holding. That put the-project-brain into its own
+        # audit set: the package is unpublished, PyPI answers 404 for it, and
+        # `--strict` fails the run on any dependency it cannot resolve. The job
+        # died on its own name and never once reached a verdict. It also audited
+        # pip-audit's own dependency tree, which is the scanner's supply chain
+        # and not this project's.
+        #
+        # `--strict` stays, but not because resolution failures need it: an
+        # unsatisfiable range already exits non-zero without it. It stays because
+        # it is the guard that stops this exact defect from returning through a
+        # `git+https://`, `file://` or private-index entry in
+        # [project.dependencies] — something that installs but has no PyPI record.
+        #
+        # Not audited, deliberately: [project.optional-dependencies].dev, which
+        # the `tests` job in this same file does install, and the pinned set in
+        # uv.lock. Ranges are re-resolved on every run, so a green Monday is a
+        # statement about what resolves that morning, not about what any user or
+        # any built image has installed.
+        #
+        # The scanner is version-bounded on purpose. Advisory data is fetched
+        # live at run time, so a bound costs no freshness, while an unbounded
+        # scanner in a workflow whose header insists on pinning everything was
+        # the odd one out — and this job's scope, not merely its findings, is now
+        # decided by the project-mode code path.
+        #
+        # The coverage floor below is not decoration. Project mode derives the
+        # entire audit set from one TOML key: empty [project.dependencies], or
+        # the same names moved behind `dynamic` or a PEP 735 dependency group,
+        # and pip-audit audits zero packages, prints "No known vulnerabilities
+        # found" and exits 0. A clean run prints no package list, so that
+        # collapse is byte-identical to a real pass. Nothing else in CI validates
+        # that key, and this repo already uses `dynamic` for the version.
         run: |
-          python -m pip install --upgrade pip pip-audit
-          pip install -e .
-          pip-audit --strict
+          python -m pip install --upgrade pip 'pip-audit~=2.10'
+          REPORT="${RUNNER_TEMP}/pip-audit.json"
+          rc=0
+          pip-audit --strict --format json --output "$REPORT" . || rc=$?
+          python - "$rc" "$REPORT" <<'PY'
+          import json
+          import sys
+
+          rc, path = int(sys.argv[1]), sys.argv[2]
+          try:
+              with open(path, encoding="utf-8") as fh:
+                  report = json.load(fh)
+          except (OSError, ValueError):
+              # pip-audit died before writing a report: unsatisfiable range,
+              # index outage, malformed pyproject. Its own message is the
+              # diagnosis; do not second-guess it, just carry the code out.
+              print(f"audit: no report written; deferring to pip-audit exit {rc}")
+              sys.exit(rc or 1)
+
+          deps = report.get("dependencies", [])
+          print(f"audit: {len(deps)} packages resolved and queried")
+          for dep in sorted(deps, key=lambda d: d["name"].lower()):
+              print(f"  {dep['name']} {dep.get('version', '')}")
+              for vuln in dep.get("vulns", []):
+                  fixes = ", ".join(vuln.get("fix_versions") or []) or "none"
+                  print(f"    VULN {vuln['id']}  fix: {fixes}")
+
+          # A floor, not a target: the closure is 44 packages today.
+          FLOOR = 20
+          if len(deps) < FLOOR:
+              print(
+                  f"audit: COVERAGE COLLAPSE - {len(deps)} packages audited, "
+                  f"expected at least {FLOOR}. Check [project.dependencies] "
+                  f"in pyproject.toml."
+              )
+              sys.exit(1)
+
+          sys.exit(rc)
+          PY
