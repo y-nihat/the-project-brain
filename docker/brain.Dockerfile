@@ -3,7 +3,7 @@
 #
 # The Python Agent SDK drives the Claude Code CLI as a subprocess, so the image
 # needs Node + the `claude` binary in addition to the Python deps.
-FROM python:3.12-slim
+FROM python:3.15-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
